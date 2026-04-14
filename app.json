@@ -32,6 +32,15 @@
       "eas": {
         "projectId": "3d5a36de-d144-4e6c-ac40-c336e8a8aac2"
       }
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Xself Home to access your photos to search similar products.",
+          "cameraPermission": "Allow Xself Home to use your camera to search similar products."
+        }
+      ]
+    ]
   }
 }

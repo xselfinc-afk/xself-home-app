@@ -1,0 +1,304 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775782432080,
+  "projectRoot": "/Users/heliu/xself-home-app",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      },
+      {
+        "name": "Ruby",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Gemfile"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "react",
+        "version": "19.1.0",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.1.0",
+        "category": "frontend"
+      }
+    ],
+    "packageManager": "bundler",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": "npm run start",
+    "scripts": {
+      "start": "expo start",
+      "android": "expo run:android",
+      "ios": "expo run:ios"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": "type-based"
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "assets",
+      "src"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "TempProject": {
+      "path": "TempProject",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775782432064,
+      "keyFiles": []
+    },
+    "apple": {
+      "path": "apple",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1775782432064,
+      "keyFiles": [
+        "DESIGN.md"
+      ]
+    },
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 4,
+      "lastAccessed": 1775782432064,
+      "keyFiles": [
+        "icon-prompt.txt",
+        "icon.png",
+        "logo.png",
+        "splash.png"
+      ]
+    },
+    "ios": {
+      "path": "ios",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1775782432064,
+      "keyFiles": [
+        "Podfile",
+        "Podfile.lock",
+        "Podfile.properties.json"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1775782432064,
+      "keyFiles": [
+        "theme.ts"
+      ]
+    },
+    "src/components": {
+      "path": "src/components",
+      "purpose": "UI components",
+      "fileCount": 3,
+      "lastAccessed": 1775782432065,
+      "keyFiles": [
+        "BottomSheet.tsx",
+        "ProductCard.tsx",
+        "ReviewSection.tsx"
+      ]
+    },
+    "src/data": {
+      "path": "src/data",
+      "purpose": "Data files",
+      "fileCount": 1,
+      "lastAccessed": 1775782432065,
+      "keyFiles": [
+        "products.ts"
+      ]
+    },
+    "src/utils": {
+      "path": "src/utils",
+      "purpose": "Utility functions",
+      "fileCount": 0,
+      "lastAccessed": 1775782432065,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "App.tsx",
+      "accessCount": 370,
+      "lastAccessed": 1775924005333,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/DiscoverScreen.tsx",
+      "accessCount": 57,
+      "lastAccessed": 1775810329710,
+      "type": "file"
+    },
+    {
+      "path": "src/components/ProductCard.tsx",
+      "accessCount": 50,
+      "lastAccessed": 1775811169631,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/OrdersScreen.tsx",
+      "accessCount": 31,
+      "lastAccessed": 1775809778924,
+      "type": "file"
+    },
+    {
+      "path": "src/components/ReviewSection.tsx",
+      "accessCount": 16,
+      "lastAccessed": 1775923381087,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/CheckoutScreen.tsx",
+      "accessCount": 15,
+      "lastAccessed": 1775812091139,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/SettingsScreen.tsx",
+      "accessCount": 13,
+      "lastAccessed": 1775809127726,
+      "type": "file"
+    },
+    {
+      "path": "src/data/products.ts",
+      "accessCount": 9,
+      "lastAccessed": 1775811139506,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/EarnScreen.tsx",
+      "accessCount": 7,
+      "lastAccessed": 1775761486464,
+      "type": "file"
+    },
+    {
+      "path": "src/theme.ts",
+      "accessCount": 6,
+      "lastAccessed": 1775810028783,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/OrderSuccessScreen.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1775812238525,
+      "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 3,
+      "lastAccessed": 1775527314068,
+      "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 3,
+      "lastAccessed": 1775802563807,
+      "type": "directory"
+    },
+    {
+      "path": "DESIGN.md",
+      "accessCount": 3,
+      "lastAccessed": 1775802568480,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/NotificationsScreen.tsx",
+      "accessCount": 2,
+      "lastAccessed": 1775150947113,
+      "type": "file"
+    },
+    {
+      "path": "src/components/BottomSheet.tsx",
+      "accessCount": 2,
+      "lastAccessed": 1775150947275,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 2,
+      "lastAccessed": 1775755450245,
+      "type": "file"
+    },
+    {
+      "path": "app.json",
+      "accessCount": 1,
+      "lastAccessed": 1775148796329,
+      "type": "file"
+    },
+    {
+      "path": "babel.config.js",
+      "accessCount": 1,
+      "lastAccessed": 1775148796593,
+      "type": "file"
+    },
+    {
+      "path": "tsconfig.json",
+      "accessCount": 1,
+      "lastAccessed": 1775148796869,
+      "type": "file"
+    },
+    {
+      "path": "src/context/CartContext.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1775152398998,
+      "type": "file"
+    },
+    {
+      "path": "src/context/CartAnimationContext.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1775168740222,
+      "type": "file"
+    },
+    {
+      "path": "apple/DESIGN.md",
+      "accessCount": 1,
+      "lastAccessed": 1775679915390,
+      "type": "file"
+    },
+    {
+      "path": "src/context/RewardsContext.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1775755585019,
+      "type": "file"
+    },
+    {
+      "path": "src/screens",
+      "accessCount": 1,
+      "lastAccessed": 1775761427230,
+      "type": "directory"
+    }
+  ],
+  "userDirectives": []
+}
