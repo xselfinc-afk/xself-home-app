@@ -1,9 +1,20 @@
+# dependencies
 node_modules/
+
+# env
 .env
 .env.local
-.omc/
+
+# system
 .DS_Store
-*.log
+
+# OpenClaw / Claude / local state
+.omc/
+
+# build / cache
 dist/
 build/
 .expo/
+
+# logs
+*.log
