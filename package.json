@@ -11,11 +11,15 @@
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/native": "^7.1.33",
     "@react-navigation/native-stack": "^7.14.4",
+    "@supabase/supabase-js": "^2.103.3",
     "babel-preset-expo": "^54.0.10",
     "expo": "^54.0.33",
     "expo-blur": "~15.0.8",
+    "expo-haptics": "~15.0.8",
     "expo-image-picker": "~17.0.10",
     "expo-linear-gradient": "~15.0.8",
+    "expo-secure-store": "~15.0.8",
+    "expo-splash-screen": "~31.0.13",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-native": "^0.81.5",
@@ -27,6 +31,7 @@
     "@babel/core": "^7.20.0",
     "@types/react": "~19.1.10",
     "@urql/core": "^6.0.1",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   }
 }

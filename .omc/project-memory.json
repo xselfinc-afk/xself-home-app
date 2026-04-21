@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775782432080,
+  "lastScanned": 1776705380521,
   "projectRoot": "/Users/heliu/xself-home-app",
   "techStack": {
     "languages": [
@@ -66,6 +66,7 @@
     "workspaces": [],
     "mainDirectories": [
       "assets",
+      "scripts",
       "src"
     ],
     "gitBranches": null
@@ -76,14 +77,14 @@
       "path": "TempProject",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1775782432064,
+      "lastAccessed": 1776705380498,
       "keyFiles": []
     },
     "apple": {
       "path": "apple",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1775782432064,
+      "lastAccessed": 1776705380501,
       "keyFiles": [
         "DESIGN.md"
       ]
@@ -91,8 +92,8 @@
     "assets": {
       "path": "assets",
       "purpose": "Static assets",
-      "fileCount": 4,
-      "lastAccessed": 1775782432064,
+      "fileCount": 5,
+      "lastAccessed": 1776705380502,
       "keyFiles": [
         "icon-prompt.txt",
         "icon.png",
@@ -104,200 +105,408 @@
       "path": "ios",
       "purpose": null,
       "fileCount": 6,
-      "lastAccessed": 1775782432064,
+      "lastAccessed": 1776705380502,
       "keyFiles": [
         "Podfile",
         "Podfile.lock",
         "Podfile.properties.json"
       ]
     },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1776705380502,
+      "keyFiles": [
+        "gen-brand.js",
+        "normalizeProducts.ts",
+        "syncPickup.ts"
+      ]
+    },
     "src": {
       "path": "src",
       "purpose": "Source code",
-      "fileCount": 1,
-      "lastAccessed": 1775782432064,
+      "fileCount": 2,
+      "lastAccessed": 1776705380502,
       "keyFiles": [
         "theme.ts"
+      ]
+    },
+    "supabase": {
+      "path": "supabase",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1776705380502,
+      "keyFiles": [
+        "add_product_family_key.sql",
+        "addresses.sql",
+        "standardized_products.sql",
+        "supplier_products.sql"
       ]
     },
     "src/components": {
       "path": "src/components",
       "purpose": "UI components",
-      "fileCount": 3,
-      "lastAccessed": 1775782432065,
+      "fileCount": 4,
+      "lastAccessed": 1776705380503,
       "keyFiles": [
         "BottomSheet.tsx",
-        "ProductCard.tsx",
-        "ReviewSection.tsx"
+        "CategoryPillRow.tsx",
+        "ProductCard.tsx"
+      ]
+    },
+    "src/config": {
+      "path": "src/config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1776705380503,
+      "keyFiles": [
+        "delivery.ts"
       ]
     },
     "src/data": {
       "path": "src/data",
       "purpose": "Data files",
-      "fileCount": 1,
-      "lastAccessed": 1775782432065,
+      "fileCount": 3,
+      "lastAccessed": 1776705380503,
       "keyFiles": [
-        "products.ts"
+        "categories.ts",
+        "products.ts",
+        "warehouses.ts"
+      ]
+    },
+    "src/lib": {
+      "path": "src/lib",
+      "purpose": "Library code",
+      "fileCount": 1,
+      "lastAccessed": 1776705380503,
+      "keyFiles": [
+        "supabase.ts"
+      ]
+    },
+    "src/services": {
+      "path": "src/services",
+      "purpose": "Business logic services",
+      "fileCount": 10,
+      "lastAccessed": 1776705380504,
+      "keyFiles": [
+        "addressService.ts",
+        "detailProductAdapter.ts",
+        "geocodingService.ts"
       ]
     },
     "src/utils": {
       "path": "src/utils",
       "purpose": "Utility functions",
-      "fileCount": 0,
-      "lastAccessed": 1775782432065,
-      "keyFiles": []
+      "fileCount": 4,
+      "lastAccessed": 1776705380504,
+      "keyFiles": [
+        "contentGenerator.ts",
+        "deliveryEligibility.ts",
+        "distance.ts"
+      ]
     }
   },
   "hotPaths": [
     {
       "path": "App.tsx",
-      "accessCount": 370,
-      "lastAccessed": 1775924005333,
-      "type": "file"
-    },
-    {
-      "path": "src/screens/DiscoverScreen.tsx",
-      "accessCount": 57,
-      "lastAccessed": 1775810329710,
-      "type": "file"
-    },
-    {
-      "path": "src/components/ProductCard.tsx",
-      "accessCount": 50,
-      "lastAccessed": 1775811169631,
-      "type": "file"
-    },
-    {
-      "path": "src/screens/OrdersScreen.tsx",
-      "accessCount": 31,
-      "lastAccessed": 1775809778924,
-      "type": "file"
-    },
-    {
-      "path": "src/components/ReviewSection.tsx",
-      "accessCount": 16,
-      "lastAccessed": 1775923381087,
+      "accessCount": 667,
+      "lastAccessed": 1776747810383,
       "type": "file"
     },
     {
       "path": "src/screens/CheckoutScreen.tsx",
-      "accessCount": 15,
-      "lastAccessed": 1775812091139,
+      "accessCount": 209,
+      "lastAccessed": 1776754807773,
       "type": "file"
     },
     {
-      "path": "src/screens/SettingsScreen.tsx",
-      "accessCount": 13,
-      "lastAccessed": 1775809127726,
+      "path": "src/screens/DiscoverScreen.tsx",
+      "accessCount": 166,
+      "lastAccessed": 1776743850277,
       "type": "file"
     },
     {
       "path": "src/data/products.ts",
-      "accessCount": 9,
-      "lastAccessed": 1775811139506,
+      "accessCount": 69,
+      "lastAccessed": 1776743334689,
+      "type": "directory"
+    },
+    {
+      "path": "src/services/detailProductAdapter.ts",
+      "accessCount": 56,
+      "lastAccessed": 1776743326060,
       "type": "file"
     },
     {
-      "path": "src/screens/EarnScreen.tsx",
-      "accessCount": 7,
-      "lastAccessed": 1775761486464,
-      "type": "file"
-    },
-    {
-      "path": "src/theme.ts",
-      "accessCount": 6,
-      "lastAccessed": 1775810028783,
+      "path": "src/components/ProductCard.tsx",
+      "accessCount": 45,
+      "lastAccessed": 1776745673321,
       "type": "file"
     },
     {
       "path": "src/screens/OrderSuccessScreen.tsx",
-      "accessCount": 4,
-      "lastAccessed": 1775812238525,
+      "accessCount": 31,
+      "lastAccessed": 1776754633821,
       "type": "file"
     },
     {
-      "path": "src",
-      "accessCount": 3,
-      "lastAccessed": 1775527314068,
-      "type": "directory"
+      "path": "src/screens/OrdersScreen.tsx",
+      "accessCount": 23,
+      "lastAccessed": 1776754616815,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/EarnScreen.tsx",
+      "accessCount": 21,
+      "lastAccessed": 1776433867664,
+      "type": "file"
+    },
+    {
+      "path": "src/context/AuthContext.tsx",
+      "accessCount": 18,
+      "lastAccessed": 1776464193217,
+      "type": "file"
+    },
+    {
+      "path": "src/context/RewardsContext.tsx",
+      "accessCount": 17,
+      "lastAccessed": 1776434612073,
+      "type": "file"
+    },
+    {
+      "path": "src/services/supplierPickupService.ts",
+      "accessCount": 16,
+      "lastAccessed": 1776754864966,
+      "type": "file"
     },
     {
       "path": "",
-      "accessCount": 3,
-      "lastAccessed": 1775802563807,
+      "accessCount": 15,
+      "lastAccessed": 1776457522617,
       "type": "directory"
     },
     {
       "path": "DESIGN.md",
+      "accessCount": 11,
+      "lastAccessed": 1776739830715,
+      "type": "file"
+    },
+    {
+      "path": "src/data/categories.ts",
+      "accessCount": 11,
+      "lastAccessed": 1776739969300,
+      "type": "file"
+    },
+    {
+      "path": "src/services/gigaApiClient.ts",
+      "accessCount": 10,
+      "lastAccessed": 1776755014956,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/SupplierProductsScreen.tsx",
+      "accessCount": 9,
+      "lastAccessed": 1776662687341,
+      "type": "file"
+    },
+    {
+      "path": "src/context/CartContext.tsx",
+      "accessCount": 9,
+      "lastAccessed": 1776750755461,
+      "type": "file"
+    },
+    {
+      "path": "scripts/syncPickup.ts",
+      "accessCount": 8,
+      "lastAccessed": 1776742033401,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/supabase.ts",
+      "accessCount": 8,
+      "lastAccessed": 1776754879566,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/ChatScreen.tsx",
+      "accessCount": 7,
+      "lastAccessed": 1776700049304,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/InboxScreen.tsx",
+      "accessCount": 6,
+      "lastAccessed": 1776700187773,
+      "type": "file"
+    },
+    {
+      "path": "src/services/gigaService.ts",
+      "accessCount": 6,
+      "lastAccessed": 1776754814802,
+      "type": "file"
+    },
+    {
+      "path": "app.json",
+      "accessCount": 5,
+      "lastAccessed": 1776464187163,
+      "type": "file"
+    },
+    {
+      "path": "src/context/RecommendationContext.tsx",
+      "accessCount": 5,
+      "lastAccessed": 1776724875360,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/CollectionScreen.tsx",
+      "accessCount": 5,
+      "lastAccessed": 1776734654760,
+      "type": "file"
+    },
+    {
+      "path": ".env",
+      "accessCount": 5,
+      "lastAccessed": 1776740491585,
+      "type": "file"
+    },
+    {
+      "path": "src/data/warehouses.ts",
+      "accessCount": 5,
+      "lastAccessed": 1776752090531,
+      "type": "file"
+    },
+    {
+      "path": "src/context/CartAnimationContext.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1776363523948,
+      "type": "file"
+    },
+    {
+      "path": "src/config/delivery.ts",
+      "accessCount": 4,
+      "lastAccessed": 1776468639103,
+      "type": "file"
+    },
+    {
+      "path": "src/context/OrdersContext.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1776754470810,
+      "type": "file"
+    },
+    {
+      "path": "src/context/ToastContext.tsx",
       "accessCount": 3,
-      "lastAccessed": 1775802568480,
+      "lastAccessed": 1776363039378,
+      "type": "file"
+    },
+    {
+      "path": "assets/splash.png",
+      "accessCount": 3,
+      "lastAccessed": 1776403380428,
+      "type": "file"
+    },
+    {
+      "path": "src/utils/deliveryEligibility.ts",
+      "accessCount": 3,
+      "lastAccessed": 1776448743172,
+      "type": "file"
+    },
+    {
+      "path": "supabase/supplier_products.sql",
+      "accessCount": 3,
+      "lastAccessed": 1776733561724,
+      "type": "file"
+    },
+    {
+      "path": "src/services/warehouseService.ts",
+      "accessCount": 3,
+      "lastAccessed": 1776752095366,
+      "type": "file"
+    },
+    {
+      "path": "assets/icon.png",
+      "accessCount": 2,
+      "lastAccessed": 1776402721501,
+      "type": "file"
+    },
+    {
+      "path": "scripts/gen-brand.js",
+      "accessCount": 2,
+      "lastAccessed": 1776403370648,
       "type": "file"
     },
     {
       "path": "src/screens/NotificationsScreen.tsx",
       "accessCount": 2,
-      "lastAccessed": 1775150947113,
-      "type": "file"
-    },
-    {
-      "path": "src/components/BottomSheet.tsx",
-      "accessCount": 2,
-      "lastAccessed": 1775150947275,
+      "lastAccessed": 1776432510305,
       "type": "file"
     },
     {
       "path": "package.json",
       "accessCount": 2,
-      "lastAccessed": 1775755450245,
+      "lastAccessed": 1776464187116,
       "type": "file"
     },
     {
-      "path": "app.json",
-      "accessCount": 1,
-      "lastAccessed": 1775148796329,
+      "path": ".env.example",
+      "accessCount": 2,
+      "lastAccessed": 1776464193867,
       "type": "file"
     },
     {
-      "path": "babel.config.js",
-      "accessCount": 1,
-      "lastAccessed": 1775148796593,
+      "path": "src/context/ConversationContext.tsx",
+      "accessCount": 2,
+      "lastAccessed": 1776700048841,
       "type": "file"
     },
     {
-      "path": "tsconfig.json",
-      "accessCount": 1,
-      "lastAccessed": 1775148796869,
+      "path": "src/services/addressService.ts",
+      "accessCount": 2,
+      "lastAccessed": 1776750077946,
       "type": "file"
     },
     {
-      "path": "src/context/CartContext.tsx",
-      "accessCount": 1,
-      "lastAccessed": 1775152398998,
+      "path": "src/services/geocodingService.ts",
+      "accessCount": 2,
+      "lastAccessed": 1776750094752,
       "type": "file"
     },
     {
-      "path": "src/context/CartAnimationContext.tsx",
+      "path": "src/theme.ts",
       "accessCount": 1,
-      "lastAccessed": 1775168740222,
+      "lastAccessed": 1776361247819,
       "type": "file"
     },
     {
-      "path": "apple/DESIGN.md",
+      "path": "src/components/CategoryPillRow.tsx",
       "accessCount": 1,
-      "lastAccessed": 1775679915390,
+      "lastAccessed": 1776394638471,
       "type": "file"
     },
     {
-      "path": "src/context/RewardsContext.tsx",
+      "path": "src",
       "accessCount": 1,
-      "lastAccessed": 1775755585019,
-      "type": "file"
-    },
-    {
-      "path": "src/screens",
-      "accessCount": 1,
-      "lastAccessed": 1775761427230,
+      "lastAccessed": 1776396783422,
       "type": "directory"
+    },
+    {
+      "path": "assets/logo.png",
+      "accessCount": 1,
+      "lastAccessed": 1776402483595,
+      "type": "file"
+    },
+    {
+      "path": "src/screens/SettingsScreen.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1776432491787,
+      "type": "file"
+    },
+    {
+      "path": "supabase/addresses.sql",
+      "accessCount": 1,
+      "lastAccessed": 1776464286174,
+      "type": "file"
     }
   ],
   "userDirectives": []

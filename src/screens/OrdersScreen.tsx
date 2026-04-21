@@ -6,20 +6,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { useRewards } from '../context/RewardsContext';
-
-const orders = [
-  { id: 'ORD-001', status: 'delivered', date: 'Feb 15, 2026', items: [1, 3], total: 1697 },
-  { id: 'ORD-002', status: 'shipped', date: 'Feb 10, 2026', items: [4], total: 599 },
-  { id: 'ORD-003', status: 'processing', date: 'Feb 18, 2026', items: [2], total: 449 },
-];
-
-const productData = [
-  { id: 1, name: 'Minimalist Sofa', price: 1299, img: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400' },
-  { id: 2, name: 'Oak Coffee Table', price: 449, img: 'https://images.unsplash.com/photo-1532372320572-cda25653a26d?w=400' },
-  { id: 3, name: 'Modern Lamp', price: 199, img: 'https://images.unsplash.com/photo-1506439773649-6e0eb8cfb237?w=400' },
-  { id: 4, name: 'Velvet Chair', price: 599, img: 'https://images.unsplash.com/photo-1551298370-9d3d53bc4dc3?w=400' },
-];
+import { useRewards, getReferralLink } from '../context/RewardsContext';
+import { useOrders, PlacedOrder, OrderFulfillmentGroup } from '../context/OrdersContext';
 
 const STATUS_COLORS: Record<string, string> = {
   delivered: '#16A34A',
@@ -33,18 +21,30 @@ const STATUS_ICONS: Record<string, any> = {
 };
 const STEP_ACTIVE: Record<string, number> = { processing: 0, shipped: 1, delivered: 2 };
 
+interface ReviewTarget {
+  itemName: string;
+  itemImg: string;
+  itemSku: string;
+  orderId: string;
+}
+
+interface ShareTarget {
+  name: string;
+  img: string;
+  price: number;
+}
+
 export default function OrdersScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
-  const { addPoints, trackClick } = useRewards();
+  const { trackClick } = useRewards();
+  const { orders } = useOrders();
 
-  const [reviewTarget, setReviewTarget] = useState<{ productId: number; orderId: string } | null>(null);
-  const [shareTarget, setShareTarget] = useState<typeof productData[0] | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [reviewStars, setReviewStars] = useState(5);
   const [reviewText, setReviewText] = useState('');
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
   const [reviewImages, setReviewImages] = useState<string[]>([]);
-
-  const getProduct = (id: number) => productData.find(p => p.id === id)!;
 
   const pickImage = () => {
     Alert.alert('Add Photo', '', [
@@ -66,36 +66,34 @@ export default function OrdersScreen({ navigation }: any) {
 
   const submitReview = () => {
     if (!reviewTarget) return;
-    const product = getProduct(reviewTarget.productId);
-    setReviewed(prev => new Set([...prev, `${reviewTarget.orderId}-${reviewTarget.productId}`]));
-    addPoints(reviewImages.length > 0 ? 150 : 100, 'review', `Review submitted — ${product.name}`);
+    const { itemName, itemImg, itemSku, orderId } = reviewTarget;
+    setReviewed(prev => new Set([...prev, `${orderId}-${itemSku}`]));
     setReviewTarget(null);
     setReviewText('');
     setReviewStars(5);
     setReviewImages([]);
-    setTimeout(() => setShareTarget(product), 350);
+    setTimeout(() => setShareTarget({ name: itemName, img: itemImg, price: 0 }), 350);
   };
 
-  const handleShare = async (product: typeof productData[0]) => {
+  const handleShare = async (target: ShareTarget) => {
     try {
       trackClick();
       await Share.share({
-        message: `I love my ${product.name} from Xself Home! https://xself.app/ref/JOHN2024/p/${product.id}`,
+        message: `I love my ${target.name} from Xself Home! ${getReferralLink(0, 'orders')}`,
       });
     } catch {}
     setShareTarget(null);
   };
 
-  const renderOrder = ({ item: order }: { item: typeof orders[0] }) => {
+  const renderOrder = ({ item: order }: { item: PlacedOrder }) => {
     const activeStep = STEP_ACTIVE[order.status] ?? 0;
     const isDelivered = order.status === 'delivered';
 
     return (
       <View style={styles.card}>
-        {/* Header */}
         <View style={styles.cardHeader}>
           <View>
-            <Text style={styles.orderId}>{order.id} · <Text style={styles.orderTotal}>${order.total}</Text></Text>
+            <Text style={styles.orderId}>{order.orderNumber} · <Text style={styles.orderTotal}>${order.total}</Text></Text>
             <Text style={styles.orderDate}>{order.date}</Text>
           </View>
           <View style={[styles.badge, { backgroundColor: STATUS_COLORS[order.status] + '18' }]}>
@@ -106,10 +104,9 @@ export default function OrdersScreen({ navigation }: any) {
           </View>
         </View>
 
-        {/* Progress tracker for non-delivered */}
         {!isDelivered && (
           <View style={styles.tracker}>
-            {['Ordered', 'Shipped', 'Delivered'].map((step, i) => (
+            {(['Ordered', 'Shipped', 'Delivered'] as const).map((step, i) => (
               <React.Fragment key={step}>
                 <View style={styles.stepWrap}>
                   <View style={[styles.stepDot, i <= activeStep && styles.stepDotActive]}>
@@ -117,33 +114,66 @@ export default function OrdersScreen({ navigation }: any) {
                   </View>
                   <Text style={[styles.stepLabel, i <= activeStep && styles.stepLabelActive]}>{step}</Text>
                 </View>
-                {i < 2 && (
-                  <View style={[styles.stepLine, i < activeStep && styles.stepLineActive]} />
-                )}
+                {i < 2 && <View style={[styles.stepLine, i < activeStep && styles.stepLineActive]} />}
               </React.Fragment>
             ))}
           </View>
         )}
 
-        {/* Items */}
-        {order.items.map(pid => {
-          const product = getProduct(pid);
-          const reviewKey = `${order.id}-${pid}`;
+        {/* Fulfillment groups — shown when present; old orders fall through to flat items */}
+        {order.fulfillmentGroups && order.fulfillmentGroups.length > 0 && (
+          <View style={styles.fulfillSection}>
+            {order.fulfillmentGroups.length > 1 && (
+              <Text style={styles.fulfillSectionNote}>
+                Split across {order.fulfillmentGroups.length} warehouses
+              </Text>
+            )}
+            {order.fulfillmentGroups.map((group: OrderFulfillmentGroup, idx: number) => (
+              <View
+                key={group.warehouseCode}
+                style={[styles.fulfillGroupBlock, idx > 0 && styles.fulfillGroupBlockBorder]}
+              >
+                <View style={styles.fulfillGroupMethodRow}>
+                  <Ionicons
+                    name={group.isPickup ? 'storefront-outline' : 'cube-outline'}
+                    size={13}
+                    color="#CA8A04"
+                  />
+                  <Text style={styles.fulfillGroupMethod}>
+                    {order.fulfillmentGroups!.length > 1 ? `Shipment ${idx + 1} · ` : ''}
+                    {group.isPickup ? `Pickup · ${group.warehouseLabel}` : `Ships from ${group.warehouseLabel}`}
+                    {!group.isPickup && ` · $${group.shippingFee}`}
+                  </Text>
+                </View>
+                <Text style={styles.fulfillGroupAddr}>
+                  {group.warehouseAddress.replace(', United States', '')}
+                </Text>
+                <Text style={styles.fulfillGroupItems} numberOfLines={3}>
+                  {group.items.map(i => `${i.name} ×${i.qty}`).join('  ·  ')}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {order.items.map(item => {
+          const reviewKey = `${order.orderId}-${item.sku}`;
           const hasReviewed = reviewed.has(reviewKey);
           return (
-            <View key={pid} style={styles.item}>
-              <Image source={{ uri: product.img }} style={styles.itemImg} />
+            <View key={item.sku} style={styles.item}>
+              <Image source={{ uri: item.img }} style={styles.itemImg} />
               <View style={styles.itemInfo}>
-                <Text style={styles.itemName}>{product.name}</Text>
-                <Text style={styles.itemPrice}>${product.price}</Text>
+                <Text style={styles.itemName}>{item.name}</Text>
+                {(item.color || item.size) && (
+                  <Text style={styles.itemVariant}>{[item.color, item.size].filter(Boolean).join(' · ')}</Text>
+                )}
+                <Text style={styles.itemSku}>SKU: {item.sku}</Text>
+                <Text style={styles.itemPrice}>${item.price}</Text>
                 {isDelivered && (
                   <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.actionBtn, styles.actionBtnPrimary]}>
-                      <Text style={styles.actionTextPrimary}>Buy Again</Text>
-                    </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.actionBtn, hasReviewed && styles.actionBtnReviewed]}
-                      onPress={() => !hasReviewed && setReviewTarget({ productId: pid, orderId: order.id })}
+                      onPress={() => !hasReviewed && setReviewTarget({ itemName: item.name, itemImg: item.img, itemSku: item.sku, orderId: order.orderId })}
                     >
                       <Text style={[styles.actionText, hasReviewed && styles.actionTextReviewed]}>
                         {hasReviewed ? '✓ Reviewed' : 'Write Review'}
@@ -155,11 +185,22 @@ export default function OrdersScreen({ navigation }: any) {
             </View>
           );
         })}
-
-
       </View>
     );
   };
+
+  if (orders.length === 0) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <Text style={styles.title}>My Orders</Text>
+        <View style={styles.emptyState}>
+          <Ionicons name="bag-outline" size={52} color="#D1CFC9" />
+          <Text style={styles.emptyTitle}>No orders yet</Text>
+          <Text style={styles.emptySub}>When you place an order, it will show up here.</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -167,7 +208,7 @@ export default function OrdersScreen({ navigation }: any) {
       <FlatList
         data={orders}
         renderItem={renderOrder}
-        keyExtractor={item => item.id}
+        keyExtractor={item => item.orderId}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
       />
@@ -177,56 +218,49 @@ export default function OrdersScreen({ navigation }: any) {
         <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => { setReviewTarget(null); setReviewImages([]); }}>
           <TouchableOpacity style={styles.sheet} activeOpacity={1}>
             <View style={styles.handle} />
-            {reviewTarget && (() => {
-              const product = getProduct(reviewTarget.productId);
-              return (
-                <>
-                  <Text style={styles.sheetTitle}>Write a Review</Text>
-                  <View style={styles.reviewProductRow}>
-                    <Image source={{ uri: product.img }} style={styles.reviewProductImg} />
-                    <Text style={styles.reviewProductName} numberOfLines={2}>{product.name}</Text>
-                  </View>
-                  <View style={styles.starsRow}>
-                    {[1, 2, 3, 4, 5].map(s => (
-                      <TouchableOpacity key={s} onPress={() => setReviewStars(s)}>
-                        <Ionicons name={s <= reviewStars ? 'star' : 'star-outline'} size={32} color="#FBBF24" />
+            {reviewTarget && (
+              <>
+                <Text style={styles.sheetTitle}>Write a Review</Text>
+                <View style={styles.reviewProductRow}>
+                  <Image source={{ uri: reviewTarget.itemImg }} style={styles.reviewProductImg} />
+                  <Text style={styles.reviewProductName} numberOfLines={2}>{reviewTarget.itemName}</Text>
+                </View>
+                <View style={styles.starsRow}>
+                  {[1, 2, 3, 4, 5].map(s => (
+                    <TouchableOpacity key={s} onPress={() => setReviewStars(s)}>
+                      <Ionicons name={s <= reviewStars ? 'star' : 'star-outline'} size={32} color="#FBBF24" />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow} contentContainerStyle={{ gap: 8 }}>
+                  {reviewImages.map((uri, i) => (
+                    <View key={i} style={styles.photoThumb}>
+                      <Image source={{ uri }} style={styles.photoImg} />
+                      <TouchableOpacity style={styles.photoDelete} onPress={() => setReviewImages(prev => prev.filter((_, idx) => idx !== i))}>
+                        <Ionicons name="close-circle" size={18} color="#6B7280" />
                       </TouchableOpacity>
-                    ))}
-                  </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow} contentContainerStyle={{ gap: 8 }}>
-                    {reviewImages.map((uri, i) => (
-                      <View key={i} style={styles.photoThumb}>
-                        <Image source={{ uri }} style={styles.photoImg} />
-                        <TouchableOpacity style={styles.photoDelete} onPress={() => setReviewImages(prev => prev.filter((_, idx) => idx !== i))}>
-                          <Ionicons name="close-circle" size={18} color="#6B7280" />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                    {reviewImages.length < 5 && (
-                      <TouchableOpacity style={styles.photoAdd} onPress={pickImage}>
-                        <Ionicons name="camera-outline" size={20} color="#9CA3AF" />
-                        <Text style={styles.photoAddText}>Add Photos</Text>
-                      </TouchableOpacity>
-                    )}
-                  </ScrollView>
-                  <TextInput
-                    style={styles.reviewInput}
-                    placeholder="Share your experience..."
-                    placeholderTextColor="#9CA3AF"
-                    multiline
-                    value={reviewText}
-                    onChangeText={setReviewText}
-                  />
-                  <View style={styles.earnHint}>
-                    <Ionicons name="gift-outline" size={13} color="#EAB320" />
-                    <Text style={styles.earnHintText}>+100 pts for review · extra pts for photos</Text>
-                  </View>
-                  <TouchableOpacity style={styles.primaryBtn} onPress={submitReview}>
-                    <Text style={styles.primaryBtnText}>Submit Review</Text>
-                  </TouchableOpacity>
-                </>
-              );
-            })()}
+                    </View>
+                  ))}
+                  {reviewImages.length < 5 && (
+                    <TouchableOpacity style={styles.photoAdd} onPress={pickImage}>
+                      <Ionicons name="camera-outline" size={20} color="#9CA3AF" />
+                      <Text style={styles.photoAddText}>Add Photos</Text>
+                    </TouchableOpacity>
+                  )}
+                </ScrollView>
+                <TextInput
+                  style={styles.reviewInput}
+                  placeholder="Share your experience..."
+                  placeholderTextColor="#9CA3AF"
+                  multiline
+                  value={reviewText}
+                  onChangeText={setReviewText}
+                />
+                <TouchableOpacity style={styles.primaryBtn} onPress={submitReview}>
+                  <Text style={styles.primaryBtnText}>Submit Review</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -238,22 +272,16 @@ export default function OrdersScreen({ navigation }: any) {
             <View style={styles.handle} />
             <View style={styles.shareHeader}>
               <Ionicons name="gift" size={28} color="#EAB320" />
-              <Text style={styles.sheetTitle}>Earn Rewards Rewards</Text>
-              <Text style={styles.shareSub}>Earn 500 pts (=$5) for every friend who orders</Text>
+              <Text style={styles.sheetTitle}>Earn Rewards</Text>
+              <Text style={styles.shareSub}>Earn $5–$20 for every friend who orders</Text>
             </View>
-            {shareTarget && (
+            {shareTarget?.name ? (
               <View style={styles.shareProductRow}>
                 <Image source={{ uri: shareTarget.img }} style={styles.shareProductImg} />
-                <View>
-                  <Text style={styles.shareProductName}>{shareTarget.name}</Text>
-                  <Text style={styles.shareProductPrice}>${shareTarget.price}</Text>
-                </View>
+                <Text style={styles.shareProductName}>{shareTarget.name}</Text>
               </View>
-            )}
-            <TouchableOpacity
-              style={styles.primaryBtn}
-              onPress={() => shareTarget && handleShare(shareTarget)}
-            >
+            ) : null}
+            <TouchableOpacity style={styles.primaryBtn} onPress={() => shareTarget && handleShare(shareTarget)}>
               <Ionicons name="share-outline" size={17} color="white" />
               <Text style={styles.primaryBtnText}>Share Now</Text>
             </TouchableOpacity>
@@ -272,6 +300,10 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '600', color: '#1C1917', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
   list: { padding: 16, paddingTop: 8 },
 
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: 80, gap: 12 },
+  emptyTitle: { fontSize: 17, fontWeight: '600', color: '#1C1917' },
+  emptySub: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', paddingHorizontal: 40 },
+
   card: { backgroundColor: 'white', borderRadius: 6, marginBottom: 16, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', padding: 14, backgroundColor: '#FAFAF9', borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   orderId: { fontSize: 13, fontWeight: '600', color: '#1C1917' },
@@ -289,17 +321,26 @@ const styles = StyleSheet.create({
   stepLine: { flex: 1, height: 2, backgroundColor: '#E5E7EB', marginBottom: 14, marginHorizontal: 2 },
   stepLineActive: { backgroundColor: '#CA8A04' },
 
+  fulfillSection: { borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingHorizontal: 14, paddingVertical: 10, backgroundColor: '#FAFAF9' },
+  fulfillSectionNote: { fontSize: 11, fontWeight: '600', color: '#6B7280', letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 8 },
+  fulfillGroupBlock: { paddingVertical: 6 },
+  fulfillGroupBlockBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E5E7EB', marginTop: 6, paddingTop: 8 },
+  fulfillGroupMethodRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
+  fulfillGroupMethod: { fontSize: 13, fontWeight: '600', color: '#374151', flex: 1 },
+  fulfillGroupAddr: { fontSize: 11, color: '#6B7280', marginBottom: 3, marginLeft: 18 },
+  fulfillGroupItems: { fontSize: 11, color: '#374151', marginLeft: 18, lineHeight: 16 },
+
   item: { flexDirection: 'row', padding: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   itemImg: { width: 56, height: 56, borderRadius: 6, backgroundColor: '#F3F4F6' },
   itemInfo: { flex: 1, marginLeft: 12 },
   itemName: { fontSize: 13, fontWeight: '500', color: '#1C1917' },
+  itemVariant: { fontSize: 11, color: '#6B7280', marginTop: 2 },
+  itemSku: { fontSize: 10, color: '#9CA3AF', marginTop: 1, fontFamily: 'monospace' as any },
   itemPrice: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginTop: 3 },
   actionRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' },
   actionBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: '#E5E7EB' },
-  actionBtnPrimary: { backgroundColor: '#EAB320', borderColor: '#EAB320' },
   actionBtnReviewed: { borderColor: '#D1FAE5', backgroundColor: '#F0FDF4' },
   actionText: { fontSize: 11, color: '#1C1917', fontWeight: '500' },
-  actionTextPrimary: { fontSize: 11, color: '#FFFFFF', fontWeight: '600' },
   actionTextReviewed: { color: '#16A34A' },
 
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
@@ -317,19 +358,16 @@ const styles = StyleSheet.create({
   photoDelete: { position: 'absolute', top: 2, right: 2 },
   photoAdd: { width: 72, height: 72, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', gap: 4 },
   photoAddText: { fontSize: 10, color: '#9CA3AF' },
-  reviewInput: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8, padding: 12, fontSize: 13, color: '#1C1917', height: 88, textAlignVertical: 'top', marginBottom: 10 },
-  earnHint: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 14 },
-  earnHintText: { fontSize: 12, color: '#92660A', fontWeight: '500' },
+  reviewInput: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8, padding: 12, fontSize: 13, color: '#1C1917', height: 88, textAlignVertical: 'top', marginBottom: 14 },
 
   shareHeader: { alignItems: 'center', gap: 6, marginBottom: 16 },
   shareSub: { fontSize: 13, color: '#6B7280', textAlign: 'center' },
   shareProductRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, backgroundColor: '#F9FAFB', borderRadius: 6, marginBottom: 16 },
   shareProductImg: { width: 48, height: 48, borderRadius: 6, backgroundColor: '#F3F4F6' },
-  shareProductName: { fontSize: 14, fontWeight: '500', color: '#1C1917' },
-  shareProductPrice: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  shareProductName: { fontSize: 14, fontWeight: '500', color: '#1C1917', flex: 1 },
 
   primaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB320', padding: 14, borderRadius: 8, marginBottom: 10 },
-  primaryBtnText: { color: 'white', fontSize: 15, fontWeight: '600' },
+  primaryBtnText: { color: 'white', fontSize: 15, fontWeight: '700' },
   secondaryBtn: { alignItems: 'center', padding: 10 },
   secondaryBtnText: { fontSize: 14, color: '#9CA3AF' },
 });

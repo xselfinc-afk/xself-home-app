@@ -1,151 +1,183 @@
-
 # Xself Design System (Apple Foundation + Home Override)
 
-## 1. Core Philosophy
+IMPORTANT:
+Read this entire file before making any change.
 
-This system uses Apple-level structure (spacing, typography, clarity) but is overridden to match a warm, home-oriented ecommerce experience.
+Execution priority:
+1. Stable Module Protection Rules (highest)
+2. Design & UI rules
+3. Task instructions
 
-- Maintain clean structure and consistency
-- Prioritize product display over visual experimentation
-- Focus on usability and conversion
-- Avoid tech-style minimalism
+If any conflict exists → follow protection rules.
 
 ---
 
-## 2. Xself Home Brand System
+# =========================================================
+# 1. Stable Module Protection Rules (HIGHEST PRIORITY)
+# =========================================================
 
-### Colors
+## Core Constraint
 
-- Background: #F3F1EB (Ivory)
-- Card background: #FFFFFF
-- Primary text: #403F3D (Dark Gray)
+Make minimal, targeted changes.
+Do NOT modify anything outside the task scope.
+
+---
+
+## Forbidden Actions
+
+- Do NOT modify working features
+- Do NOT refactor unrelated files
+- Do NOT optimize unrelated systems
+- Do NOT fix "related issues"
+- Do NOT rewrite stable modules
+
+If a change may affect other systems:
+→ STOP and explain first
+
+If unsure:
+→ ASK, do not guess
+
+---
+
+## Protected Systems — DO NOT TOUCH
+
+### Review System
+- ReviewSection.tsx
+- reviewSubmitter.ts
+- reviewModerator.ts
+- reviewGenerator.ts
+- seedGeneratedReviews.ts
+
+### Recommendation System
+- You May Also Like
+- Frequently Bought Together
+- ProductDetail recommendation logic
+
+### Category System
+- category_label
+- category_priority
+- is_new_arrival
+- new_arrival_source
+
+### Search System
+- SKU search
+- keyword search
+- image search
+- sku_search normalization
+
+---
+
+## Change Rules
+
+- Only modify files directly related to the task
+- Preserve layout, spacing, and behavior
+- Prefer small patches over rewrites
+
+---
+
+## Required Output
+
+After each task:
+
+1. Files changed
+2. Reason for change
+3. What was NOT changed
+4. Confirmation protected systems untouched
+
+---
+
+# =========================================================
+# 2. Design System
+# =========================================================
+
+## Core Philosophy
+
+- Clean, structured layout
+- Product-first design
+- Warm, home-oriented feel
+- Avoid tech/minimal cold UI
+
+---
+
+## Colors
+
+- Background: #F3F1EB
+- Card: #FFFFFF
+- Primary text: #403F3D
 - Secondary text: #6B6A67
-- Accent: #EAB320 (Gold)
-- Secondary accent: #0D5F67 (Teal)
+- Accent: #EAB320
+- Secondary accent: #0D5F67
+
+### Rules
+
+- Use warm tones only
+- Do NOT use #000000
+- Do NOT use #0071e3
+- Avoid high-contrast black/white UI
 
 ---
 
-### Color Rules
+## Typography
 
-- Use Ivory as main app background
-- Use White for product cards
-- Use Dark Gray for text
-- Use Gold for buttons, CTAs, prices
-- Use Teal sparingly for branding
-
-- Do NOT use pure black (#000000)
-- Do NOT use Apple Blue (#0071e3)
-- Do NOT use high-contrast black/white sections
-- Avoid cold or tech-style UI
+- SF Pro Display / Text
+- Weight: 400 / 600
+- Tight spacing
 
 ---
 
-## 3. Typography (Apple-Based)
+## Layout
 
-- SF Pro Display (20px+) / SF Pro Text (<20px)
-- Headline line-height: 1.07–1.14
-- Body line-height: ~1.47
-- Font weights: 400 / 600 only
-- Keep typography tight and clean
-
----
-
-## 4. Layout Rules
-
-### Grid
-- 2-column product grid
+- 2-column grid
 - Image ratio: 4:5
-
-### Spacing
-- Base unit: 8px
-- Card spacing: 12–16px
+- Base spacing: 8px
 - Screen padding: 16px
 
-### Structure
-- Keep layout consistent
-- No unnecessary complexity
-
 ---
 
-## 5. Components
+## Components
 
 ### Product Card
 - White background
 - Radius: 6–8px
 - No borders
 - Minimal shadow
-- Image dominant
-- Title max 2 lines
-- Price clear (can use Gold)
+- Max 2 lines title
 
----
-
-### Buttons
-- Primary: Gold (#EAB320)
-- Clean, simple style
+### Button
+- Gold primary
 - Radius: 8px
 
----
-
-### Bottom Tab Bar
-- Floating (NOT full width)
-- Centered horizontally
+### Tab Bar
+- Floating
+- Centered
 - Must NOT block content
-- Slight transparency allowed
-
----
 
 ### Search Bar
-- Same height everywhere
-- Rounded pill style
+- Consistent height
+- Rounded pill
 - Placeholder: "Search Xself"
 
 ---
 
-## 6. UX Rules
+## UX Rules
 
-- Product images are priority
-- UI must feel warm and home-oriented
-- Support fast scrolling
-- Avoid decorative UI
+- Image-first
+- Fast scroll
+- No decorative UI
 
 ---
 
-## 7. Restrictions (Critical)
+## Interaction Rules
+
+- 1 primary action per screen
+- Max 2 actions per product
+- Hide complexity
+- Show results, not explanations
+
+---
+
+## Hard Restrictions
 
 - Do NOT redesign layout
 - Do NOT change structure
-- Do NOT replace completed UI
-- Only fix issues
-- Make minimal changes only
-
----
-
-## 8. Override Enforcement (VERY IMPORTANT)
-
-- Do NOT use Apple Blue (#0071e3)
-- Do NOT use black-heavy layouts
-- Replace Apple contrast with warm tones
-- Always follow Xself colors over Apple rules
-- Ecommerce usability > visual design
-
----
-
-## 9. Agent Instruction
-
-Always follow:
-
-- Read DESIGN.md first
-- Follow it strictly
-- Keep layout unchanged
-- Do NOT redesign
 - Only fix requested issues
-- Make minimal changes
-
-### Interaction Rules (CRITICAL)
-
-- Each screen must have ONLY one primary action
-- Max 2 actions per product (1 primary, 1 secondary)
-- Do NOT expose system complexity to users
-- Show results (earn/save), not explanations
-- If user needs to think, simplify further

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,137 +7,78 @@ import {
   Image,
   Modal,
   StyleSheet,
+  ActivityIndicator,
   Dimensions,
+  KeyboardAvoidingView,
+  TextInput,
+  Platform,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius } from '../theme';
+import { supabase } from '../lib/supabase';
+import { useAuth } from '../context/AuthContext';
+import { submitReview } from '../services/reviewSubmitter';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
-// ─── Mock data generators ────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const HIGHLIGHT_POOLS = [
-  'Easy to assemble',
-  'Great quality',
-  'Sturdy build',
-  'Looks exactly as pictured',
-  'Fast delivery',
-  'Perfect fit',
-  'Good value',
-  'Beautiful finish',
-  'Very comfortable',
-  'Solid construction',
-];
+type ReviewRow = {
+  id?: string;
+  supplier_product_id: string;
+  rating: number;
+  title: string;
+  body: string;
+  reviewer_name: string;
+  helpful_count: number;
+  verified_purchase: boolean;
+  is_generated: boolean;
+  status: string;
+  display_priority: number;
+  tags: string[] | null;
+  photos?: string[] | null;
+  created_at: string;
+};
 
-const FIRST_NAMES = ['Sarah', 'James', 'Priya', 'Michael', 'Emma', 'Carlos', 'Liu', 'Fatima', 'Noah', 'Olivia'];
-const LAST_INITIALS = ['T.', 'W.', 'R.', 'K.', 'M.', 'B.', 'H.', 'D.', 'L.', 'P.'];
+// ─── Derived summary ──────────────────────────────────────────────────────────
 
-const REVIEW_TITLES = [
-  'Absolutely love it!',
-  'Solid purchase, no regrets',
-  'Exceeded my expectations',
-  'Great for the price',
-  'Would buy again',
-  'Looks even better in person',
-  'Assembly was a breeze',
-  'Perfect for my space',
-  'High quality product',
-  'Highly recommend',
-  'Decent but has minor flaws',
-  'Not what I expected',
-];
+function computeSummary(reviews: ReviewRow[]) {
+  const total = reviews.length;
+  if (total === 0) return null;
 
-const REVIEW_BODIES = [
-  'The quality is outstanding. I was a bit skeptical ordering furniture online but this exceeded all my expectations. The finish is beautiful and it fits perfectly in my living room.',
-  'Assembly took about 45 minutes and the instructions were clear. Everything aligned perfectly. The material feels premium and the color matches the photos exactly.',
-  'I have been searching for the right piece for months. This is exactly what I was looking for. The size is perfect and the build quality is impressive.',
-  'Great value for the money. My guests always comment on how nice it looks. Delivery was fast and the packaging was secure — no damage at all.',
-  'The craftsmanship is really impressive. I love the clean lines and the color is warm and inviting. It blends well with my existing decor.',
-  'Ordered two of these and both arrived in perfect condition. The finish is smooth and consistent. Very happy with this purchase overall.',
-  'This is my second purchase from Xself Home and again I am impressed. The quality control is consistent and the product looks exactly as described.',
-  'I had a minor issue with one component but customer service resolved it immediately. The product itself is beautiful and well made.',
-];
+  const avg = reviews.reduce((s, r) => s + r.rating, 0) / total;
 
-const PHOTO_URLS = [
-  'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=400',
-  'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?w=400',
-  'https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?w=400',
-  'https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=400',
-  'https://images.unsplash.com/photo-1585559700398-1385b3a8aef6?w=400',
-  'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?w=400',
-  'https://images.unsplash.com/photo-1616627451515-cbc80e5ece92?w=400',
-  'https://images.unsplash.com/photo-1600585152220-90363fe7e115?w=400',
-];
+  const breakdown = [5, 4, 3, 2, 1].map(star => ({
+    star,
+    count: reviews.filter(r => r.rating === star).length,
+  }));
 
-function seeded(seed: number, max: number) {
-  return ((seed * 1103515245 + 12345) & 0x7fffffff) % max;
-}
+  const recPct = Math.round((reviews.filter(r => r.rating >= 4).length / total) * 100);
 
-function generateReviews(productId: number, count: number) {
-  const reviews = [];
-  for (let i = 0; i < count; i++) {
-    const s1 = seeded(productId * 100 + i, 10000);
-    const s2 = seeded(s1, 10000);
-    const s3 = seeded(s2, 10000);
-    const s4 = seeded(s3, 10000);
-    const s5 = seeded(s4, 10000);
+  // Flatten all tags from all reviews into a frequency map, take top 4
+  const freq: Record<string, number> = {};
+  reviews.forEach(r => {
+    (r.tags ?? []).forEach(t => { freq[t] = (freq[t] ?? 0) + 1; });
+  });
+  const highlights = Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([tag]) => tag);
 
-    const starRoll = s1 % 10;
-    const stars = starRoll < 2 ? 5 : starRoll < 5 ? 4 : starRoll < 7 ? 5 : starRoll < 9 ? 3 : 4;
-    const daysAgo = (s2 % 180) + 1;
-    const date = new Date(Date.now() - daysAgo * 86400000);
-    const hasPhotos = s3 % 3 === 0;
-    const photoCount = hasPhotos ? (s4 % 2) + 1 : 0;
-    const photos = Array.from({ length: photoCount }, (_, pi) =>
-      PHOTO_URLS[(s4 + pi * 17) % PHOTO_URLS.length]
-    );
-
-    reviews.push({
-      id: `${productId}-${i}`,
-      name: `${FIRST_NAMES[s1 % FIRST_NAMES.length]} ${LAST_INITIALS[s2 % LAST_INITIALS.length]}`,
-      stars,
-      title: REVIEW_TITLES[(s3 % REVIEW_TITLES.length)],
-      body: REVIEW_BODIES[s4 % REVIEW_BODIES.length],
-      date,
-      verified: s5 % 3 !== 0,
-      helpful: s1 % 40,
-      photos,
+  // Customer photos from review rows that have them
+  const customerPhotos: string[] = [];
+  reviews.forEach(r => {
+    (r.photos ?? []).forEach(uri => {
+      if (typeof uri === 'string' && !customerPhotos.includes(uri)) {
+        customerPhotos.push(uri);
+      }
     });
-  }
-  return reviews;
-}
-
-function generateReviewData(product: any) {
-  const id = product.id ?? 1;
-  const totalReviews = product.reviews ?? 24;
-  const avgRating = product.rating ?? 4.3;
-  const count = Math.min(totalReviews, 12);
-
-  const reviews = generateReviews(id, count);
-
-  // Star breakdown
-  const breakdown = [5, 4, 3, 2, 1].map(star => {
-    const s = seeded(id * 7 + star, 10000);
-    const weights = [0.45, 0.30, 0.13, 0.07, 0.05];
-    const base = Math.round(totalReviews * weights[5 - star]);
-    return { star, count: Math.max(0, base + (s % 5) - 2) };
   });
 
-  // Highlights
-  const hlSeed = seeded(id, 10000);
-  const highlights = Array.from({ length: 4 }, (_, i) =>
-    HIGHLIGHT_POOLS[(hlSeed + i * 3) % HIGHLIGHT_POOLS.length]
-  );
+  const allGenerated = reviews.every(r => r.is_generated) || reviews.length < 5;
 
-  // Customer photos (distinct subset)
-  const photoSeed = seeded(id * 13, 10000);
-  const customerPhotos = Array.from({ length: 6 }, (_, i) =>
-    PHOTO_URLS[(photoSeed + i * 2) % PHOTO_URLS.length]
-  );
-
-  const recPct = Math.round(60 + (seeded(id, 40)));
-
-  return { reviews, breakdown, highlights, customerPhotos, avgRating, totalReviews, recPct };
+  return { avg, breakdown, recPct, highlights, customerPhotos, total, allGenerated };
 }
 
 // ─── Star renderer ────────────────────────────────────────────────────────────
@@ -159,28 +100,138 @@ function Stars({ value, size = 13 }: { value: number; size?: number }) {
 const SORT_OPTIONS = ['Most Recent', 'Highest Rating', 'Lowest Rating', 'Most Helpful'] as const;
 type SortOption = typeof SORT_OPTIONS[number];
 
-function sortReviews(reviews: any[], sort: SortOption) {
-  const copy = [...reviews];
-  if (sort === 'Most Recent') copy.sort((a, b) => b.date - a.date);
-  else if (sort === 'Highest Rating') copy.sort((a, b) => b.stars - a.stars);
-  else if (sort === 'Lowest Rating') copy.sort((a, b) => a.stars - b.stars);
-  else copy.sort((a, b) => b.helpful - a.helpful);
-  return copy;
+// Tier: verified real (0) → unverified real (1) → generated (2)
+function reviewTier(r: ReviewRow): number {
+  if (r.is_generated) return 2;
+  return r.verified_purchase ? 0 : 1;
+}
+
+function sortReviews(reviews: ReviewRow[], sort: SortOption): ReviewRow[] {
+  return [...reviews].sort((a, b) => {
+    // Real reviews always before generated, verified real before unverified
+    const tierDiff = reviewTier(a) - reviewTier(b);
+    if (tierDiff !== 0) return tierDiff;
+    // Within the same tier, apply the chosen sort
+    if (sort === 'Most Recent') return b.created_at.localeCompare(a.created_at);
+    if (sort === 'Highest Rating') return b.rating - a.rating;
+    if (sort === 'Lowest Rating') return a.rating - b.rating;
+    return b.helpful_count - a.helpful_count; // Most Helpful
+  });
+}
+
+// ─── Generated review cap ────────────────────────────────────────────────────
+//
+// Controls how many generated reviews are exposed based on real review count:
+//   0–2 real  → all generated visible
+//   3–4 real  → max 2 generated appended after real reviews
+//   5+  real  → generated hidden entirely
+
+function applyGeneratedCap(sorted: ReviewRow[], realCount: number): ReviewRow[] {
+  if (realCount < 3) {
+    // 0–2 real reviews: show generated, max 5
+    let seen = 0;
+    return sorted.filter(r => {
+      if (!r.is_generated) return true;
+      seen++;
+      return seen <= 5;
+    });
+  }
+  if (realCount < 5) {
+    // 3–4 real reviews: max 2 generated
+    let seen = 0;
+    return sorted.filter(r => {
+      if (!r.is_generated) return true;
+      seen++;
+      return seen <= 2;
+    });
+  }
+  // 5+ real reviews: hide all generated
+  return sorted.filter(r => !r.is_generated);
 }
 
 // ─── ReviewSection ────────────────────────────────────────────────────────────
 
 export default function ReviewSection({ product }: { product: any }) {
-  const data = useMemo(() => generateReviewData(product), [product.id]);
+  const { user } = useAuth();
+
+  const [reviews, setReviews] = useState<ReviewRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
   const [sort, setSort] = useState<SortOption>('Most Recent');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [lightboxUri, setLightboxUri] = useState<string | null>(null);
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [showAllReviews, setShowAllReviews] = useState(false);
 
-  const sorted = useMemo(() => sortReviews(data.reviews, sort), [data.reviews, sort]);
-  const maxCount = Math.max(...data.breakdown.map(b => b.count), 1);
-  const visibleReviews = showAllReviews ? sorted : sorted.slice(0, 2);
+  // Write-review modal state
+  const [showWriteModal, setShowWriteModal] = useState(false);
+  const [writeRating, setWriteRating] = useState(5);
+  const [writeTitle, setWriteTitle] = useState('');
+  const [writeBody, setWriteBody] = useState('');
+  const [writeName, setWriteName] = useState('');
+  const [writeSubmitting, setWriteSubmitting] = useState(false);
+  const [writeResult, setWriteResult] = useState<string | null>(null);
+  const [writeResultType, setWriteResultType] = useState<'success' | 'info' | 'error' | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setReviews([]);
+
+    console.log('[ReviewSection] product.id:', product.id);
+    console.log('[ReviewSection] query supplier_product_id:', product.id);
+
+    supabase
+      .from('product_reviews')
+      .select('*')
+      .eq('supplier_product_id', product.id)
+      .eq('status', 'active')
+      .order('display_priority', { ascending: true })
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (!active) return;
+        console.log('[ReviewSection] rows:', data?.length ?? 0);
+        console.log('[ReviewSection] error:', error ?? null);
+        console.log('[ReviewSection] first row:', data?.[0] ?? null);
+        if (error) {
+          setReviews([]);
+        } else {
+          setReviews((data as ReviewRow[]) ?? []);
+        }
+        setLoading(false);
+      });
+
+    return () => { active = false; };
+  }, [product.id, refreshKey]);
+
+  const summary = useMemo(() => computeSummary(reviews), [reviews]);
+  const realCount = useMemo(() => reviews.filter(r => !r.is_generated).length, [reviews]);
+  const generatedCount = useMemo(() => reviews.filter(r => r.is_generated).length, [reviews]);
+  const sorted = useMemo(() => sortReviews(reviews, sort), [reviews, sort]);
+  const capped = useMemo(() => applyGeneratedCap(sorted, realCount), [sorted, realCount]);
+  const visibleReviews = showAllReviews ? capped : capped.slice(0, 2);
+
+  useEffect(() => {
+    if (loading) return;
+    console.log('[Review] real count:', realCount);
+    console.log('[Review] generated count:', generatedCount);
+    console.log('[Review] final visible count:', capped.length);
+  }, [loading, realCount, generatedCount, capped.length]);
+  const maxBarCount = useMemo(() => Math.max(...(summary?.breakdown.map(b => b.count) ?? [1]), 1), [summary]);
+
+  // Animate distribution bars when summary loads/changes
+  const barAnims = useRef([0, 1, 2, 3, 4].map(() => new Animated.Value(0))).current;
+  useEffect(() => {
+    if (!summary) return;
+    Animated.stagger(50, summary.breakdown.map(({ count }, i) =>
+      Animated.timing(barAnims[i], {
+        toValue: maxBarCount > 0 ? (count / maxBarCount) * 100 : 0,
+        duration: 500,
+        useNativeDriver: false,
+      }),
+    )).start();
+  }, [summary]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
@@ -190,61 +241,269 @@ export default function ReviewSection({ product }: { product: any }) {
     });
   };
 
+  // ── Write-review handlers ─────────────────────────────────────────────────────
+
+  function openWriteModal() {
+    setWriteRating(5);
+    setWriteTitle('');
+    setWriteBody('');
+    setWriteName(user?.displayName ?? '');
+    setWriteResult(null);
+    setWriteResultType(null);
+    setShowWriteModal(true);
+  }
+
+  async function handleSubmitReview() {
+    if (writeSubmitting) return;
+    setWriteSubmitting(true);
+    setWriteResult(null);
+    setWriteResultType(null);
+
+    const result = await submitReview({
+      supplierProductId: product.id,
+      rating: writeRating,
+      title: writeTitle,
+      body: writeBody,
+      reviewerName: writeName.trim() || 'Anonymous',
+      userId: user?.id ?? null,
+    });
+
+    console.log('[ReviewSubmit] result:', result.ok ? 'ok' : 'fail');
+    console.log('[ReviewSubmit] status:', result.savedStatus ?? 'error');
+
+    if (result.ok) {
+      // Approved: show success, close after 2s, trigger refresh
+      setWriteResult(result.userMessage);
+      setWriteResultType('success');
+      setWriteSubmitting(false);
+      setTimeout(() => {
+        setShowWriteModal(false);
+        setWriteResult(null);
+        setWriteResultType(null);
+        setRefreshKey(k => k + 1);
+      }, 2000);
+    } else if (result.savedStatus === 'hidden') {
+      // Pending: show pending message, close after 2s, no refresh
+      setWriteResult(result.userMessage);
+      setWriteResultType('info');
+      setWriteSubmitting(false);
+      setTimeout(() => {
+        setShowWriteModal(false);
+        setWriteResult(null);
+        setWriteResultType(null);
+      }, 2000);
+    } else {
+      // Error: show error, keep modal open
+      setWriteResult(result.userMessage);
+      setWriteResultType('error');
+      setWriteSubmitting(false);
+    }
+  }
+
+  // ── Write-review modal ────────────────────────────────────────────────────────
+
+  const writeReviewModal = (
+    <Modal
+      visible={showWriteModal}
+      transparent
+      animationType="slide"
+      onRequestClose={() => { if (!writeSubmitting) setShowWriteModal(false); }}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <TouchableOpacity
+          style={StyleSheet.absoluteFillObject}
+          activeOpacity={1}
+          onPress={() => { if (!writeSubmitting) setShowWriteModal(false); }}
+        />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalTitle}>Write a Review</Text>
+              <Text style={styles.modalSubtitle}>Share your experience to help others decide</Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowWriteModal(false)} disabled={writeSubmitting}>
+              <Ionicons name="close" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.modalLabel}>Your Rating</Text>
+          <View style={styles.starPicker}>
+            {[1, 2, 3, 4, 5].map(s => (
+              <TouchableOpacity key={s} onPress={() => setWriteRating(s)} disabled={writeSubmitting}>
+                <Text style={{ fontSize: 34, color: s <= writeRating ? colors.star : colors.border }}>★</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.modalLabel}>Review Title</Text>
+          <TextInput
+            style={styles.modalInput}
+            placeholder="e.g. Great extra storage for the kitchen"
+            placeholderTextColor={colors.textTertiary}
+            value={writeTitle}
+            onChangeText={setWriteTitle}
+            maxLength={80}
+            editable={!writeSubmitting}
+          />
+
+          <Text style={styles.modalLabel}>Your Review</Text>
+          <TextInput
+            style={[styles.modalInput, styles.modalTextarea]}
+            placeholder="What do you like about it? How does it fit in your space?"
+            placeholderTextColor={colors.textTertiary}
+            value={writeBody}
+            onChangeText={setWriteBody}
+            multiline
+            maxLength={1000}
+            editable={!writeSubmitting}
+          />
+
+          <Text style={styles.modalLabel}>Your Name</Text>
+          <TextInput
+            style={styles.modalInput}
+            placeholder="Your name (optional)"
+            placeholderTextColor={colors.textTertiary}
+            value={writeName}
+            onChangeText={setWriteName}
+            maxLength={40}
+            editable={!writeSubmitting}
+          />
+
+          {writeResult !== null && (
+            <Text style={[
+              styles.writeResult,
+              writeResultType === 'success' ? styles.writeResultSuccess : styles.writeResultInfo,
+            ]}>
+              {writeResult}
+            </Text>
+          )}
+
+          {(() => {
+            const canSubmit = writeRating > 0 && writeBody.trim().length >= 10 && !writeSubmitting;
+            return (
+              <TouchableOpacity
+                style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
+                onPress={handleSubmitReview}
+                disabled={!canSubmit}
+              >
+                <Text style={styles.submitBtnText}>
+                  {writeSubmitting ? 'Submitting…' : 'Submit Review'}
+                </Text>
+              </TouchableOpacity>
+            );
+          })()}
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+
+  // ── Loading ──────────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <View style={[styles.section, styles.centered]}>
+        <ActivityIndicator size="small" color={colors.amber} />
+        <Text style={styles.stateText}>Loading reviews…</Text>
+      </View>
+    );
+  }
+
+  // ── Empty state ──────────────────────────────────────────────────────────────
+
+  if (reviews.length === 0) {
+    return (
+      <View style={[styles.section, styles.centered]}>
+        <Ionicons name="chatbubble-outline" size={28} color={colors.border} />
+        <Text style={styles.stateText}>Be the first to share your experience</Text>
+        <TouchableOpacity style={styles.writeReviewBtn} onPress={openWriteModal}>
+          <Ionicons name="create-outline" size={14} color={colors.amber} />
+          <Text style={styles.writeReviewBtnText}>Write a Review</Text>
+        </TouchableOpacity>
+        {writeReviewModal}
+      </View>
+    );
+  }
+
+  // ── Populated ────────────────────────────────────────────────────────────────
+
   return (
     <View style={styles.section}>
       {/* Section header */}
-      <Text style={styles.sectionTitle}>Customer Reviews</Text>
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionTitle}>Customer Reviews</Text>
+        <TouchableOpacity style={styles.writeReviewBtn} onPress={openWriteModal}>
+          <Ionicons name="create-outline" size={14} color={colors.amber} />
+          <Text style={styles.writeReviewBtnText}>Write a Review</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Summary */}
-      <View style={styles.summaryRow}>
-        <View style={styles.summaryLeft}>
-          <Text style={styles.bigRating}>{data.avgRating.toFixed(1)}</Text>
-          <Stars value={data.avgRating} size={18} />
-          <Text style={styles.totalReviews}>{data.totalReviews} reviews</Text>
-        </View>
-        <View style={styles.summaryRight}>
-          {data.breakdown.map(({ star, count }) => (
-            <View key={star} style={styles.barRow}>
-              <Text style={styles.barLabel}>{star}★</Text>
-              <View style={styles.barTrack}>
-                <View style={[styles.barFill, { width: `${(count / maxCount) * 100}%` }]} />
-              </View>
-              <Text style={styles.barCount}>{count}</Text>
+      {summary && (
+        <>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryLeft}>
+              <Text style={styles.bigRating}>{summary.avg.toFixed(1)}</Text>
+              <Stars value={summary.avg} size={18} />
+              <Text style={styles.totalReviews}>out of 5 · {summary.total} reviews</Text>
             </View>
-          ))}
-        </View>
-      </View>
-
-      {/* Recommendation */}
-      <View style={styles.recRow}>
-        <Ionicons name="checkmark-circle" size={15} color={colors.amber} />
-        <Text style={styles.recText}>{data.recPct}% of customers recommend this product</Text>
-      </View>
-
-      {/* Top highlights */}
-      <View style={styles.highlightsRow}>
-        {data.highlights.map(tag => (
-          <View key={tag} style={styles.highlightPill}>
-            <Text style={styles.highlightText}>{tag}</Text>
+            <View style={styles.summaryRight}>
+              {summary.breakdown.map(({ star, count }, i) => (
+                <View key={star} style={styles.barRow}>
+                  <Text style={styles.barLabel}>{star}★</Text>
+                  <View style={styles.barTrack}>
+                    <Animated.View style={[styles.barFill, {
+                      width: barAnims[i].interpolate({ inputRange: [0, 100], outputRange: ['0%', '100%'] }),
+                    }]} />
+                  </View>
+                  <Text style={styles.barCount}>{count}</Text>
+                </View>
+              ))}
+            </View>
           </View>
-        ))}
-      </View>
 
-      {/* Customer photos */}
-      <View style={styles.photoHeader}>
-        <Text style={styles.subLabel}>Customer Photos</Text>
-      </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.photoList}
-      >
-        {data.customerPhotos.map((uri, i) => (
-          <TouchableOpacity key={i} onPress={() => setLightboxUri(uri)} activeOpacity={0.85}>
-            <Image source={{ uri }} style={styles.photoThumb} />
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+          {/* Recommendation — hidden when all reviews are seeded/generated */}
+          {!summary.allGenerated && (
+            <View style={styles.recRow}>
+              <Ionicons name="checkmark-circle" size={15} color={colors.amber} />
+              <Text style={styles.recText}>Based on customer feedback</Text>
+            </View>
+          )}
+
+          {/* Top highlights (tags) */}
+          {summary.highlights.length > 0 && (
+            <View style={styles.highlightsRow}>
+              {summary.highlights.map(tag => (
+                <View key={tag} style={styles.highlightPill}>
+                  <Text style={styles.highlightText}>{tag}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Customer photos — only shown when reviews have photo URLs */}
+          {summary.customerPhotos.length > 0 && (
+            <>
+              <View style={styles.photoHeader}>
+                <Text style={styles.subLabel}>Customer Photos</Text>
+              </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.photoList}
+              >
+                {summary.customerPhotos.map((uri, i) => (
+                  <TouchableOpacity key={i} onPress={() => setLightboxUri(uri)} activeOpacity={0.85}>
+                    <Image source={{ uri }} style={styles.photoThumb} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </>
+          )}
+        </>
+      )}
 
       {/* Sort row */}
       <View style={styles.sortRow}>
@@ -256,49 +515,61 @@ export default function ReviewSection({ product }: { product: any }) {
       </View>
 
       {/* Reviews list */}
-      {visibleReviews.map(review => {
-        const expanded = expandedIds.has(review.id);
+      {visibleReviews.map((review, idx) => {
+        const rowId = review.id ?? `${review.supplier_product_id}-${idx}`;
+        const expanded = expandedIds.has(rowId);
         const long = review.body.length > 120;
+        const reviewDate = new Date(review.created_at);
+        const photos = review.photos ?? [];
+
         return (
-          <View key={review.id} style={styles.reviewCard}>
+          <View key={rowId} style={[styles.reviewCard, review.is_generated && styles.reviewCardGenerated]}>
             <View style={styles.reviewHeader}>
               <View style={styles.reviewerInfo}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarLetter}>{review.name[0]}</Text>
+                  <Text style={styles.avatarLetter}>{review.reviewer_name[0]}</Text>
                 </View>
                 <View>
-                  <Text style={styles.reviewerName}>{review.name}</Text>
+                  <Text style={styles.reviewerName}>{review.reviewer_name}</Text>
                   <Text style={styles.reviewDate}>
-                    {review.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {reviewDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </Text>
                 </View>
               </View>
-              {review.verified && (
-                <View style={styles.verifiedBadge}>
+              {review.is_generated ? (
+                <View style={styles.sourceBadgeGenerated}>
+                  <Text style={styles.sourceBadgeGeneratedText}>Early Review</Text>
+                </View>
+              ) : review.verified_purchase ? (
+                <View style={styles.sourceBadgeVerified}>
                   <Ionicons name="checkmark-circle" size={11} color="#CA8A04" />
-                  <Text style={styles.verifiedText}>Verified</Text>
+                  <Text style={styles.sourceBadgeVerifiedText}>Verified Purchase</Text>
+                </View>
+              ) : (
+                <View style={styles.sourceBadgeReal}>
+                  <Text style={styles.sourceBadgeRealText}>Customer Review</Text>
                 </View>
               )}
             </View>
 
-            <Stars value={review.stars} size={12} />
+            <Stars value={review.rating} size={12} />
             <Text style={styles.reviewTitle}>{review.title}</Text>
             <Text style={styles.reviewBody} numberOfLines={expanded || !long ? undefined : 3}>
               {review.body}
             </Text>
             {long && (
-              <TouchableOpacity onPress={() => toggleExpand(review.id)}>
+              <TouchableOpacity onPress={() => toggleExpand(rowId)}>
                 <Text style={styles.readMore}>{expanded ? 'Show less' : 'Read more'}</Text>
               </TouchableOpacity>
             )}
 
-            {review.photos.length > 0 && (
+            {photos.length > 0 && (
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ gap: spacing.sm, marginTop: spacing.sm }}
               >
-                {review.photos.map((uri: string, pi: number) => (
+                {photos.map((uri: string, pi: number) => (
                   <TouchableOpacity key={pi} onPress={() => setLightboxUri(uri)} activeOpacity={0.85}>
                     <Image source={{ uri }} style={styles.reviewPhoto} />
                   </TouchableOpacity>
@@ -307,22 +578,27 @@ export default function ReviewSection({ product }: { product: any }) {
             )}
 
             <View style={styles.helpfulRow}>
-              <Ionicons name="thumbs-up-outline" size={12} color={colors.textTertiary} />
-              <Text style={styles.helpfulText}>Helpful ({review.helpful})</Text>
+              <Text style={styles.helpfulText}>👍 Helpful ({review.helpful_count})</Text>
             </View>
           </View>
         );
       })}
 
       {/* Show all reviews */}
-      {sorted.length > 2 && (
+      {capped.length > 2 && (
         <TouchableOpacity style={styles.showMoreBtn} onPress={() => setShowAllReviews(v => !v)}>
           <Text style={styles.showMoreText}>
-            {showAllReviews ? 'Show Less' : `Show All Reviews (${sorted.length})`}
+            {showAllReviews ? 'Show Less' : `Show All Reviews (${capped.length})`}
           </Text>
           <Ionicons name={showAllReviews ? 'chevron-up' : 'chevron-down'} size={14} color={colors.amber} />
         </TouchableOpacity>
       )}
+
+      {/* Trust signal */}
+      <Text style={styles.trustSignal}>Reviews are from verified customers and early feedback</Text>
+
+      {/* Write-review modal */}
+      {writeReviewModal}
 
       {/* Sort menu modal */}
       <Modal
@@ -384,11 +660,19 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xl,
     paddingBottom: spacing.lg,
   },
+  centered: {
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.xl,
+  },
+  stateText: {
+    fontSize: 13,
+    color: colors.textTertiary,
+  },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: colors.textPrimary,
-    marginBottom: spacing.lg,
   },
 
   // Summary
@@ -468,16 +752,16 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   highlightPill: {
-    backgroundColor: '#FEF9EC',
+    backgroundColor: '#FAFAFA',
     borderWidth: 1,
-    borderColor: '#F5D97A',
+    borderColor: '#E5E7EB',
     borderRadius: radius.full,
     paddingHorizontal: 12,
     paddingVertical: 5,
   },
   highlightText: {
     fontSize: 12,
-    color: '#92660A',
+    color: colors.textSecondary,
     fontWeight: '500',
   },
 
@@ -587,7 +871,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textTertiary,
   },
-  verifiedBadge: {
+  // Review card — generated variant
+  reviewCardGenerated: {
+    opacity: 0.92,
+  },
+
+  // Trust signal
+  trustSignal: {
+    fontSize: 11,
+    color: colors.textTertiary,
+    textAlign: 'center',
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+    lineHeight: 16,
+  },
+
+  // Modal subtitle
+  modalSubtitle: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    marginTop: 2,
+  },
+
+  // Source badges
+  sourceBadgeVerified: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
@@ -596,10 +903,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
     paddingVertical: 3,
   },
-  verifiedText: {
+  sourceBadgeVerifiedText: {
     fontSize: 10,
     color: '#92660A',
     fontWeight: '500',
+  },
+  sourceBadgeReal: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  sourceBadgeRealText: {
+    fontSize: 10,
+    color: colors.textTertiary,
+    fontWeight: '400',
+  },
+  sourceBadgeGenerated: {
+    borderRadius: radius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  sourceBadgeGeneratedText: {
+    fontSize: 10,
+    color: colors.borderFaint,
+    fontWeight: '400',
   },
   reviewTitle: {
     fontSize: 13,
@@ -662,7 +991,7 @@ const styles = StyleSheet.create({
   },
   sortMenu: {
     backgroundColor: colors.surface,
-    borderRadius: 12,
+    borderRadius: 8,
     padding: spacing.lg,
     width: 240,
   },
@@ -687,6 +1016,109 @@ const styles = StyleSheet.create({
   sortMenuTextActive: {
     color: colors.amber,
     fontWeight: '600',
+  },
+
+  // Section header row
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.lg,
+  },
+
+  // Write a Review CTA button
+  writeReviewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: colors.amber,
+    borderRadius: radius.full,
+  },
+  writeReviewBtnText: {
+    fontSize: 12,
+    color: colors.amber,
+    fontWeight: '600',
+  },
+
+  // Write-review modal
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  modalSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: spacing.lg,
+    paddingBottom: 36,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.lg,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  modalLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginBottom: 6,
+    marginTop: spacing.md,
+  },
+  starPicker: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: spacing.sm,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    color: colors.textPrimary,
+    backgroundColor: colors.canvas,
+  },
+  modalTextarea: {
+    height: 90,
+    textAlignVertical: 'top',
+  },
+  writeResult: {
+    fontSize: 13,
+    marginTop: spacing.md,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  writeResultSuccess: {
+    color: '#16a34a',
+  },
+  writeResultInfo: {
+    color: colors.textSecondary,
+  },
+  submitBtn: {
+    marginTop: spacing.lg,
+    backgroundColor: colors.amber,
+    borderRadius: 8,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  submitBtnDisabled: {
+    opacity: 0.5,
+  },
+  submitBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
 
   // Lightbox

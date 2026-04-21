@@ -2,6 +2,7 @@
   "expo": {
     "name": "Xself Home",
     "slug": "xself-home",
+    "scheme": "xselfhome",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -9,7 +10,7 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1C1917"
+      "backgroundColor": "#F9F8F6"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -21,7 +22,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#1C1917"
+        "backgroundColor": "#0F5C5E"
       },
       "package": "com.xself.home"
     },
@@ -40,7 +41,8 @@
           "photosPermission": "Allow Xself Home to access your photos to search similar products.",
           "cameraPermission": "Allow Xself Home to use your camera to search similar products."
         }
-      ]
+      ],
+      "expo-secure-store"
     ]
   }
 }

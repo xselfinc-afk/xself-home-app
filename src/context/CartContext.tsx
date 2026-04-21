@@ -1,47 +1,38 @@
-import React, { createContext, useContext, useReducer } from 'react';
-import { Product } from '../data/products';
+import React, { createContext, useContext, useReducer, useState } from 'react';
 
 export interface CartItem {
-  id: number;
+  sku: string;
+  productId: string;
   name: string;
   price: number;
   img: string;
   qty: number;
+  color: string;
+  size: string;
 }
 
 type CartAction =
-  | { type: 'ADD_ITEM'; product: Product; qty: number }
-  | { type: 'REMOVE_ITEM'; id: number }
-  | { type: 'UPDATE_QTY'; id: number; qty: number };
+  | { type: 'ADD_ITEM'; item: Omit<CartItem, 'qty'>; qty: number }
+  | { type: 'REMOVE_ITEM'; sku: string }
+  | { type: 'UPDATE_QTY'; sku: string; qty: number };
 
 function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
   switch (action.type) {
     case 'ADD_ITEM': {
-      const existing = state.find(item => item.id === action.product.id);
+      const existing = state.find(i => i.sku === action.item.sku);
       if (existing) {
-        return state.map(item =>
-          item.id === action.product.id
-            ? { ...item, qty: item.qty + action.qty }
-            : item
+        return state.map(i =>
+          i.sku === action.item.sku ? { ...i, qty: i.qty + action.qty } : i
         );
       }
-      return [
-        ...state,
-        {
-          id: action.product.id,
-          name: action.product.name,
-          price: action.product.price,
-          img: action.product.img,
-          qty: action.qty,
-        },
-      ];
+      return [...state, { ...action.item, qty: action.qty }];
     }
     case 'REMOVE_ITEM':
-      return state.filter(item => item.id !== action.id);
+      return state.filter(i => i.sku !== action.sku);
     case 'UPDATE_QTY':
-      if (action.qty <= 0) return state.filter(item => item.id !== action.id);
-      return state.map(item =>
-        item.id === action.id ? { ...item, qty: action.qty } : item
+      if (action.qty <= 0) return state.filter(i => i.sku !== action.sku);
+      return state.map(i =>
+        i.sku === action.sku ? { ...i, qty: action.qty } : i
       );
     default:
       return state;
@@ -51,29 +42,38 @@ function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
 interface CartContextValue {
   cart: CartItem[];
   totalItems: number;
-  addItem: (product: Product, qty: number) => void;
-  removeItem: (id: number) => void;
-  updateQty: (id: number, qty: number) => void;
+  /** Increments on every successful add — use to drive badge bounce animation */
+  badgeVersion: number;
+  /** Timestamp (ms) when the current cart reservation expires — resets to +10min on every add */
+  reserveExpiry: number | null;
+  addItem: (item: Omit<CartItem, 'qty'>, qty: number) => void;
+  removeItem: (sku: string) => void;
+  updateQty: (sku: string, qty: number) => void;
 }
 
 const CartContext = createContext<CartContextValue | null>(null);
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [cart, dispatch] = useReducer(cartReducer, []);
+  const [badgeVersion, setBadgeVersion] = useState(0);
+  const [reserveExpiry, setReserveExpiry] = useState<number | null>(null);
 
-  const addItem = (product: Product, qty: number) =>
-    dispatch({ type: 'ADD_ITEM', product, qty });
+  const addItem = (item: Omit<CartItem, 'qty'>, qty: number) => {
+    dispatch({ type: 'ADD_ITEM', item, qty });
+    setBadgeVersion(v => v + 1);
+    setReserveExpiry(Date.now() + 10 * 60 * 1000);
+  };
 
-  const removeItem = (id: number) =>
-    dispatch({ type: 'REMOVE_ITEM', id });
+  const removeItem = (sku: string) =>
+    dispatch({ type: 'REMOVE_ITEM', sku });
 
-  const updateQty = (id: number, qty: number) =>
-    dispatch({ type: 'UPDATE_QTY', id, qty });
+  const updateQty = (sku: string, qty: number) =>
+    dispatch({ type: 'UPDATE_QTY', sku, qty });
 
   const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
 
   return (
-    <CartContext.Provider value={{ cart, totalItems, addItem, removeItem, updateQty }}>
+    <CartContext.Provider value={{ cart, totalItems, badgeVersion, reserveExpiry, addItem, removeItem, updateQty }}>
       {children}
     </CartContext.Provider>
   );
@@ -81,6 +81,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
 export function useCart(): CartContextValue {
   const ctx = useContext(CartContext);
-  if (!ctx) throw new Error('useCart must be used inside CartProvider');
+  if (!ctx) throw new Error('useCart must be inside CartProvider');
   return ctx;
 }

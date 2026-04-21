@@ -1,21 +1,30 @@
-import React, { useState } from 'react';
+/**
+ * Source of truth: /NORMALIZATION_ENGINE.md
+ * All product title, features, description, specifications, image, and family logic must follow this file.
+ * Do NOT add UI-side cleaning or formatting logic.
+ */
+
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  Image,
   StyleSheet,
   ScrollView,
   Modal,
-  Switch,
   Dimensions,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { products } from '../data/products';
+import { PRODUCT_CATEGORIES, matchesCategory, normalizeForSkuMatch, matchesSearch } from '../data/categories';
+import { supabase } from '../lib/supabase';
+import { CategoryPillRow } from '../components/CategoryPillRow';
+import { adaptStandardizedRow } from '../services/detailProductAdapter';
+import type { Product } from '../data/products';
+import DiscoverCard from '../components/DiscoverCard';
 
-const HEIGHTS = [220, 320];
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 const SORT_OPTIONS = [
@@ -39,106 +48,104 @@ const CATEGORY_OPTIONS = [
   'Bathroom Cabinet',
 ];
 
-const COLOR_OPTIONS = [
-  'Black',
-  'White',
-  'Walnut',
-  'Oak',
-  'Rustic Brown',
-  'Gray',
-  'Gold',
-  'Beige',
-  'Natural Wood',
-];
-
-const MATERIAL_OPTIONS = [
-  'Wood',
-  'MDF',
-  'Metal',
-  'Glass',
-  'Upholstered',
-  'Engineered Wood',
-];
-
-const ROOM_OPTIONS = [
-  'Living Room',
-  'Bedroom',
-  'Dining Room',
-  'Entryway',
-  'Bathroom',
-  'Office',
-];
-
-export default function DiscoverScreen({ navigation }) {
+export default function DiscoverScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
-  const [search, setSearch] = useState('');
 
-  // Filter panel state
+  const [search, setSearch] = useState('');
+  const [products, setProducts] = useState<Product[]>([]);
   const [filterVisible, setFilterVisible] = useState(false);
   const [sortBy, setSortBy] = useState('Recommended');
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [selectedColors, setSelectedColors] = useState<string[]>([]);
-  const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
-  const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
-  const [inStockOnly, setInStockOnly] = useState(false);
-  const [pickupAvailable, setPickupAvailable] = useState(false);
-  const [localDelivery, setLocalDelivery] = useState(false);
 
-  // Pending state (used inside modal before Apply)
   const [pendingSortBy, setPendingSortBy] = useState('Recommended');
   const [pendingCategories, setPendingCategories] = useState<string[]>([]);
-  const [pendingColors, setPendingColors] = useState<string[]>([]);
-  const [pendingMaterials, setPendingMaterials] = useState<string[]>([]);
-  const [pendingRooms, setPendingRooms] = useState<string[]>([]);
-  const [pendingInStock, setPendingInStock] = useState(false);
-  const [pendingPickup, setPendingPickup] = useState(false);
-  const [pendingLocalDelivery, setPendingLocalDelivery] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadProducts() {
+      const { data, error } = await supabase
+        .from('standardized_products')
+        .select(
+          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'key_features_json, specifications_json, sku_custom, sku_search, ' +
+          'category_code, scene_code, color, color_options_json, ' +
+          'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
+          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival',
+        )
+        .eq('normalization_status', 'done')
+        .order('created_at', { ascending: false });
+
+      console.log('[Discover] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
+      if (data?.[0]) console.log('[Discover] first raw row:', JSON.stringify(data[0]).slice(0, 300));
+
+      if (error) {
+        console.log('[DiscoverScreen] load products error:', error.message);
+        return;
+      }
+
+      if (!active || !data) return;
+
+      const mapped: Product[] = (data as any[]).flatMap((r: any) => {
+        try {
+          return [adaptStandardizedRow(r)];
+        } catch (e) {
+          console.warn('[Discover] adaptStandardizedRow failed for row', r?.supplier_product_id, e);
+          return [];
+        }
+      });
+
+      console.log('[Discover] mapped count:', mapped.length);
+      if (mapped[0]) console.log('[Discover] first mapped item:', { id: mapped[0].id, name: mapped[0].name, images: mapped[0].images.length, category: mapped[0].category });
+
+      // Deduplicate by product_family_key — keep first row with a valid image per family.
+      // Same-style different-color products collapse to one card; no DB rows are removed.
+      const familySeen = new Map<string, { id: string; hasImage: boolean }>();
+      (data as any[]).forEach((r: any) => {
+        const key: string = r.product_family_key || r.supplier_product_id;
+        const hasImage = !!r.primary_image;
+        const existing = familySeen.get(key);
+        if (!existing || (!existing.hasImage && hasImage)) {
+          familySeen.set(key, { id: r.supplier_product_id, hasImage });
+        }
+      });
+      const representativeIds = new Set([...familySeen.values()].map(v => v.id));
+      const deduped = mapped.filter(p => representativeIds.has(p.id));
+
+      const first10FamilyKeys = [...familySeen.keys()].slice(0, 10);
+      console.log('[Discover] after dedup:', deduped.length, 'families from', mapped.length, 'rows');
+      console.log('[Discover] first 10 family keys:', first10FamilyKeys);
+      console.log('[Discover] passing', deduped.length, 'rows to list renderer');
+      setProducts(deduped);
+    }
+
+    loadProducts();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const activeFilterCount = [
     sortBy !== 'Recommended' ? 1 : 0,
     selectedCategories.length,
-    selectedColors.length,
-    selectedMaterials.length,
-    selectedRooms.length,
-    inStockOnly ? 1 : 0,
-    pickupAvailable ? 1 : 0,
-    localDelivery ? 1 : 0,
   ].reduce((a, b) => a + b, 0);
 
   const openFilter = () => {
-    // Sync pending state with current applied state
     setPendingSortBy(sortBy);
     setPendingCategories([...selectedCategories]);
-    setPendingColors([...selectedColors]);
-    setPendingMaterials([...selectedMaterials]);
-    setPendingRooms([...selectedRooms]);
-    setPendingInStock(inStockOnly);
-    setPendingPickup(pickupAvailable);
-    setPendingLocalDelivery(localDelivery);
     setFilterVisible(true);
   };
 
   const applyFilters = () => {
     setSortBy(pendingSortBy);
     setSelectedCategories(pendingCategories);
-    setSelectedColors(pendingColors);
-    setSelectedMaterials(pendingMaterials);
-    setSelectedRooms(pendingRooms);
-    setInStockOnly(pendingInStock);
-    setPickupAvailable(pendingPickup);
-    setLocalDelivery(pendingLocalDelivery);
     setFilterVisible(false);
   };
 
   const resetFilters = () => {
     setPendingSortBy('Recommended');
     setPendingCategories([]);
-    setPendingColors([]);
-    setPendingMaterials([]);
-    setPendingRooms([]);
-    setPendingInStock(false);
-    setPendingPickup(false);
-    setPendingLocalDelivery(false);
   };
 
   const togglePendingChip = (
@@ -153,34 +160,39 @@ export default function DiscoverScreen({ navigation }) {
     }
   };
 
-  // Apply search filter
-  let filtered = products.filter(
-    p => p.img && (!search || p.name.toLowerCase().includes(search.toLowerCase())),
-  );
+  let filtered = products.filter(p => {
+    if (!search) return true;
+    return matchesSearch(p, search);
+  });
 
-  // Apply category filter (product.category exists)
   if (selectedCategories.length > 0) {
     filtered = filtered.filter(p =>
-      selectedCategories.some(
-        c => p.category && p.category.toLowerCase().includes(c.toLowerCase()),
-      ),
+      selectedCategories.some(c => matchesCategory(p, c)),
     );
   }
 
-  // Color, material, room: fields don't exist on Product — skip
+  if (__DEV__) {
+    const qNorm = normalizeForSkuMatch(search);
+    console.log('[Search] raw query:', JSON.stringify(search));
+    console.log('[Search] normalized query:', JSON.stringify(qNorm));
+    console.log('[Search] sku partial match enabled:', qNorm.length >= 2);
+    console.log('[Search] result count:', filtered.length);
+    console.log('[Discover] render — products:', products.length, '| categories:', selectedCategories, '| filtered:', filtered.length);
+  }
 
-  // Sort
   if (sortBy === 'Price: Low to High') {
     filtered = [...filtered].sort((a, b) => a.price - b.price);
   } else if (sortBy === 'Price: High to Low') {
     filtered = [...filtered].sort((a, b) => b.price - a.price);
+  } else if (sortBy === 'Newest') {
+    filtered = [...filtered];
   } else if (sortBy === 'Best Selling') {
     filtered = [...filtered].sort((a, b) => b.sales - a.sales);
   }
-  // 'Newest' and 'Recommended' keep original order
 
-  const left = filtered.filter((_, i) => i % 2 === 0);
-  const right = filtered.filter((_, i) => i % 2 === 1);
+  const col0 = filtered.filter((_, i) => i % 3 === 0);
+  const col1 = filtered.filter((_, i) => i % 3 === 1);
+  const col2 = filtered.filter((_, i) => i % 3 === 2);
 
   return (
     <View style={styles.container}>
@@ -210,60 +222,67 @@ export default function DiscoverScreen({ navigation }) {
             </View>
           </TouchableOpacity>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow} contentContainerStyle={{ paddingHorizontal: 10, gap: 6 }}>
-          {['All', 'Sofa', 'Chair', 'Table', 'Lamp', 'Rug', 'Cabinet'].map(cat => {
-            const active = cat === 'All' ? search === '' : search.toLowerCase() === cat.toLowerCase();
-            return (
-              <TouchableOpacity
-                key={cat}
-                style={[styles.categoryChip, active && styles.categoryChipActive]}
-                onPress={() => setSearch(cat === 'All' ? '' : cat)}
-              >
-                <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>{cat}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
+
+        <CategoryPillRow
+          categories={PRODUCT_CATEGORIES}
+          isActive={cat =>
+            cat === 'All'
+              ? search === ''
+              : search.toLowerCase() === cat.toLowerCase()
+          }
+          onPress={cat => setSearch(cat === 'All' ? '' : cat)}
+        />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.feed}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.feed}
+      >
         <View style={styles.columns}>
           <View style={styles.column}>
-            {left.map((item, i) => (
-              <TouchableOpacity
+            {col0.map((item, i) => (
+              <DiscoverCard
                 key={item.id}
-                style={[styles.card, { marginBottom: 6 }]}
-                onPress={() => navigation.navigate('ProductDetail', { product: item })}
-                activeOpacity={0.92}
-              >
-                <Image
-                  source={{ uri: item.img }}
-                  style={{ width: '100%', height: HEIGHTS[i % HEIGHTS.length], borderRadius: 6 }}
-                  resizeMode="cover"
-                />
-              </TouchableOpacity>
+                product={item}
+                debugLog={i < 2}
+                onPress={() => {
+                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
+                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
+                }}
+              />
             ))}
           </View>
+
           <View style={styles.column}>
-            {right.map((item, i) => (
-              <TouchableOpacity
+            {col1.map((item, i) => (
+              <DiscoverCard
                 key={item.id}
-                style={[styles.card, { marginBottom: 6 }]}
-                onPress={() => navigation.navigate('ProductDetail', { product: item })}
-                activeOpacity={0.92}
-              >
-                <Image
-                  source={{ uri: item.img }}
-                  style={{ width: '100%', height: HEIGHTS[(i + 1) % HEIGHTS.length], borderRadius: 6 }}
-                  resizeMode="cover"
-                />
-              </TouchableOpacity>
+                product={item}
+                debugLog={i < 2}
+                onPress={() => {
+                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
+                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
+                }}
+              />
+            ))}
+          </View>
+
+          <View style={styles.column}>
+            {col2.map((item, i) => (
+              <DiscoverCard
+                key={item.id}
+                product={item}
+                debugLog={i < 2}
+                onPress={() => {
+                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
+                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
+                }}
+              />
             ))}
           </View>
         </View>
       </ScrollView>
 
-      {/* Filter Modal */}
       <Modal
         visible={filterVisible}
         animationType="slide"
@@ -276,19 +295,22 @@ export default function DiscoverScreen({ navigation }) {
           onPress={() => setFilterVisible(false)}
         >
           <TouchableOpacity
-            style={[styles.filterPanel, { maxHeight: SCREEN_HEIGHT * 0.85, paddingBottom: insets.bottom + 16 }]}
+            style={[
+              styles.filterPanel,
+              {
+                maxHeight: SCREEN_HEIGHT * 0.85,
+                paddingBottom: insets.bottom + 16,
+              },
+            ]}
             activeOpacity={1}
-            onPress={() => {/* prevent overlay close */}}
+            onPress={() => {}}
           >
-            {/* Handle bar */}
             <View style={styles.handleBar} />
 
-            {/* Scrollable content */}
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.filterScroll}
             >
-              {/* Sort By */}
               <Text style={styles.sectionTitle}>Sort By</Text>
               {SORT_OPTIONS.map(option => (
                 <TouchableOpacity
@@ -296,7 +318,12 @@ export default function DiscoverScreen({ navigation }) {
                   style={styles.radioRow}
                   onPress={() => setPendingSortBy(option)}
                 >
-                  <View style={[styles.radioOuter, pendingSortBy === option && styles.radioOuterSelected]}>
+                  <View
+                    style={[
+                      styles.radioOuter,
+                      pendingSortBy === option && styles.radioOuterSelected,
+                    ]}
+                  >
                     {pendingSortBy === option && <View style={styles.radioInner} />}
                   </View>
                   <Text style={styles.radioLabel}>{option}</Text>
@@ -305,7 +332,6 @@ export default function DiscoverScreen({ navigation }) {
 
               <View style={styles.sectionSeparator} />
 
-              {/* Style */}
               <Text style={styles.sectionTitle}>Style</Text>
               <View style={styles.chipRow}>
                 {CATEGORY_OPTIONS.map(option => {
@@ -314,110 +340,28 @@ export default function DiscoverScreen({ navigation }) {
                     <TouchableOpacity
                       key={option}
                       style={[styles.chip, selected && styles.chipSelected]}
-                      onPress={() => togglePendingChip(option, pendingCategories, setPendingCategories)}
+                      onPress={() =>
+                        togglePendingChip(
+                          option,
+                          pendingCategories,
+                          setPendingCategories,
+                        )
+                      }
                     >
-                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          selected && styles.chipTextSelected,
+                        ]}
+                      >
+                        {option}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
-              </View>
-
-              <View style={styles.sectionSeparator} />
-
-              {/* Color */}
-              <Text style={styles.sectionTitle}>Color</Text>
-              <View style={styles.chipRow}>
-                {COLOR_OPTIONS.map(option => {
-                  const selected = pendingColors.includes(option);
-                  return (
-                    <TouchableOpacity
-                      key={option}
-                      style={[styles.chip, selected && styles.chipSelected]}
-                      onPress={() => togglePendingChip(option, pendingColors, setPendingColors)}
-                    >
-                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={styles.sectionSeparator} />
-
-              {/* Material */}
-              <Text style={styles.sectionTitle}>Material</Text>
-              <View style={styles.chipRow}>
-                {MATERIAL_OPTIONS.map(option => {
-                  const selected = pendingMaterials.includes(option);
-                  return (
-                    <TouchableOpacity
-                      key={option}
-                      style={[styles.chip, selected && styles.chipSelected]}
-                      onPress={() => togglePendingChip(option, pendingMaterials, setPendingMaterials)}
-                    >
-                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={styles.sectionSeparator} />
-
-              {/* Room */}
-              <Text style={styles.sectionTitle}>Room</Text>
-              <View style={styles.chipRow}>
-                {ROOM_OPTIONS.map(option => {
-                  const selected = pendingRooms.includes(option);
-                  return (
-                    <TouchableOpacity
-                      key={option}
-                      style={[styles.chip, selected && styles.chipSelected]}
-                      onPress={() => togglePendingChip(option, pendingRooms, setPendingRooms)}
-                    >
-                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={styles.sectionSeparator} />
-
-              {/* Availability */}
-              <Text style={styles.sectionTitle}>Availability</Text>
-              <View style={styles.toggleRow}>
-                <Text style={styles.toggleLabel}>In Stock Only</Text>
-                <Switch
-                  value={pendingInStock}
-                  onValueChange={setPendingInStock}
-                  trackColor={{ false: '#E5E3DC', true: '#EAB320' }}
-                  thumbColor="#FFFFFF"
-                />
-              </View>
-
-              <View style={styles.sectionSeparator} />
-
-              {/* Delivery Options */}
-              <Text style={styles.sectionTitle}>Delivery Options</Text>
-              <View style={styles.toggleRow}>
-                <Text style={styles.toggleLabel}>Pickup Available</Text>
-                <Switch
-                  value={pendingPickup}
-                  onValueChange={setPendingPickup}
-                  trackColor={{ false: '#E5E3DC', true: '#EAB320' }}
-                  thumbColor="#FFFFFF"
-                />
-              </View>
-              <View style={[styles.toggleRow, { marginTop: 12 }]}>
-                <Text style={styles.toggleLabel}>Local Delivery Available</Text>
-                <Switch
-                  value={pendingLocalDelivery}
-                  onValueChange={setPendingLocalDelivery}
-                  trackColor={{ false: '#E5E3DC', true: '#EAB320' }}
-                  thumbColor="#FFFFFF"
-                />
               </View>
             </ScrollView>
 
-            {/* Fixed bottom action bar */}
             <View style={styles.filterActions}>
               <TouchableOpacity style={styles.resetBtn} onPress={resetFilters}>
                 <Text style={styles.resetBtnText}>Reset</Text>
@@ -435,22 +379,60 @@ export default function DiscoverScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAF9' },
-  topArea: { marginBottom: 10 },
-  searchPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 999, height: 40, paddingLeft: 12, paddingRight: 8, marginHorizontal: 6, gap: 8 },
-  searchInput: { flex: 1, paddingVertical: 0, fontSize: 15, color: '#1C1917' },
-  searchDivider: { width: 1, height: 18, backgroundColor: '#E5E7EB' },
-  filterPillBtn: { paddingLeft: 10, paddingRight: 4, paddingVertical: 6, alignItems: 'center', justifyContent: 'center' },
-  categoryRow: { paddingVertical: 8 },
-  categoryChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: 'transparent' },
-  categoryChipActive: { backgroundColor: '#FFFBF0', borderColor: '#EAB320' },
-  categoryChipText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
-  categoryChipTextActive: { color: '#92660A', fontWeight: '600' },
-  feed: { paddingHorizontal: 6, paddingBottom: 100 },
-  columns: { flexDirection: 'row', gap: 10 },
-  column: { flex: 1 },
-  card: { borderRadius: 6, overflow: 'hidden', backgroundColor: '#F3F4F6' },
 
-  // Badge
+  topArea: {
+    marginBottom: 0,
+    paddingHorizontal: 6,
+  },
+
+  searchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 999,
+    height: 40,
+    paddingLeft: 12,
+    paddingRight: 8,
+    marginHorizontal: 6,
+    gap: 8,
+  },
+
+  searchInput: {
+    flex: 1,
+    paddingVertical: 0,
+    fontSize: 15,
+    color: '#1C1917',
+  },
+
+  searchDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: '#E5E7EB',
+  },
+
+  filterPillBtn: {
+    paddingLeft: 10,
+    paddingRight: 4,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  feed: {
+    paddingHorizontal: 4,
+    paddingBottom: 100,
+  },
+
+  columns: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+
+  column: {
+    flex: 1,
+  },
+
+
   filterBadge: {
     position: 'absolute',
     top: -5,
@@ -463,6 +445,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 3,
   },
+
   filterBadgeText: {
     color: '#FFFFFF',
     fontSize: 10,
@@ -470,17 +453,18 @@ const styles = StyleSheet.create({
     lineHeight: 12,
   },
 
-  // Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(64, 63, 61, 0.4)',
     justifyContent: 'flex-end',
   },
+
   filterPanel: {
     backgroundColor: '#F3F1EB',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
   },
+
   handleBar: {
     width: 36,
     height: 4,
@@ -490,13 +474,13 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 8,
   },
+
   filterScroll: {
     paddingHorizontal: 20,
     paddingTop: 4,
     paddingBottom: 12,
   },
 
-  // Sort
   sectionTitle: {
     fontSize: 15,
     fontWeight: '600',
@@ -504,12 +488,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     marginTop: 4,
   },
+
   radioRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 8,
     gap: 10,
   },
+
   radioOuter: {
     width: 20,
     height: 20,
@@ -519,27 +505,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+
   radioOuterSelected: {
     borderColor: '#EAB320',
   },
+
   radioInner: {
     width: 10,
     height: 10,
     borderRadius: 5,
     backgroundColor: '#EAB320',
   },
+
   radioLabel: {
     fontSize: 14,
     color: '#403F3D',
   },
 
-  // Chips
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
     marginBottom: 4,
   },
+
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
@@ -548,38 +537,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5E3DC',
   },
+
   chipSelected: {
     backgroundColor: '#EAB320',
     borderColor: '#EAB320',
   },
+
   chipText: {
     fontSize: 13,
     color: '#403F3D',
   },
+
   chipTextSelected: {
     color: '#FFFFFF',
     fontWeight: '600',
   },
 
-  // Toggles
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  toggleLabel: {
-    fontSize: 14,
-    color: '#403F3D',
-  },
-
-  // Section separator
   sectionSeparator: {
     height: 1,
     backgroundColor: '#E5E3DC',
     marginVertical: 16,
   },
 
-  // Action bar
   filterActions: {
     flexDirection: 'row',
     gap: 12,
@@ -589,6 +568,7 @@ const styles = StyleSheet.create({
     borderTopColor: '#E5E3DC',
     backgroundColor: '#F3F1EB',
   },
+
   resetBtn: {
     flex: 1,
     height: 46,
@@ -599,11 +579,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+
   resetBtnText: {
     fontSize: 15,
     fontWeight: '600',
     color: '#403F3D',
   },
+
   applyBtn: {
     flex: 2,
     height: 46,
@@ -612,6 +594,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+
   applyBtnText: {
     fontSize: 15,
     fontWeight: '600',
