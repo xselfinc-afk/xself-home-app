@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseConfigured } from '../lib/supabase';
 
 export type WarehouseStockEntry = {
   warehouseCode: string;
@@ -19,12 +19,22 @@ export async function fetchSkuWarehouseStock(skus: string[]): Promise<SkuInvento
 
   console.log('[GigaInventory] Fetching warehouse stock for', skus.length, 'SKU(s):', skus);
 
+  if (!supabaseConfigured) {
+    throw new Error('[GigaInventory] Supabase not configured — set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY');
+  }
+
   const { data, error } = await supabase.functions.invoke('giga-warehouse-stock', {
     body: { skus },
   });
 
   if (error) {
-    throw new Error(`[GigaInventory] Edge function error: ${error.message}`);
+    // FunctionsHttpError.context is the raw Response — read body for the real reason
+    let detail = '';
+    try {
+      const body = await (error as any).context?.json?.();
+      detail = body?.error ? ` — ${body.error}` : '';
+    } catch { /* response body not JSON or already consumed */ }
+    throw new Error(`[GigaInventory] Edge function error: ${error.message}${detail}`);
   }
 
   console.log('[GigaInventory] Raw response data:', JSON.stringify(data).slice(0, 500));

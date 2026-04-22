@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
 import { fetchSkuWarehouseStock } from '../services/gigaInventoryService';
-import { planFulfillment, planFulfillmentFallback, FulfillmentPlan, SHIPPING_FEE } from '../services/fulfillmentPlanner';
+import { planFulfillment, planFulfillmentFallback, FulfillmentPlan } from '../services/fulfillmentPlanner';
 
 /**
  * Canonical fingerprint of a fulfillment plan for change detection.
@@ -30,7 +30,7 @@ function planFingerprint(plan: FulfillmentPlan): string {
 }
 
 export default function CheckoutScreen({ route, navigation }: any) {
-  const { cart, reserveExpiry } = useCart();
+  const { cart, reserveExpiry, clearCart } = useCart();
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest } = useAuth();
   const { addOrder } = useOrders();
@@ -53,17 +53,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { mode, product, qty: buyQty, selectedVariant } = route?.params ?? {};
 
 
-  const today = new Date();
-  const d1 = new Date(today); d1.setDate(today.getDate() + 2);
-  const d2 = new Date(today); d2.setDate(today.getDate() + 5);
-  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const deliveryRange = `${fmt(d1)}–${fmt(d2)}`;
-
   // ── Order items based on mode ──────────────────────────────────────────────
   const isBuyNow = mode === 'buy_now';
 
   type OrderItem = {
     sku: string;
+    /** supplier_product_id — used as fallback key in inventory lookup */
+    productId: string;
     name: string;
     img: string;
     price: number;
@@ -74,7 +70,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
   const orderItems: OrderItem[] = isBuyNow
     ? [{
-        sku: selectedVariant?.sku ?? `product-${product?.id}`,
+        // Prefer variant SKU (sku_custom), then product-level skuCustom, then supplier_product_id
+        sku: selectedVariant?.sku ?? product?.skuCustom ?? product?.id ?? '',
+        productId: product?.id ?? '',
         name: product?.name ?? '',
         img: selectedVariant?.images?.[0] ?? product?.images?.[0] ?? '',
         price: selectedVariant?.price ?? product?.price ?? 0,
@@ -84,6 +82,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
       }]
     : cart.map(item => ({
         sku: item.sku,
+        productId: item.productId,
         name: item.name,
         img: item.img,
         price: item.price,
@@ -170,7 +169,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         return planFulfillment(
           orderItems.map(item => ({
             sku: item.sku,
-            productId: item.sku,
+            productId: item.productId,
             name: item.name,
             price: item.price,
             img: item.img,
@@ -186,7 +185,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         return planFulfillmentFallback(
           orderItems.map(item => ({
             sku: item.sku,
-            productId: item.sku,
+            productId: item.productId,
             name: item.name,
             price: item.price,
             img: item.img,
@@ -452,9 +451,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
               </Text>
               {deliveryLoading
                 ? <Text style={styles.summaryCalculating}>Calculating…</Text>
-                : shipping === 0
-                  ? <Text style={[styles.summaryFree, { color: '#CA8A04' }]}>Free</Text>
-                  : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
+                : !fulfillmentPlan
+                  ? <Text style={styles.summaryCalculating}>–</Text>
+                  : shipping === 0
+                    ? <Text style={[styles.summaryFree, { color: '#CA8A04' }]}>Free</Text>
+                    : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tax</Text>
@@ -519,7 +520,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   selectedAddress.country,
                 ].filter(Boolean);
                 const freshPlan = await planFulfillment(
-                  orderItems.map(item => ({ sku: item.sku, productId: item.sku, name: item.name, price: item.price, img: item.img, qty: item.qty })),
+                  orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
                   addrParts.join(', '),
                   freshInventory,
                 );
@@ -623,6 +624,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   total,
                 },
               });
+              if (!isBuyNow) clearCart();
               navigation.navigate('OrderSuccess', {
                 total,
                 orderId: orderId.current,

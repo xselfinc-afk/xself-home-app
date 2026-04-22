@@ -14,7 +14,8 @@ export interface CartItem {
 type CartAction =
   | { type: 'ADD_ITEM'; item: Omit<CartItem, 'qty'>; qty: number }
   | { type: 'REMOVE_ITEM'; sku: string }
-  | { type: 'UPDATE_QTY'; sku: string; qty: number };
+  | { type: 'UPDATE_QTY'; sku: string; qty: number }
+  | { type: 'CLEAR_CART' };
 
 function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
   switch (action.type) {
@@ -34,6 +35,8 @@ function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
       return state.map(i =>
         i.sku === action.sku ? { ...i, qty: action.qty } : i
       );
+    case 'CLEAR_CART':
+      return [];
     default:
       return state;
   }
@@ -49,6 +52,7 @@ interface CartContextValue {
   addItem: (item: Omit<CartItem, 'qty'>, qty: number) => void;
   removeItem: (sku: string) => void;
   updateQty: (sku: string, qty: number) => void;
+  clearCart: () => void;
 }
 
 const CartContext = createContext<CartContextValue | null>(null);
@@ -70,10 +74,12 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const updateQty = (sku: string, qty: number) =>
     dispatch({ type: 'UPDATE_QTY', sku, qty });
 
+  const clearCart = () => dispatch({ type: 'CLEAR_CART' });
+
   const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
 
   return (
-    <CartContext.Provider value={{ cart, totalItems, badgeVersion, reserveExpiry, addItem, removeItem, updateQty }}>
+    <CartContext.Provider value={{ cart, totalItems, badgeVersion, reserveExpiry, addItem, removeItem, updateQty, clearCart }}>
       {children}
     </CartContext.Provider>
   );
