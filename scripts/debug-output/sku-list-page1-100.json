@@ -1,0 +1,718 @@
+{
+  "success": true,
+  "code": "200",
+  "data": {
+    "pageInfo": {
+      "page": 1,
+      "totalPage": 2,
+      "pageSize": 100,
+      "totalNum": 170
+    },
+    "records": [
+      {
+        "sku": "N725S412541K",
+        "productName": "Tall and Wide Storage Cabinet with Doors for Bathroom/Office, Three Drawers, White(Old SKU: N725P331357K/WF299285AAK)",
+        "updateTime": "2026-04-22 23:32:12",
+        "firstArrivalDate": "2026-03-04",
+        "addedTime": "2026-04-17 10:31:47"
+      },
+      {
+        "sku": "W2186P212193",
+        "productName": "Large Round Upholstered Tufted Linen Ottoman Coffee Table, Large Footrest Ottoman with Wood Shelf Storage- Ivory",
+        "updateTime": "2026-04-22 18:24:31",
+        "firstArrivalDate": "2025-12-08",
+        "addedTime": "2026-01-22 14:31:42"
+      },
+      {
+        "sku": "W1321S00001",
+        "productName": "Computer Desk with Hutch & Bookshelf,Wood Executive Desk Teens Student Desk Writing Laptop Home Office Desk with Drawers,3 AC Outlets and 2 USB Charging Ports,Study Laptop Table for Home(White)",
+        "updateTime": "2026-04-19 18:54:40",
+        "firstArrivalDate": "2023-10-17",
+        "addedTime": "2026-04-11 12:03:29"
+      },
+      {
+        "sku": "W1321S00049",
+        "productName": "Tall Bedroom Armoire Wardrobe Closet Clothing Storage Cabinet with Hanging Rod Barn Door Drawers Open Shelves",
+        "updateTime": "2026-04-17 19:55:49",
+        "firstArrivalDate": "2026-02-15",
+        "addedTime": "2026-04-17 10:12:06"
+      },
+      {
+        "sku": "W409P327404",
+        "productName": "Buffet Cabinet with Storage, 62.60\" Sideboard Cabinet with 4 Doors & Shelves, Wooden Kitchen Coffee Bar Credenza Storage for Living Room, Hallway Natural",
+        "updateTime": "2026-04-16 20:26:24",
+        "firstArrivalDate": "2025-08-26",
+        "addedTime": "2026-01-30 14:51:24"
+      },
+      {
+        "sku": "W1445P419755",
+        "productName": "6-Drawer Double Dresser in Green, Modern Storage Cabinet with Metal Handles & Solid Wood Legs, Dresser Drawer Organizer for Kids Bedroom, Heavy-Duty Wooden Dresser with Pre-Installed",
+        "updateTime": "2026-04-15 23:52:52",
+        "firstArrivalDate": "2026-01-18",
+        "addedTime": "2026-01-22 15:14:33"
+      },
+      {
+        "sku": "W1321S00002",
+        "productName": "74\" Kitchen Pantry Cabinet with Charging Station,Freestanding Buffet Cupboards Sideboard with Drawer,Modern Pantry Cabinet with Microwave Stand for Kitchen,Living Room,Dinning Room",
+        "updateTime": "2026-04-15 23:07:09",
+        "firstArrivalDate": "2023-10-17",
+        "addedTime": "2025-08-30 19:20:02"
+      },
+      {
+        "sku": "W1321S00005",
+        "productName": "74\" Freestanding Kitchen Pantry Cabinet Cupboard with 6 Doors,3 Shelves and 2 Drawer,Versatile Wardrobe & Kitchen Cabinet,Craft Storage Cabinet,Laundry Room Storage for  Kitchen (Black)",
+        "updateTime": "2026-04-15 20:18:03",
+        "firstArrivalDate": "2023-11-13",
+        "addedTime": "2025-08-24 07:06:45"
+      },
+      {
+        "sku": "W1321P151791",
+        "productName": "Nightstand with Charging Station, Smart Nightstand with Night Light, Modern Night Stand with Bookshelf, Bedside Tables with Storage Cabinet for Bedroom, Black",
+        "updateTime": "2026-04-15 20:17:33",
+        "firstArrivalDate": "2024-04-29",
+        "addedTime": "2025-08-30 19:59:39"
+      },
+      {
+        "sku": "W1321P171784",
+        "productName": "White Modern Buffet Cabinet with Storage, Fluted Sideboard Large Buffet with Adjustable Shelves, Credenza, Accent Cabinet Console Table",
+        "updateTime": "2026-04-15 20:16:59",
+        "firstArrivalDate": "2024-06-24",
+        "addedTime": "2025-08-30 20:01:23"
+      },
+      {
+        "sku": "W1321P204522",
+        "productName": "Nightstand with Charging Station, Smart Nightstand with Night Light, Modern Night Stand with Bookshelf, Bedside Tables with Storage Cabinet for Bedroom, Wood",
+        "updateTime": "2026-04-15 20:14:12",
+        "firstArrivalDate": "2024-09-29",
+        "addedTime": "2025-10-03 11:11:36"
+      },
+      {
+        "sku": "W1321P309434",
+        "productName": "4 Drawer Dresser, Chest of Drawers Without Handle,Dresser for Bedroom 100% Waterproof, Modern Wooden Cabinet with Sturdy Frame for Living Room, Entryway, Bedroom, Hallway, Office",
+        "updateTime": "2026-04-15 20:10:05",
+        "firstArrivalDate": "2025-06-30",
+        "addedTime": "2025-08-30 20:10:12"
+      },
+      {
+        "sku": "W1321P413949",
+        "productName": "Nightstand with Charging Station, Smart Nightstand with Night Light,with Led Lights,Bedside Tables with Storage Cabinet for Bedroom,Wood",
+        "updateTime": "2026-04-15 19:52:57",
+        "firstArrivalDate": "2026-03-16",
+        "addedTime": "2026-03-18 11:52:36"
+      },
+      {
+        "sku": "W409P327407",
+        "productName": "Sideboard Buffet Cabinet with Storage, Long Sideboard Storage Cabinet with 4 Doors, Wood Credenza Console Coffee Bar Cabinets with Adjustable Shelves for Living Room Kitchen Dining Room Natural",
+        "updateTime": "2026-04-14 19:24:09",
+        "firstArrivalDate": "2025-08-26",
+        "addedTime": "2026-01-30 14:51:26"
+      },
+      {
+        "sku": "W409P263831",
+        "productName": "6 Drawer Storage Cabinet ,Dresser, Wood Storage Tower Clothes Organizer with Wavy drawer panel, Wide Chest of 6 Drawers, Large Storage Space for Bedroom, Hallway, Entryway Living Room Natural",
+        "updateTime": "2026-04-14 19:09:56",
+        "firstArrivalDate": "2025-07-03",
+        "addedTime": "2026-01-30 14:51:16"
+      },
+      {
+        "sku": "W1321P311892",
+        "productName": "Floating TV Stand, Wall Mounted TV Shelf with Led Lights & Power Outlet, Cabinet for tv Stands for Living Room",
+        "updateTime": "2026-04-13 23:01:09",
+        "firstArrivalDate": "2025-07-17",
+        "addedTime": "2025-08-11 21:32:21"
+      },
+      {
+        "sku": "W2987P289196",
+        "productName": "47.6 x 15.7 inch multi-functional design panel wall-mounted full-length mirror, space-saving, can be pushed and pulled. Suitable for bedroom/living room/entrance (white)",
+        "updateTime": "2026-04-13 18:50:18",
+        "firstArrivalDate": "2025-03-26",
+        "addedTime": "2026-03-25 12:38:42"
+      },
+      {
+        "sku": "W5368P460478",
+        "productName": "Farmhouse 5 Drawer Dresser for Bedroom, 31.4\" Tall  Dressers & Chest of Drawers, Rustic Wood Dresser with Metal Handle, Storage Organizer Closet for Living Room, Hallway, Entryway,Oak",
+        "updateTime": "2026-04-13 02:00:17",
+        "firstArrivalDate": "2026-03-12",
+        "addedTime": "2026-03-17 12:03:31"
+      },
+      {
+        "sku": "W1445P164167",
+        "productName": "Carved Flower Door Large Storage Cabinet With Metal Handle Suitable For Living Room, Kitchen, Entryway(NATURAL WOOD)",
+        "updateTime": "2026-04-09 19:08:43",
+        "firstArrivalDate": "2024-07-04",
+        "addedTime": "2025-08-11 15:30:11"
+      },
+      {
+        "sku": "W409P270435",
+        "productName": "6 Drawer Storage Cabinet ,Dresser, Wood Storage Tower Clothes Organizer with Wavy drawer panel, Wide Chest of 6 Drawers, Large Storage Space for Bedroom, Hallway, Entryway Living Room White",
+        "updateTime": "2026-04-08 02:23:42",
+        "firstArrivalDate": "2025-04-27",
+        "addedTime": "2026-01-19 20:01:17"
+      },
+      {
+        "sku": "W3979P394149",
+        "productName": "\"Vintage Wood Grain Metal Table 62.99\" x 37.8\"\" Rectangular with Umbrella Hole, Heavy-Duty Steel Frame Rust-Resistant Easy Clean, for Patio Garden Deck Dining Room Office",
+        "updateTime": "2026-04-08 01:35:53",
+        "firstArrivalDate": "2026-03-22",
+        "addedTime": "2026-03-25 10:15:16"
+      },
+      {
+        "sku": "W808P264698",
+        "productName": "Kids 3 Drawer Dresser, Baby Nightstand for Bedroom, Storage Cabinet for Toddler Child for Living Room, Toddler Room, Nursery, Closet, Apartment (White)",
+        "updateTime": "2026-04-07 02:38:50",
+        "firstArrivalDate": "2025-02-11",
+        "addedTime": "2026-03-17 13:16:26"
+      },
+      {
+        "sku": "W80863135",
+        "productName": "Wooden Pet House Cat Litter Box Enclosure with Drawer, Side Table, Indoor Pet Crate, Cat Home Nightstand (White)",
+        "updateTime": "2026-04-07 02:14:24",
+        "firstArrivalDate": "2023-02-14",
+        "addedTime": "2026-03-17 15:01:45"
+      },
+      {
+        "sku": "N729P184479K",
+        "productName": "30\" Bathroom Vanity with Ceramic Sink, Soft-Close Door with Built-in Shelf, Deep Drawer, Standard Drawer, Long Divider Drawer, Ample Storage Cabinet for Bathroom, Modern & Functional Design",
+        "updateTime": "2026-03-31 22:07:48",
+        "firstArrivalDate": "2025-05-06",
+        "addedTime": "2025-08-31 22:18:35"
+      },
+      {
+        "sku": "W5368P460474",
+        "productName": "Farmhouse 7 Drawer Dresser for Bedroom, 31.4\" Tall  Dressers & Chest of Drawers, Rustic Wood Dresser with Metal Handle, Storage Organizer Closet for Living Room, Hallway, Entryway,Oak",
+        "updateTime": "2026-03-30 18:26:18",
+        "firstArrivalDate": "2026-03-12",
+        "addedTime": "2026-03-17 12:14:39"
+      },
+      {
+        "sku": "W2987P288952",
+        "productName": "360° Rotating 66\"x17.8\" Multifunctional Full Length Mirror with Hook Storage Rack Coat Rack with Mirror Solid Wood Floor Mirror Bedroom Living Room Cloakroom Space Saving (white)",
+        "updateTime": "2026-03-25 20:01:09",
+        "firstArrivalDate": "2025-03-26",
+        "addedTime": "2025-09-02 19:38:28"
+      },
+      {
+        "sku": "W2987P289172",
+        "productName": "360° Rotating 69\"x20\" Multifunctional Full Length Mirror with Hook Storage Rack Coat Rack with Mirror Solid Wood Floor Mirror Bedroom Living Room Cloakroom Space Saving (white)",
+        "updateTime": "2026-03-25 19:59:31",
+        "firstArrivalDate": "2025-03-26",
+        "addedTime": "2025-09-02 17:52:39"
+      },
+      {
+        "sku": "W808P166755",
+        "productName": "Kids Toy Box Chest, White Toy Box for Boys Girls, Large Storage Cabinet with Cushion Seat Bench/Flip-Top Lid/Safety Hinge, Toy Storage Organizer Trunk for Nursery, Playroom",
+        "updateTime": "2026-03-24 20:41:58",
+        "firstArrivalDate": "2024-06-10",
+        "addedTime": "2025-08-13 06:29:00"
+      },
+      {
+        "sku": "N710P191970F",
+        "productName": "30'' Bathroom Vanity with Ceramic Sink Combo,Solid Wood Frame Bathroom Storage Cabinet, Freestanding Vanity Set with 3 Drawers& Soft Closing Doors",
+        "updateTime": "2026-03-24 18:31:58",
+        "firstArrivalDate": "2024-11-07",
+        "addedTime": "2025-08-28 09:33:00"
+      },
+      {
+        "sku": "W714S00622",
+        "productName": "Chenille Two-Seater Sofa with 1 Footrest, 2 Seater L-Shaped Sectional with Ottoman,Loveseat with Ottoman for Small Living Space, Black Chenille",
+        "updateTime": "2026-03-22 19:36:54",
+        "firstArrivalDate": "2024-07-02",
+        "addedTime": "2025-08-25 16:22:39"
+      },
+      {
+        "sku": "W3867P370625",
+        "productName": "Modern Art Solid Wood Sideboard,59*16*35inch, Wave Relief Design, Walnut Texture, Iron Legs, Living Room Storage Cabinet",
+        "updateTime": "2026-03-19 01:12:58",
+        "firstArrivalDate": "2025-11-06",
+        "addedTime": "2026-02-09 15:14:21"
+      },
+      {
+        "sku": "T3609P482837",
+        "productName": "MDF Shoe Storage Cabinet with Flip-up Drawers and Shelves(White)",
+        "updateTime": "2026-03-16 01:25:19",
+        "firstArrivalDate": "2026-03-18",
+        "addedTime": "2026-03-18 11:44:04"
+      },
+      {
+        "sku": "W714S00550",
+        "productName": "Modern Fabric Loveseat Sofa Couch for Living Room, Upholstered Large Size Deep Seat 2-Seat Sofa with 4 Pillows ,White Chenille",
+        "updateTime": "2026-03-13 01:20:11",
+        "firstArrivalDate": "2024-06-07",
+        "addedTime": "2026-01-29 19:18:08"
+      },
+      {
+        "sku": "W1247P160450",
+        "productName": "2 Drawer Lateral File Cabinet with Lock, Black Metal Vertical Filing Cabinet for Home Office, Fits Legal, Letter & A4 Size Files, Assembly Required",
+        "updateTime": "2026-03-12 01:15:24",
+        "firstArrivalDate": "2024-06-03",
+        "addedTime": "2026-01-19 20:57:36"
+      },
+      {
+        "sku": "ST000144AAP",
+        "productName": "TREXM 5-Piece Retro Functional Dining Table Set Extendable Round Table and 4 Upholstered Chairs for Dining Room and Living Room (Espresso)",
+        "updateTime": "2026-03-11 00:01:23",
+        "firstArrivalDate": "2025-08-03",
+        "addedTime": "2025-08-26 08:37:58"
+      },
+      {
+        "sku": "W2275P460424",
+        "productName": "LED Curio Display Cabinet Antique Display Cabinet with Glass Doors Adjustable Shelves for Collectibles Four Door Design Vintage Showcase for Home or Office Antique Display Case CHERRY",
+        "updateTime": "2026-03-10 00:58:26",
+        "firstArrivalDate": "2026-03-19",
+        "addedTime": "2026-03-25 11:37:32"
+      },
+      {
+        "sku": "W3393P414579",
+        "productName": "Modern  Table Dresser,Baby Dressing Table with 3 extra deep Drawers and Storage Shelves and Hangers, Multi-Functional Baby Changing Table with Drying Rack for Nursery, White",
+        "updateTime": "2026-03-06 01:09:21",
+        "firstArrivalDate": "2025-12-31",
+        "addedTime": "2026-01-17 22:45:19"
+      },
+      {
+        "sku": "W2557S00002",
+        "productName": "83.1'' Extendable Kitchen Island with Slide Out Table and Storage Racks for 2-6 Person,Kitchen Island with Tempered Glass Doors,Walnut Woodgrain Dining Table,Power Outlet,Bar,Prep Station(Cream White)",
+        "updateTime": "2026-03-05 23:54:32",
+        "firstArrivalDate": "2026-02-19",
+        "addedTime": "2026-03-17 11:09:49"
+      },
+      {
+        "sku": "W282P160454",
+        "productName": "Two Drawers and Two-Compartment Tilt-Out Trash Cabinet Kitchen Trash Cabinet-White",
+        "updateTime": "2026-03-05 19:31:20",
+        "firstArrivalDate": "2024-06-04",
+        "addedTime": "2025-10-08 22:31:25"
+      },
+      {
+        "sku": "WF319366AAK",
+        "productName": "U_STYLE 28''painted Nightstand with 3 Drawers and Smooth Gliding Rails ,Simple Bedside Cabinet with Metal handle, Minimalist Sofa Side Table with rubber legs for Bedroom Sofa Couch Office",
+        "updateTime": "2026-03-05 00:10:56",
+        "firstArrivalDate": "2024-02-28",
+        "addedTime": "2025-10-28 20:34:48"
+      },
+      {
+        "sku": "N729P288872K",
+        "productName": "36 inch Shaker Style Free-Standing Bathroom Vanity Cabinet with Ceramic Sink, 4 Soft-close Drawers and 2 Soft-close doors",
+        "updateTime": "2026-03-05 00:07:59",
+        "firstArrivalDate": "2025-07-09",
+        "addedTime": "2025-08-31 21:42:26"
+      },
+      {
+        "sku": "W5590P447308",
+        "productName": "White Modern Fence Shoe Cabinet with 4 Flip Drawers, Sleek Space-Saving Entryway Organizer for Living Room",
+        "updateTime": "2026-03-02 21:49:58",
+        "firstArrivalDate": "2026-02-26",
+        "addedTime": "2026-03-18 12:08:49"
+      },
+      {
+        "sku": "W3204P318437",
+        "productName": "6 Drawer White Dresser, Modern Dresser for Bedroom with Spacious Countertop, Wood Storage Cabinet with Concealed Handles & 6 Deep Drawers for Bedroom, Living Room, Entryway, 15.7\" D x 47.2\" W x 30.9\"",
+        "updateTime": "2026-02-27 22:31:49",
+        "firstArrivalDate": "2025-06-04",
+        "addedTime": "2025-09-15 13:20:46"
+      },
+      {
+        "sku": "B062P145504",
+        "productName": "Light Grey Upholstered Square Vanity Stool",
+        "updateTime": "2026-02-25 21:13:01",
+        "firstArrivalDate": "2024-02-02",
+        "addedTime": "2025-08-23 11:04:42"
+      },
+      {
+        "sku": "B062P145423",
+        "productName": "8-shelf Cappuccino Geometric Bookcase",
+        "updateTime": "2026-02-25 18:18:06",
+        "firstArrivalDate": "2024-02-02",
+        "addedTime": "2025-09-26 11:35:21"
+      },
+      {
+        "sku": "N710P230231B",
+        "productName": "36'' Bathroom Vanity with Top Sink, Modern Bathroom Storage Cabinet with 2 Soft Closing Doors, Single Sink Bathroom Vanity",
+        "updateTime": "2026-02-15 17:38:28",
+        "firstArrivalDate": "2025-01-05",
+        "addedTime": "2025-08-31 22:27:15"
+      },
+      {
+        "sku": "N710P206904M",
+        "productName": "30'' Bathroom Vanity with Top Sink, Modern Bathroom Storage Cabinet with 2 Drawers and a Tip-out Drawer, Single Sink Bathroom Vanity",
+        "updateTime": "2026-02-15 17:10:38",
+        "firstArrivalDate": "2025-01-03",
+        "addedTime": "2025-08-28 09:54:04"
+      },
+      {
+        "sku": "N710P206904Z",
+        "productName": "30'' Bathroom Vanity with Top Sink, Modern Bathroom Storage Cabinet with 2 Drawers and a Tip-out Drawer, Single Sink Bathroom Vanity",
+        "updateTime": "2026-02-15 08:05:54",
+        "firstArrivalDate": "2025-03-03",
+        "addedTime": "2025-08-31 21:18:05"
+      },
+      {
+        "sku": "W409P307539",
+        "productName": "White 9 Drawer Dresser, 63\" Large Deep Chest of Drawers, Wooden Dresser Storage Cabinet with 9 Drawers for Bedroom, Long Dressers for Living Room, Hallway, Drawer panel with wavy patterns",
+        "updateTime": "2026-02-13 18:28:55",
+        "firstArrivalDate": "2025-08-02",
+        "addedTime": "2026-03-22 08:21:29"
+      },
+      {
+        "sku": "W1706P280672",
+        "productName": "Walnut Wood Buffet Cabinet with Line Groove Design,Sideboard Buffet Cabinet With Storage,Multifunctional Accent Cabinet  for Living Room,Entryway,Hallway,Office,Kitchen",
+        "updateTime": "2026-02-02 17:12:20",
+        "firstArrivalDate": "2025-03-14",
+        "addedTime": "2026-01-26 21:23:31"
+      },
+      {
+        "sku": "W2231P292981",
+        "productName": "LY-5104 Dark Gray  Accent Rocking  Chair with  Footrest High Back Rubber Wood Rocking Legs Bedroom Living Space   26.77D X 38.36W X 39.76H Inch",
+        "updateTime": "2026-01-29 18:06:42",
+        "firstArrivalDate": "2025-05-23",
+        "addedTime": "2025-09-07 09:29:51"
+      },
+      {
+        "sku": "W409P371352",
+        "productName": "9 Drawer Dresser with No Handle Design, Modern White Matte Wood Dresser for Bedroom, Storage Chest of Drawers for Living Room, Hallway, Entryway",
+        "updateTime": "2026-01-28 19:25:45",
+        "firstArrivalDate": "2025-12-05",
+        "addedTime": "2026-01-29 18:57:47"
+      },
+      {
+        "sku": "W2917S00013",
+        "productName": "63\" Farmhouse Barn Door Storage Cabinet with 2 Drawers & Door Rack, Large Buffet Table Coffee Bar Cabinets with Adjustable Shelves for Kitchen, Living Room, Entryway, Dining Room, White",
+        "updateTime": "2026-01-25 18:16:08",
+        "firstArrivalDate": "2026-01-22",
+        "addedTime": "2026-02-06 16:35:23"
+      },
+      {
+        "sku": "N721P401788K",
+        "productName": "Minimalist Corner Hall Tree with Shoe Bench, Versatile Entryway Coat Rack with 4 Hooks, Corner Cabinet with Adjustable Shelf for Hallway, Living Room, White, 29.5''W*71.6''H (OLD SKU: N721P189665K)",
+        "updateTime": "2026-01-15 21:50:34",
+        "firstArrivalDate": "2026-02-24",
+        "addedTime": "2026-03-25 12:18:30"
+      },
+      {
+        "sku": "W1445121942",
+        "productName": "Retroy Vintage 4-Door Credenza Cabinet - 60\" Navy Blue Storage Buffet with M-Shaped Panel Doors, Solid Wood Base for Dining Room & Living Room",
+        "updateTime": "2026-01-08 22:41:26",
+        "firstArrivalDate": "2023-10-09",
+        "addedTime": "2025-08-11 15:25:47"
+      },
+      {
+        "sku": "W2917P294993",
+        "productName": "72\" Modern Fluted Kitchen Pantry Cabinet with 2 Large Drawers & 8-Door Spice Rack, Freestanding Storage Organizer for Bathroom, Dining Room, Office, Entryway, White",
+        "updateTime": "2026-01-07 22:20:41",
+        "firstArrivalDate": "2025-05-08",
+        "addedTime": "2025-10-03 11:18:19"
+      },
+      {
+        "sku": "W2263P410055",
+        "productName": "Buffet Cabinet with Storage ,4 Doors Modern Accent Storage Sideboard,Luxurious Floor Cabinet Buffet with Freestanding Anti Dumping for Kitchen, Living Room, 59\" Wide Rectangular Sideboard (White)",
+        "updateTime": "2026-01-06 19:45:15",
+        "firstArrivalDate": "2026-01-11",
+        "addedTime": "2026-01-22 15:04:44"
+      },
+      {
+        "sku": "W2263P353794",
+        "productName": "Sideboard Buffet Cabinet, 4 Doors Modern Accent Storage Sideboard, Luxurious Floor Cabinet Buffet with Freestanding Anti Dumping for Kitchen, Living Room, 59\" Wide Rectangular Buffet Table(Black)",
+        "updateTime": "2026-01-06 17:42:26",
+        "firstArrivalDate": "2025-08-26",
+        "addedTime": "2026-01-22 15:54:50"
+      },
+      {
+        "sku": "W3387P363520",
+        "productName": "57'' Tall Metal 4 Flip Doors Cabinet, with Ample Storage Space for Bedroom, Office, Living Room, Hallway, Entryway ( Walnut )",
+        "updateTime": "2025-12-29 23:58:18",
+        "firstArrivalDate": "2025-09-22",
+        "addedTime": "2026-04-17 10:45:42"
+      },
+      {
+        "sku": "W1445P419756",
+        "productName": "6-Drawer Double Dresser , Modern Storage Cabinet with Metal Handles & Solid Wood Legs, Dresser Drawer Organizer for Kids Bedroom, Heavy-Duty Wooden Dresser with Pre-Installed,Black",
+        "updateTime": "2025-12-28 21:44:43",
+        "firstArrivalDate": "2026-01-18",
+        "addedTime": "2026-01-22 15:21:43"
+      },
+      {
+        "sku": "W1445P419757",
+        "productName": "6-Drawer Double Dresser in White, Modern Storage Cabinet with Metal Handles & Solid Wood Legs, Dresser Drawer Organizer for Kids Bedroom, Heavy-Duty Wooden Dresser with Pre-Installed",
+        "updateTime": "2025-12-28 19:27:59",
+        "firstArrivalDate": "2026-01-18",
+        "addedTime": "2026-01-22 15:30:15"
+      },
+      {
+        "sku": "WF324043AAC",
+        "productName": "30\" Blue Bathroom Vanity with Single Sink, Combo Cabinet Undermount Sink, Bathroom Storage Cabinet with 2 Doors and a Drawer, Soft Closing, Multifunctional Storage, Solid Wood Frame",
+        "updateTime": "2025-12-25 00:16:36",
+        "firstArrivalDate": "2024-05-05",
+        "addedTime": "2026-01-13 21:53:42"
+      },
+      {
+        "sku": "N710P246209K",
+        "productName": "30'' Bathroom Vanity with Ceramic Sink Combo, Free Standing Single Vanity Set with 3 Drawers, Solid Wood Frame Bathroom Storage Cabinet, White",
+        "updateTime": "2025-12-21 21:23:06",
+        "firstArrivalDate": "2025-01-07",
+        "addedTime": "2025-08-31 21:20:06"
+      },
+      {
+        "sku": "W2917P384735",
+        "productName": "71\" Tall Arched Kitchen Pantry Cabinet with Glass Door, Farmhouse Storage Pantry Cabinet with Adjustable Shelves & Barn Door Design for Kitchen, Living & Dining Room, White",
+        "updateTime": "2025-12-18 21:44:34",
+        "firstArrivalDate": "2025-11-06",
+        "addedTime": "2026-01-22 14:09:23"
+      },
+      {
+        "sku": "N710P323328C",
+        "productName": "30\" Bathroom Vanity with Ceramic Sink, Small Bathroom Sink Cabinet, Modern Cabinet with 2 Drawers and Adjustable Shelf",
+        "updateTime": "2025-12-18 18:18:19",
+        "firstArrivalDate": "2025-08-22",
+        "addedTime": "2025-08-28 09:59:57"
+      },
+      {
+        "sku": "N710P323328K",
+        "productName": "30\" Bathroom Vanity with Ceramic Sink, Small Bathroom Sink Cabinet, Modern Cabinet with 2 Drawers and Adjustable Shelf",
+        "updateTime": "2025-12-18 18:14:19",
+        "firstArrivalDate": "2025-08-22",
+        "addedTime": "2025-08-31 22:03:33"
+      },
+      {
+        "sku": "W409P307541",
+        "productName": "Black 9 Drawer Dresser, 63\" Large Deep Chest of Drawers, Wooden Dresser Storage Cabinet with 9 Drawers for Bedroom, Long Dressers for Living Room, Hallway, Drawer panel with wavy patterns",
+        "updateTime": "2025-12-17 22:16:49",
+        "firstArrivalDate": "2025-08-26",
+        "addedTime": "2026-02-09 12:25:10"
+      },
+      {
+        "sku": "N707S000019W",
+        "productName": "K&K 52\" Fluted Kitchen Island with Drop Leaf, Power Outlet,  Kitchen Storage Cart with Adjustable Shelves, 2 Doors and 2 Drawers, Rolling Island Table with Walnut Color Top for Kitchen, White",
+        "updateTime": "2025-12-16 22:55:34",
+        "firstArrivalDate": "2025-11-21",
+        "addedTime": "2026-01-29 18:29:54"
+      },
+      {
+        "sku": "W1801108552",
+        "productName": "Modern Bathroom Floor Cabinet &Linen cabinet, Narrow Slim Small Storage Cabinet, Antique Brass(14.5\"×12.6\"×35.7\")",
+        "updateTime": "2025-12-15 22:38:36",
+        "firstArrivalDate": "2023-08-02",
+        "addedTime": "2025-08-30 20:29:40"
+      },
+      {
+        "sku": "W3219P339464",
+        "productName": "Multi Functional Sectional Sofa Bed w/ Independent Chaise Lounge and Functional Blanket,Plush Corduroy Sofa Couch,Convertible Sofa Bed,80\" King Size Bed,Deep Seat Fluffy Sofa,Beige,new sku:W3219S00005",
+        "updateTime": "2025-12-14 23:38:04",
+        "firstArrivalDate": "2025-08-02",
+        "addedTime": "2025-08-25 16:03:46"
+      },
+      {
+        "sku": "W132166344",
+        "productName": "Floating TV Stand Wall Mounted with 16 Color LEDs,63\" Modern TV Stand,Floating TV Cabinet Entertainment Center for 55 60 65 Inch TV,White",
+        "updateTime": "2025-12-10 22:15:16",
+        "firstArrivalDate": "2023-04-13",
+        "addedTime": "2025-08-23 11:21:02"
+      },
+      {
+        "sku": "W2275P233489",
+        "productName": "Modern 7 Drawers Dresser 7 Drawers Cabinet,Chest of Drawers Closet Organizers and Storage Clothes Storage Drawers Cabinet for Living Room, Farmhouse Dresser Organizer BEIGE",
+        "updateTime": "2025-12-03 22:07:43",
+        "firstArrivalDate": "2024-11-25",
+        "addedTime": "2026-01-26 20:55:36"
+      },
+      {
+        "sku": "W1445P317059",
+        "productName": "60'' Black Farmhouse Console Table - Retro Wooden Entryway Table with Double Board Suspension Design, Solid Wood & MDF, Sofa Table for Living Room",
+        "updateTime": "2025-12-03 18:02:26",
+        "firstArrivalDate": "2025-06-26",
+        "addedTime": "2025-08-11 15:28:35"
+      },
+      {
+        "sku": "N759P307032D",
+        "productName": "[Video] Set of 2 Rubberwood Dining Chairs with Ergonomic Backrest & Comfort Cushions, Walnut+Light Gray (same sku: 59296.00FDBEI)",
+        "updateTime": "2025-12-02 18:05:08",
+        "firstArrivalDate": "2025-06-18",
+        "addedTime": "2026-03-25 11:19:33"
+      },
+      {
+        "sku": "N710P288936F",
+        "productName": "24\" Modern Bathroom Vanity with Sink, Small Bathroom Sink Cabinet with 2 Drawers and Soft-Closing Door, Under-mount Sink Bathroom Cabinet with Drawers",
+        "updateTime": "2025-11-25 18:36:42",
+        "firstArrivalDate": null,
+        "addedTime": "2025-09-02 21:10:04"
+      },
+      {
+        "sku": "W1163P315233",
+        "productName": "55-inch Trampoline for Kids Indoor & Outdoor Small Toddler Trampoline with Basketball Hoop",
+        "updateTime": "2025-11-23 22:19:37",
+        "firstArrivalDate": "2025-06-17",
+        "addedTime": "2026-04-17 09:39:24"
+      },
+      {
+        "sku": "W1445P327887",
+        "productName": "60\" Antique Buffet Cabinet with Floral Carvings with Solid Wood Legs&Antique Brass Handles&Adjustable Shelves, TV Stand for 65''+ TV, Sideboard for Living Room,Dining Room (Antique Grey White)",
+        "updateTime": "2025-11-19 22:32:12",
+        "firstArrivalDate": "2025-09-24",
+        "addedTime": "2025-08-11 15:33:11"
+      },
+      {
+        "sku": "W1445P360668",
+        "productName": "60\" Antique Buffet Cabinet with Floral Carvings with Solid Wood Legs&Antique Brass Handles&Adjustable Shelves, TV Stand for 65''+ TV, Sideboard for Living Room,Dining Room(Antique Green)",
+        "updateTime": "2025-11-19 16:36:50",
+        "firstArrivalDate": "2025-09-09",
+        "addedTime": "2025-08-11 15:33:01"
+      },
+      {
+        "sku": "W1347P246823",
+        "productName": "Dining Table for Farmhouse Kitchen 59x43 Inch Expandable Oval Table Top with Removable Leaf Trestle X Shaped Base White",
+        "updateTime": "2025-11-18 17:50:50",
+        "firstArrivalDate": "2025-03-13",
+        "addedTime": "2025-08-25 22:27:24"
+      },
+      {
+        "sku": "W1706P235656",
+        "productName": "Modern style buffet cabinet, Storage side cabinet buffet cabinet, Medieval modern multifunctional decorative cabinet suitable for living room, dining room, entrance, corridor, kitchen, black",
+        "updateTime": "2025-11-12 21:36:10",
+        "firstArrivalDate": "2025-03-31",
+        "addedTime": "2026-01-14 17:23:56"
+      },
+      {
+        "sku": "WF324043AAB",
+        "productName": "30\" Black Bathroom Vanity with Single Sink, Combo Cabinet Undermount Sink, Bathroom Storage Cabinet with 2 Doors and a Drawer, Soft Closing, Multifunctional Storage, Solid Wood Frame",
+        "updateTime": "2025-11-11 18:03:04",
+        "firstArrivalDate": "2024-05-05",
+        "addedTime": "2025-08-28 09:52:44"
+      },
+      {
+        "sku": "W331P374568",
+        "productName": "Bookcase with Three Pulled Out Doors Shelving Cabinet,3 Tier Floor Standing Bookcase,Slide Out Storage Bookcase file cabinet,Office Bedroom Living Room Hidden Storage Cabinet with Wheels",
+        "updateTime": "2025-11-06 21:42:09",
+        "firstArrivalDate": "2025-11-27",
+        "addedTime": "2026-01-26 20:57:26"
+      },
+      {
+        "sku": "N707P186617W",
+        "productName": "K&K 55.7'' Large Kitchen Island with 2 Drop Leaf,, Rolling Kitchen Cart on 5 Wheels with Power Outlet, Folding Storage Dining Table with Spice & Towel Rack , 3 Drawers, for Kitchen, Dining Room,White",
+        "updateTime": "2025-11-05 22:37:55",
+        "firstArrivalDate": "2024-09-10",
+        "addedTime": "2025-10-27 22:35:08"
+      },
+      {
+        "sku": "W331S00168",
+        "productName": "Laundry Cabinet with Doors and shelf, Tilt-Out Laundry Hamper, Multiple Storage Space, Freestanding Style, Open Shelve, Adjustable Shelf, White",
+        "updateTime": "2025-11-05 21:08:48",
+        "firstArrivalDate": "2025-01-29",
+        "addedTime": "2026-04-17 10:24:38"
+      },
+      {
+        "sku": "W1445139547",
+        "productName": "TV Stand for 65+ Inch TV, Wood TV Stand with Storage Cabinet & Adjustable Shelves, Media TV Console for Living Room Bedroom(Champagne)",
+        "updateTime": "2025-10-28 22:13:54",
+        "firstArrivalDate": "2024-06-04",
+        "addedTime": "2025-08-11 15:33:36"
+      },
+      {
+        "sku": "W1445P214051",
+        "productName": "59'' Farmhouse Curved Vintage Storage Sideboard with Large Wooden Handles, Vertical Wood Grain Carving and Adjustable Shelves for Kitchen,Dining Room (Natural Wood Washed)",
+        "updateTime": "2025-10-19 20:28:58",
+        "firstArrivalDate": "2024-12-14",
+        "addedTime": "2025-08-11 15:28:56"
+      },
+      {
+        "sku": "W1162P323741",
+        "productName": "Sideboard Storage Cabinet TV Stand with wave pattern Buffet Cabinet Wooden Vertical Striped Cabinet for Kitchen/Bedroom/Entryway. Black, 64''W x 15''D x 24''H.",
+        "updateTime": "2025-10-12 23:27:01",
+        "firstArrivalDate": "2025-10-07",
+        "addedTime": "2026-01-14 17:41:24"
+      },
+      {
+        "sku": "W3244S00003",
+        "productName": "108\" L Shaped Modern Sofa Modular Sectional Cloud Couch with Ottoman, 4-Seat Chenille Deep Seat Sofa with Pillow for Living Room, Bedroom and Apartment",
+        "updateTime": "2025-10-06 06:41:38",
+        "firstArrivalDate": "2025-11-05",
+        "addedTime": "2026-04-17 14:15:01"
+      },
+      {
+        "sku": "W1445P256466",
+        "productName": "Refined Industrial 4-Door Credenza with Wooden Arc Legs & Bronze Clasps – Advanced Storage Design, Solid Craftsmanship, Black",
+        "updateTime": "2025-10-02 20:54:23",
+        "firstArrivalDate": "2025-03-24",
+        "addedTime": "2025-08-11 15:25:49"
+      },
+      {
+        "sku": "N715P364059N",
+        "productName": "TREXM Daisy Series Console Table Traditional Design with Two Drawers and Bottom Shelf (Natural)",
+        "updateTime": "2025-09-30 01:41:10",
+        "firstArrivalDate": "2025-10-21",
+        "addedTime": "2026-03-24 23:03:02"
+      },
+      {
+        "sku": "W3151P345790",
+        "productName": "Nightstand with 3 Drawers, Mid-Century Modern End Table,Gold MetalFeet, Gold Metal Handles , Drawer Panels are Shaped by Cutting Lines,End Table for Bedroom,White and Natural",
+        "updateTime": "2025-09-24 20:49:55",
+        "firstArrivalDate": "2025-09-09",
+        "addedTime": "2026-01-17 22:32:09"
+      },
+      {
+        "sku": "N729P280194B",
+        "productName": "36\" Modern Bathroom Vanity with Ceramic Sink, Soft-Close Door, Adjustable Shelf & 3 Drawers, Ample Storage",
+        "updateTime": "2025-09-18 23:53:28",
+        "firstArrivalDate": "2025-08-04",
+        "addedTime": "2025-09-03 10:15:58"
+      },
+      {
+        "sku": "W3123P333708",
+        "productName": "Bookcase, 4-Shelf Tall Bookshelf, 45.66\" Wood Open Display Floor Arched Bookcase, Large Storage Organizer for Library, Bedroom, and Living Room (Black)",
+        "updateTime": "2025-09-14 18:24:47",
+        "firstArrivalDate": "2025-07-04",
+        "addedTime": "2026-03-25 11:04:24"
+      },
+      {
+        "sku": "W2275P206602",
+        "productName": "Glass display cabinet 4 Tier Glass Display Cabinet Storage Curio Cabinet with Flip up Glass Doors, Collectors Showcase Toy Figure Organizers Rack, Bookcase for Living Room White",
+        "updateTime": "2025-09-08 01:04:40",
+        "firstArrivalDate": "2024-10-31",
+        "addedTime": "2026-03-18 13:05:53"
+      },
+      {
+        "sku": "N729P321376K",
+        "productName": "30\" Bathroom Vanity with Sink, MDF and Solid Wood Frame, 1 Divider Drawer and 2 Soft-close Doors (Double Shelf on Door), Freestanding Vanity",
+        "updateTime": "2025-09-07 19:28:31",
+        "firstArrivalDate": "2025-08-04",
+        "addedTime": "2025-08-31 22:19:05"
+      },
+      {
+        "sku": "W1706P280664",
+        "productName": "Shoe Storage Cabinet with 2 Flip Drawers,Free standing Shoe  Cabinet with Metal Handles for Entryway,Shoe Rack Cabinet with line groove design,23.6\"W",
+        "updateTime": "2025-09-04 19:39:05",
+        "firstArrivalDate": "2025-03-14",
+        "addedTime": "2026-01-26 21:12:25"
+      },
+      {
+        "sku": "W1445P302631",
+        "productName": "60'' Premium Rustic American Farmhouse Credenza - Symmetrical Sunburst Door Design, Heavy-Duty Antique Wood TV Stand with Adjustable Shelves, Storage Cabinet for Living Room/Kitchen (Antique Natural)",
+        "updateTime": "2025-09-01 19:08:02",
+        "firstArrivalDate": "2025-05-20",
+        "addedTime": "2025-08-11 15:29:10"
+      },
+      {
+        "sku": "W714S01114",
+        "productName": "Over Size Modern Two-seater Sofa with Ottoman, Velvet 2-Seater with Round Bolster Armrests,With Waist Pillow and Throw Pillows,Small L Shape Sofa For Living Room, Reading Room  Blue",
+        "updateTime": "2025-08-31 20:45:57",
+        "firstArrivalDate": "2025-04-17",
+        "addedTime": "2025-08-25 16:16:20"
+      },
+      {
+        "sku": "W1445P303027",
+        "productName": "60\" Premium Rustic American Farmhouse Credenza in Elegant Black - Symmetrical Sunburst Door Design, Heavy-Duty TV Stand with Adjustable Shelves, Black Wood Storage Cabinet",
+        "updateTime": "2025-08-26 23:23:20",
+        "firstArrivalDate": "2025-05-20",
+        "addedTime": "2025-08-11 15:29:57"
+      },
+      {
+        "sku": "W487P352445",
+        "productName": "sideboard cabinet,corner cabinet,Bathroom Floor Corner Cabinet with Doors and Shelves, Kitchen, Living Room,Free Standing Storage Cabinet for Bathroom",
+        "updateTime": "2025-08-18 19:32:48",
+        "firstArrivalDate": "2025-08-15",
+        "addedTime": "2026-03-18 12:55:37"
+      }
+    ]
+  },
+  "requestId": "b8dd7e39d6605c81",
+  "msg": "success",
+  "subMsg": null,
+  "recommend": "https://www.gigab2b.com/index.php?route=information/open_api/index&doc_id=5"
+}

@@ -33,6 +33,8 @@ export interface OrderFulfillmentGroup {
   isPickup: boolean;
   shippingFee: number;
   items: { sku: string; name: string; qty: number }[];
+  /** Present for pickup groups — ISO YYYY-MM-DD strings */
+  pickupWindow?: { earliest: string; latest: string };
 }
 
 /** Financial breakdown saved with the order */
@@ -48,7 +50,7 @@ export interface PlacedOrder {
   orderNumber: string;
   date: string;
   total: number;
-  status: 'processing' | 'shipped' | 'delivered';
+  status: 'processing' | 'shipped' | 'delivered' | 'pending_pickup' | 'ready_for_pickup' | 'picked_up';
   items: PlacedOrderItem[];
   /** Address snapshot captured at time of checkout */
   address?: OrderAddressSnapshot;

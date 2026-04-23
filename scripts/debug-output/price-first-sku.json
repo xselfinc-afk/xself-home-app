@@ -1,0 +1,44 @@
+{
+  "success": true,
+  "code": "200",
+  "data": [
+    {
+      "sku": "N725S412541K",
+      "currency": "USD",
+      "price": 199,
+      "shippingFee": 9.95,
+      "shippingFeeRange": {
+        "minAmount": 9.95,
+        "maxAmount": 9.95
+      },
+      "internationalFulfillmentFees": [],
+      "exclusivePrice": null,
+      "discountedPrice": null,
+      "promotionFrom": null,
+      "promotionTo": null,
+      "purchaseLimit": null,
+      "mapPrice": 0,
+      "srpPrice": null,
+      "futureMapPrice": null,
+      "effectMapTime": null,
+      "sellerInfo": {
+        "sellerStore": "BY",
+        "sellerType": "GENERAL",
+        "gigaIndex": "82.55",
+        "sellerCode": "N725",
+        "sellerReturnRate": "Low",
+        "sellerReturnApprovalRate": "Moderate",
+        "sellerMessageResponseRate": "N/A"
+      },
+      "spotPrice": [],
+      "rebatesPrice": [],
+      "marginPrice": [],
+      "skuAvailable": true,
+      "futurePrice": []
+    }
+  ],
+  "requestId": "05dcf6565d3505c4",
+  "msg": "success",
+  "subMsg": null,
+  "recommend": "https://www.gigab2b.com/index.php?route=information/open_api/index&doc_id=7"
+}

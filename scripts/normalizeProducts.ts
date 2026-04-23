@@ -77,9 +77,14 @@ async function run() {
 
     if (normalized.length === 0) continue;
 
+    // Strip columns that may not exist in older DB deployments.
+    // Run: ALTER TABLE standardized_products ADD COLUMN IF NOT EXISTS new_arrival_added_at timestamptz;
+    // to enable this field, then remove this strip.
+    const upsertRows = normalized.map(({ new_arrival_added_at: _dropped, ...rest }) => rest);
+
     const { error: upsertError } = await supabase
       .from('standardized_products')
-      .upsert(normalized, { onConflict: 'supplier_product_id' });
+      .upsert(upsertRows, { onConflict: 'supplier_product_id' });
 
     if (upsertError) {
       console.error(`[normalizeProducts] Upsert failed for batch starting at ${i}:`, upsertError.message);

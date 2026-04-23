@@ -2,6 +2,7 @@ import { geocodeAddress, Coords } from './geocodingService';
 import { warehouses, Warehouse } from '../data/warehouses';
 import { getDistanceMiles } from '../utils/distance';
 import type { SkuInventory } from './gigaInventoryService';
+import { getPickupWindow, PickupWindow } from './pickupDateService';
 
 export const SHIPPING_FEE = 99;
 export const PICKUP_THRESHOLD_MILES = 30;
@@ -13,6 +14,8 @@ export type FulfillmentGroup = {
   shipping: number;    // 0 for pickup, SHIPPING_FEE for ship
   items: { sku: string; name: string; qty: number; price: number; img: string }[];
   estimatedDelivery: string;
+  /** Calculated pickup window — only present when isPickup=true */
+  pickupWindow?: PickupWindow;
 };
 
 export type FulfillmentPlan = {
@@ -38,7 +41,7 @@ async function getWarehouseCoords(w: Warehouse): Promise<Coords | null> {
 }
 
 function estimatedDelivery(distanceMiles: number): string {
-  if (distanceMiles <= 30) return 'Ready for pickup today';
+  if (distanceMiles <= 30) return 'Pickup available in 2–5 days, between 10:00 AM – 2:00 PM';
   if (distanceMiles <= 100) return '1–2 business days';
   if (distanceMiles <= 300) return '2–4 business days';
   return '3–7 business days';
@@ -103,9 +106,9 @@ export async function planFulfillment(
     for (const item of cart) {
       const skuMap = stockMap.get(item.sku) ?? stockMap.get(item.productId);
       if (!skuMap) {
-        // No inventory data for this SKU — treat as available (optimistic)
-        console.log(`[Fulfillment] No inventory data for SKU ${item.sku} (productId: ${item.productId}) — assuming in stock`);
-        continue;
+        // No inventory data for this SKU — treat as unavailable (strict, per project rules)
+        console.log(`[Fulfillment] No inventory data for SKU ${item.sku} (productId: ${item.productId}) — treating as out of stock`);
+        return false;
       }
       const qty = skuMap.get(warehouseCode) ?? 0;
       if (qty < item.qty) return false;
@@ -141,6 +144,7 @@ export async function planFulfillment(
               img: item.img,
             })),
             estimatedDelivery: estimatedDelivery(candidate.distanceMiles),
+            pickupWindow: isPickup ? getPickupWindow() : undefined,
           },
         ],
         totalShipping: isPickup ? 0 : SHIPPING_FEE,
@@ -207,6 +211,7 @@ export async function planFulfillment(
         img: item.img,
       })),
       estimatedDelivery: estimatedDelivery(warehouseEntry.distanceMiles),
+      pickupWindow: isPickup ? getPickupWindow() : undefined,
     };
   });
 
@@ -256,6 +261,7 @@ export async function planFulfillmentFallback(
           img: item.img,
         })),
         estimatedDelivery: estimatedDelivery(nearest.distanceMiles),
+        pickupWindow: isPickup ? getPickupWindow() : undefined,
       },
     ],
     totalShipping: isPickup ? 0 : SHIPPING_FEE,

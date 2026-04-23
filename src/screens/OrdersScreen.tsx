@@ -8,18 +8,36 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useRewards, getReferralLink } from '../context/RewardsContext';
 import { useOrders, PlacedOrder, OrderFulfillmentGroup } from '../context/OrdersContext';
+import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 
 const STATUS_COLORS: Record<string, string> = {
-  delivered: '#16A34A',
-  shipped: '#2563EB',
-  processing: '#F59E0B',
+  delivered:      '#16A34A',
+  shipped:        '#2563EB',
+  processing:     '#F59E0B',
+  pending_pickup: '#CA8A04',
+  ready_for_pickup: '#0D5F67',
+  picked_up:      '#16A34A',
 };
 const STATUS_ICONS: Record<string, any> = {
-  delivered: 'checkmark-circle',
-  shipped: 'cube-outline',
-  processing: 'time-outline',
+  delivered:      'checkmark-circle',
+  shipped:        'cube-outline',
+  processing:     'time-outline',
+  pending_pickup: 'storefront-outline',
+  ready_for_pickup: 'storefront',
+  picked_up:      'checkmark-circle',
+};
+const STATUS_LABELS: Record<string, string> = {
+  delivered:      'Delivered',
+  shipped:        'Shipped',
+  processing:     'Processing',
+  pending_pickup: 'Pending Pickup',
+  ready_for_pickup: 'Ready for Pickup',
+  picked_up:      'Picked Up',
 };
 const STEP_ACTIVE: Record<string, number> = { processing: 0, shipped: 1, delivered: 2 };
+const PICKUP_STEP_ACTIVE: Record<string, number> = {
+  pending_pickup: 0, ready_for_pickup: 1, picked_up: 2,
+};
 
 interface ReviewTarget {
   itemName: string;
@@ -86,8 +104,12 @@ export default function OrdersScreen({ navigation }: any) {
   };
 
   const renderOrder = ({ item: order }: { item: PlacedOrder }) => {
-    const activeStep = STEP_ACTIVE[order.status] ?? 0;
-    const isDelivered = order.status === 'delivered';
+    const isPickupOrder = order.status === 'pending_pickup' || order.status === 'ready_for_pickup' || order.status === 'picked_up';
+    const activeStep = isPickupOrder
+      ? (PICKUP_STEP_ACTIVE[order.status] ?? 0)
+      : (STEP_ACTIVE[order.status] ?? 0);
+    const isCompleted = order.status === 'delivered' || order.status === 'picked_up';
+    const color = STATUS_COLORS[order.status] ?? '#F59E0B';
 
     return (
       <View style={styles.card}>
@@ -96,17 +118,33 @@ export default function OrdersScreen({ navigation }: any) {
             <Text style={styles.orderId}>{order.orderNumber} · <Text style={styles.orderTotal}>${order.total}</Text></Text>
             <Text style={styles.orderDate}>{order.date}</Text>
           </View>
-          <View style={[styles.badge, { backgroundColor: STATUS_COLORS[order.status] + '18' }]}>
-            <Ionicons name={STATUS_ICONS[order.status]} size={11} color={STATUS_COLORS[order.status]} />
-            <Text style={[styles.badgeText, { color: STATUS_COLORS[order.status] }]}>
-              {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+          <View style={[styles.badge, { backgroundColor: color + '18' }]}>
+            <Ionicons name={STATUS_ICONS[order.status] ?? 'time-outline'} size={11} color={color} />
+            <Text style={[styles.badgeText, { color }]}>
+              {STATUS_LABELS[order.status] ?? order.status}
             </Text>
           </View>
         </View>
 
-        {!isDelivered && (
+        {!isCompleted && !isPickupOrder && (
           <View style={styles.tracker}>
             {(['Ordered', 'Shipped', 'Delivered'] as const).map((step, i) => (
+              <React.Fragment key={step}>
+                <View style={styles.stepWrap}>
+                  <View style={[styles.stepDot, i <= activeStep && styles.stepDotActive]}>
+                    {i <= activeStep && <Ionicons name="checkmark" size={8} color="white" />}
+                  </View>
+                  <Text style={[styles.stepLabel, i <= activeStep && styles.stepLabelActive]}>{step}</Text>
+                </View>
+                {i < 2 && <View style={[styles.stepLine, i < activeStep && styles.stepLineActive]} />}
+              </React.Fragment>
+            ))}
+          </View>
+        )}
+
+        {isPickupOrder && !isCompleted && (
+          <View style={styles.tracker}>
+            {(['Ordered', 'Ready for Pickup', 'Picked Up'] as const).map((step, i) => (
               <React.Fragment key={step}>
                 <View style={styles.stepWrap}>
                   <View style={[styles.stepDot, i <= activeStep && styles.stepDotActive]}>
@@ -148,6 +186,15 @@ export default function OrdersScreen({ navigation }: any) {
                 <Text style={styles.fulfillGroupAddr}>
                   {group.warehouseAddress.replace(', United States', '')}
                 </Text>
+                {group.isPickup && group.pickupWindow && (
+                  <View style={styles.pickupWindowRow}>
+                    <Ionicons name="calendar-outline" size={11} color="#0D5F67" style={{ marginRight: 4 }} />
+                    <Text style={styles.pickupWindowText}>
+                      {formatPickupDate(group.pickupWindow.earliest)} – {formatPickupDate(group.pickupWindow.latest)}
+                    </Text>
+                    <Text style={styles.pickupWindowTime}>  {PICKUP_TIME_WINDOW}</Text>
+                  </View>
+                )}
                 <Text style={styles.fulfillGroupItems} numberOfLines={3}>
                   {group.items.map(i => `${i.name} ×${i.qty}`).join('  ·  ')}
                 </Text>
@@ -169,7 +216,7 @@ export default function OrdersScreen({ navigation }: any) {
                 )}
                 <Text style={styles.itemSku}>SKU: {item.sku}</Text>
                 <Text style={styles.itemPrice}>${item.price}</Text>
-                {isDelivered && (
+                {isCompleted && (
                   <View style={styles.actionRow}>
                     <TouchableOpacity
                       style={[styles.actionBtn, hasReviewed && styles.actionBtnReviewed]}
@@ -329,6 +376,9 @@ const styles = StyleSheet.create({
   fulfillGroupMethod: { fontSize: 13, fontWeight: '600', color: '#374151', flex: 1 },
   fulfillGroupAddr: { fontSize: 11, color: '#6B7280', marginBottom: 3, marginLeft: 18 },
   fulfillGroupItems: { fontSize: 11, color: '#374151', marginLeft: 18, lineHeight: 16 },
+  pickupWindowRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 18, marginTop: 3, marginBottom: 2 },
+  pickupWindowText: { fontSize: 11, color: '#0D5F67', fontWeight: '500' },
+  pickupWindowTime: { fontSize: 11, color: '#CA8A04', fontWeight: '500' },
 
   item: { flexDirection: 'row', padding: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   itemImg: { width: 56, height: 56, borderRadius: 6, backgroundColor: '#F3F4F6' },

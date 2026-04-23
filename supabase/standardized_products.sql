@@ -99,3 +99,12 @@ create policy "Public can read normalized products"
 --
 -- After running the migration, re-run scripts/normalizeProducts.ts so the
 -- pipeline backfills original_price for all existing rows.
+
+-- ── Migration: add new_arrival_added_at to existing deployments ───────────────
+-- Run this once in the Supabase SQL Editor if the table already exists:
+--
+--   alter table public.standardized_products
+--     add column if not exists new_arrival_added_at timestamptz null;
+--
+-- After adding the column, remove the `new_arrival_added_at` strip in
+-- scripts/normalizeProducts.ts (search for "_dropped") and re-run normalization.

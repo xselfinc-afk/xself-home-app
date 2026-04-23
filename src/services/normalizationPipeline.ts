@@ -175,8 +175,10 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
 
   // ── Price & original_price ────────────────────────────────────────────────────
   // raw_payload stores the complete merged API item (see supplierPickupService.ts).
-  // spotPrice[0].price = list/retail price; spotPrice[0].discountedPrice = buyer price.
-  // Top-level discountedPrice / exclusivePrice / salePrice are also checked.
+  // Priority order for original_price:
+  //   1. discountedPrice/exclusivePrice/salePrice < raw.price  (genuine GIGA discount)
+  //   2. srpPrice > raw.price                                  (GIGA Suggested Retail Price)
+  //   3. spring_sale_original_price                            (set by setupSpringCollection.ts)
   const spotArr = Array.isArray(raw.spotPrice)
     ? (raw.spotPrice as Array<Record<string, unknown>>)
     : [];
@@ -194,11 +196,22 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
   const discountedNum = discountedRaw != null ? Number(discountedRaw) : 0;
   const listNum = listRaw != null ? Number(listRaw) : 0;
 
+  // srpPrice = GIGA's Suggested Retail Price field (present in price/v1 response)
+  const srpNum = raw.srpPrice != null && Number(raw.srpPrice) > 0 ? Number(raw.srpPrice) : 0;
+  // spring_sale_original_price = promotional list price written by setupSpringCollection.ts
+  const springSaleOriginal =
+    raw.spring_sale_original_price != null && Number(raw.spring_sale_original_price) > 0
+      ? Number(raw.spring_sale_original_price)
+      : 0;
+
   // Selling price = discounted if valid, else fall back to whatever ingestion stored
   const price = discountedNum > 0 ? discountedNum : Number(row.price ?? 0);
   // original_price = list price only when a genuine discount exists
   const originalPrice: number | null =
-    discountedNum > 0 && listNum > discountedNum ? listNum : null;
+    discountedNum > 0 && listNum > discountedNum ? listNum :
+    srpNum > 0 && srpNum > price ? srpNum :
+    springSaleOriginal > 0 && springSaleOriginal > price ? springSaleOriginal :
+    null;
 
   // ── SKU: XH-[CATEGORY]-[SCENE]-[LAST6] ──────────────────────────────────────
   const cc = categoryCode(category, productTitle);

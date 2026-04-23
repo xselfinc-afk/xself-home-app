@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PRODUCT_CATEGORIES, matchesCategory, normalizeForSkuMatch, matchesSearch } from '../data/categories';
 import { supabase } from '../lib/supabase';
+import { fetchCaAvailableProductIds } from '../services/inventoryCacheService';
 import { CategoryPillRow } from '../components/CategoryPillRow';
 import { adaptStandardizedRow } from '../services/detailProductAdapter';
 import type { Product } from '../data/products';
@@ -53,6 +54,7 @@ export default function DiscoverScreen({ navigation }: any) {
 
   const [search, setSearch] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
+  const [caAvailableIds, setCaAvailableIds] = useState<Set<string>>(new Set());
   const [filterVisible, setFilterVisible] = useState(false);
   const [sortBy, setSortBy] = useState('Recommended');
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
@@ -117,6 +119,11 @@ export default function DiscoverScreen({ navigation }: any) {
       console.log('[Discover] first 10 family keys:', first10FamilyKeys);
       console.log('[Discover] passing', deduped.length, 'rows to list renderer');
       setProducts(deduped);
+
+      // Load CA pickup availability for ranking — non-blocking, degrades to no boost if empty
+      fetchCaAvailableProductIds()
+        .then(ids => { if (active) setCaAvailableIds(ids); })
+        .catch(() => { /* cache unavailable — ranking unaffected */ });
     }
 
     loadProducts();
@@ -188,6 +195,15 @@ export default function DiscoverScreen({ navigation }: any) {
     filtered = [...filtered];
   } else if (sortBy === 'Best Selling') {
     filtered = [...filtered].sort((a, b) => b.sales - a.sales);
+  } else {
+    // Recommended: CA-pickup-available products first; ties keep existing order
+    if (caAvailableIds.size > 0) {
+      filtered = [...filtered].sort((a, b) => {
+        const aCA = caAvailableIds.has(a.id) ? 0 : 1;
+        const bCA = caAvailableIds.has(b.id) ? 0 : 1;
+        return aCA - bCA;
+      });
+    }
   }
 
   const col0 = filtered.filter((_, i) => i % 3 === 0);

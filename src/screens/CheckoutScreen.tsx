@@ -10,7 +10,8 @@ import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
 import { fetchSkuWarehouseStock } from '../services/gigaInventoryService';
-import { planFulfillment, planFulfillmentFallback, FulfillmentPlan } from '../services/fulfillmentPlanner';
+import { planFulfillment, FulfillmentPlan, SHIPPING_FEE } from '../services/fulfillmentPlanner';
+import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 
 /**
  * Canonical fingerprint of a fulfillment plan for change detection.
@@ -27,6 +28,20 @@ function planFingerprint(plan: FulfillmentPlan): string {
     .sort((a, b) => a.key.localeCompare(b.key))
     .map(g => `${g.key}:${g.isPickup}:[${g.skus}]`)
     .join('|');
+}
+
+/**
+ * When the user selects "Delivery" on a plan that originally recommended pickup,
+ * convert all pickup groups into shipping groups using the same warehouses.
+ */
+function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
+  const groups = plan.groups.map(g => {
+    if (!g.isPickup) return g;
+    const d = g.distanceMiles;
+    const eta = d <= 100 ? '1–2 business days' : d <= 300 ? '2–4 business days' : '3–7 business days';
+    return { ...g, isPickup: false as const, shipping: SHIPPING_FEE, estimatedDelivery: eta, pickupWindow: undefined };
+  });
+  return { ...plan, groups, totalShipping: groups.reduce((s, g) => s + g.shipping, 0) };
 }
 
 export default function CheckoutScreen({ route, navigation }: any) {
@@ -95,11 +110,35 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [recheckError, setRecheckError] = useState<string | null>(null);
+  // Tracks WHY the fulfillment plan is missing — drives the correct error message in the UI
+  const [deliveryErrorKind, setDeliveryErrorKind] = useState<'inventory_failed' | 'geocode_failed' | null>(null);
+
+  // 'pickup' | 'delivery' | null — null means user hasn't chosen yet (req 9)
+  const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
+
+  // When plan changes: auto-select 'delivery' when no pickup is available;
+  // require explicit selection (null) when pickup IS available (req 9).
+  useEffect(() => {
+    if (!fulfillmentPlan) { setFulfillmentChoice(null); return; }
+    setFulfillmentChoice(fulfillmentPlan.groups.some(g => g.isPickup) ? null : 'delivery');
+  }, [fulfillmentPlan]);
+
+  // Whether the raw plan includes a pickup-capable warehouse
+  const planHasPickup = fulfillmentPlan?.groups.some(g => g.isPickup) ?? false;
+
+  // Active plan: reflects the user's chosen fulfillment method.
+  // When user picks delivery on a pickup plan, all pickup groups become shipping groups.
+  const activePlan: FulfillmentPlan | null = (() => {
+    if (!fulfillmentPlan) return null;
+    if (planHasPickup && fulfillmentChoice === 'delivery') return overrideGroupsToDelivery(fulfillmentPlan);
+    return fulfillmentPlan;
+  })();
+
   // No default fee while loading — show 0 until the plan resolves
-  const shipping = fulfillmentPlan?.totalShipping ?? 0;
-  const isPickup = fulfillmentPlan !== null && fulfillmentPlan.groups.length > 0 && fulfillmentPlan.groups.every(g => g.isPickup);
+  const shipping = activePlan?.totalShipping ?? 0;
+  const isPickup = activePlan !== null && activePlan.groups.length > 0 && activePlan.groups.every(g => g.isPickup);
   // Only non-pickup groups count as "shipments" for the label
-  const shippingGroupCount = fulfillmentPlan ? fulfillmentPlan.groups.filter(g => !g.isPickup).length : 0;
+  const shippingGroupCount = activePlan ? activePlan.groups.filter(g => !g.isPickup).length : 0;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
   const tax = Math.round(subtotal * 0.075);
@@ -158,11 +197,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
     let cancelled = false;
     setDeliveryLoading(true);
     setRecheckError(null);
+    setDeliveryErrorKind(null);
 
-    const skus = orderItems.map(item => item.sku);
-    console.log('[Checkout] Fetching inventory for SKUs:', skus);
+    // productId = supplier_product_id = GIGA native SKU (what GIGA expects)
+    // item.sku = sku_custom ("XH-...") = Xself display SKU — GIGA does not know this
+    const gigaSkus = orderItems.map(item => item.productId || item.sku);
+    console.log('[Checkout] SKU mapping for inventory:',
+      orderItems.map(i => `skuCustom=${i.sku} gigaSku=${i.productId || i.sku}`).join(' | '));
+    console.log('[Checkout] Sending to GIGA:', gigaSkus);
 
-    fetchSkuWarehouseStock(skus)
+    fetchSkuWarehouseStock(gigaSkus)
       .then(inventory => {
         if (cancelled) return;
         console.log('[Checkout] Inventory fetched, planning fulfillment...');
@@ -181,18 +225,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
       })
       .catch(err => {
         if (cancelled) return undefined;
-        console.log('[Checkout] Inventory/fulfillment error, falling back:', (err as Error).message);
-        return planFulfillmentFallback(
-          orderItems.map(item => ({
-            sku: item.sku,
-            productId: item.productId,
-            name: item.name,
-            price: item.price,
-            img: item.img,
-            qty: item.qty,
-          })),
-          addressString,
-        );
+        const msg = (err as Error).message ?? '';
+        console.log('[Checkout] Inventory fetch failed — blocking checkout:', msg);
+        setDeliveryErrorKind('inventory_failed');
+        return undefined;
       })
       .then(plan => {
         if (cancelled || !plan) return;
@@ -209,6 +245,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
       .catch(err => {
         if (cancelled) return;
         console.log('[Checkout] Fulfillment fallback also failed:', (err as Error).message);
+        setDeliveryErrorKind('geocode_failed');
         setFulfillmentPlan(null);
       })
       .finally(() => {
@@ -311,65 +348,148 @@ export default function CheckoutScreen({ route, navigation }: any) {
           )}
         </View>
 
-        {/* Delivery */}
+        {/* Fulfillment */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Delivery</Text>
+          <Text style={styles.sectionTitle}>Fulfillment</Text>
+
           {deliveryLoading && (
             <View style={styles.card}>
               <Text style={styles.fulfillSub}>Checking availability…</Text>
             </View>
           )}
+
+          {!deliveryLoading && !fulfillmentPlan && !selectedAddress && (
+            <View style={styles.fulfillInfoBanner}>
+              <Ionicons name="location-outline" size={16} color="#6B7280" />
+              <Text style={styles.fulfillInfoText}>
+                Please add or update your shipping address to see delivery options.
+              </Text>
+            </View>
+          )}
+
           {!deliveryLoading && !fulfillmentPlan && selectedAddress && (
             <View style={styles.fulfillErrorBanner}>
               <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
               <Text style={styles.fulfillErrorText}>
-                Unable to determine delivery options. Please check your address or try again.
+                {deliveryErrorKind === 'geocode_failed'
+                  ? 'Delivery is not available for this address. Please choose another address or select pickup if available.'
+                  : "We're unable to retrieve inventory information right now. Please try again later."}
               </Text>
             </View>
           )}
-          {!deliveryLoading && fulfillmentPlan && fulfillmentPlan.groups.map((group, idx) => (
-            <View key={group.warehouse.code} style={[styles.card, idx > 0 && { marginTop: 8 }]}>
-              {fulfillmentPlan.groups.length > 1 && (
-                <Text style={styles.fulfillGroupLabel}>
-                  Shipment {idx + 1} of {fulfillmentPlan.groups.length}
-                </Text>
-              )}
-              <View style={styles.fulfillRow}>
-                <Ionicons
-                  name={group.isPickup ? 'storefront-outline' : 'cube-outline'}
-                  size={15}
-                  color="#CA8A04"
-                />
-                <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
-                    {group.isPickup ? 'Warehouse Pickup — Free' : `Shipping — $${group.shipping}`}
-                  </Text>
-                  <Text style={styles.fulfillSub}>
-                    {group.isPickup ? 'Pickup available at this warehouse' : 'Delivered to your address'}
-                  </Text>
-                  <Text style={styles.fulfillWarehouse}>
-                    {group.warehouse.label ?? group.warehouse.code} · {group.distanceMiles.toFixed(1)} mi
-                  </Text>
-                  {group.isPickup && (
-                    <Text style={styles.fulfillWarehouse}>
-                      Pickup address: {group.warehouse.address.replace(', United States', '')}
-                    </Text>
-                  )}
-                  <Text style={styles.fulfillWarehouse}>{group.estimatedDelivery}</Text>
+
+          {/* Pickup available — show both options, require explicit selection (req 9) */}
+          {!deliveryLoading && fulfillmentPlan && planHasPickup && (
+            <>
+              <Text style={styles.fulfillChoiceHint}>Choose how to receive your order:</Text>
+
+              {/* Pickup option */}
+              <TouchableOpacity
+                style={[styles.fulfillOptionCard, fulfillmentChoice === 'pickup' && styles.fulfillOptionSelected]}
+                onPress={() => setFulfillmentChoice('pickup')}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.radioOuter, fulfillmentChoice === 'pickup' && styles.radioOuterActive]}>
+                  {fulfillmentChoice === 'pickup' && <View style={styles.radioDot} />}
                 </View>
-              </View>
-              {fulfillmentPlan.groups.length > 1 && group.items.length > 0 && (
-                <View style={styles.fulfillItemList}>
-                  {group.items.map(item => (
-                    <View key={item.sku} style={styles.fulfillItemRow}>
-                      <Text style={styles.fulfillItemName} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.fulfillItemQty}>×{item.qty}</Text>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.fulfillOptionLabel}>Warehouse Pickup — Free</Text>
+                  {fulfillmentPlan.groups.filter(g => g.isPickup).map(g => (
+                    <View key={g.warehouse.code}>
+                      <Text style={styles.fulfillOptionSub}>
+                        {g.warehouse.label} · {g.distanceMiles.toFixed(1)} mi
+                      </Text>
+                      <Text style={styles.fulfillOptionSub}>
+                        {g.warehouse.address.replace(', United States', '')}
+                      </Text>
+                      {g.pickupWindow && (
+                        <View style={styles.pickupDatesRow}>
+                          <Text style={styles.pickupDateLabel}>
+                            Earliest: {formatPickupDate(g.pickupWindow.earliest)}
+                          </Text>
+                          <Text style={styles.pickupDateSep}> · </Text>
+                          <Text style={styles.pickupDateLabel}>
+                            Latest: {formatPickupDate(g.pickupWindow.latest)}
+                          </Text>
+                        </View>
+                      )}
+                      <Text style={styles.pickupTimeWindow}>
+                        Pickup window: {PICKUP_TIME_WINDOW}
+                      </Text>
                     </View>
                   ))}
+                  <Text style={styles.pickupNotice}>
+                    Same-day pickup not available · Weekends excluded
+                  </Text>
                 </View>
-              )}
+              </TouchableOpacity>
+
+              {/* Delivery option */}
+              <TouchableOpacity
+                style={[styles.fulfillOptionCard, { marginTop: 8 }, fulfillmentChoice === 'delivery' && styles.fulfillOptionSelected]}
+                onPress={() => setFulfillmentChoice('delivery')}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.radioOuter, fulfillmentChoice === 'delivery' && styles.radioOuterActive]}>
+                  {fulfillmentChoice === 'delivery' && <View style={styles.radioDot} />}
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.fulfillOptionLabel}>Home Delivery — ${SHIPPING_FEE}</Text>
+                  {fulfillmentPlan.groups.map(g => (
+                    <Text key={g.warehouse.code} style={styles.fulfillOptionSub}>
+                      Ships from {g.warehouse.label} · {g.distanceMiles.toFixed(1)} mi
+                    </Text>
+                  ))}
+                  <Text style={styles.fulfillOptionSub}>
+                    Estimated: {fulfillmentPlan.groups[0]
+                      ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
+                        : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'
+                        : '3–7 business days')
+                      : '3–7 business days'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {/* Delivery only — auto-selected, no radio needed */}
+          {!deliveryLoading && fulfillmentPlan && !planHasPickup && (
+            <View style={styles.card}>
+              {fulfillmentPlan.groups.map((group, idx) => (
+                <View key={group.warehouse.code} style={[idx > 0 && { marginTop: 8 }]}>
+                  {fulfillmentPlan.groups.length > 1 && (
+                    <Text style={styles.fulfillGroupLabel}>
+                      Shipment {idx + 1} of {fulfillmentPlan.groups.length}
+                    </Text>
+                  )}
+                  <View style={styles.fulfillRow}>
+                    <Ionicons name="cube-outline" size={15} color="#CA8A04" />
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
+                        Shipping — ${group.shipping}
+                      </Text>
+                      <Text style={styles.fulfillSub}>Delivered to your address</Text>
+                      <Text style={styles.fulfillWarehouse}>
+                        {group.warehouse.label ?? group.warehouse.code} · {group.distanceMiles.toFixed(1)} mi
+                      </Text>
+                      <Text style={styles.fulfillWarehouse}>{group.estimatedDelivery}</Text>
+                    </View>
+                  </View>
+                  {fulfillmentPlan.groups.length > 1 && group.items.length > 0 && (
+                    <View style={styles.fulfillItemList}>
+                      {group.items.map(item => (
+                        <View key={item.sku} style={styles.fulfillItemRow}>
+                          <Text style={styles.fulfillItemName} numberOfLines={1}>{item.name}</Text>
+                          <Text style={styles.fulfillItemQty}>×{item.qty}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              ))}
             </View>
-          ))}
+          )}
+
           {!deliveryLoading && fulfillmentPlan?.isFallback && (
             <View style={styles.fulfillFallbackBanner}>
               <Ionicons name="warning-outline" size={13} color="#92660A" />
@@ -490,7 +610,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           {!deliveryLoading && selectedAddress && !fulfillmentPlan && (
             <View style={styles.placeOrderErrorNote}>
               <Text style={styles.placeOrderErrorText}>
-                Delivery could not be resolved. Check your address and try again.
+                {deliveryErrorKind === 'geocode_failed'
+                  ? 'Delivery unavailable for this address. Please choose a different address.'
+                  : 'Unable to verify inventory. Please try again later.'}
               </Text>
             </View>
           )}
@@ -500,17 +622,17 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           <TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || (selectedAddress && !fulfillmentPlan)) && { opacity: 0.6 }]}
-            disabled={placing || deliveryLoading || rechecking || (selectedAddress != null && !fulfillmentPlan)}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null}
             onPress={async () => {
               if (!selectedAddress) { setShowAddForm(true); setAddrModalVisible(true); return; }
-              if (placing || deliveryLoading || rechecking || !fulfillmentPlan) return;
+              if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) return;
 
               // Final inventory recheck before submission
               setRecheckError(null);
               setRechecking(true);
               try {
-                const skus = orderItems.map(item => item.sku);
+                const skus = orderItems.map(item => item.productId || item.sku);
                 const freshInventory = await fetchSkuWarehouseStock(skus);
                 const addrParts = [
                   selectedAddress.address_line_1,
@@ -584,16 +706,19 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
               // Build SKU → warehouseCode map for item enrichment
               const skuWarehouseMap = new Map<string, string>();
-              fulfillmentPlan!.groups.forEach(g => {
+              activePlan!.groups.forEach(g => {
                 g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
               });
+
+              // Pickup orders enter the pickup status flow; delivery orders enter processing
+              const isPickupOrder = activePlan!.groups.some(g => g.isPickup);
 
               addOrder({
                 orderId: orderId.current,
                 orderNumber: orderNumber.current,
                 date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
                 total,
-                status: 'processing',
+                status: isPickupOrder ? 'pending_pickup' : 'processing',
                 items: orderItems.map(item => ({
                   ...item,
                   warehouseCode: skuWarehouseMap.get(item.sku),
@@ -608,13 +733,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   zip: selectedAddress.zip,
                   country: selectedAddress.country ?? 'US',
                 } : undefined,
-                fulfillmentGroups: fulfillmentPlan!.groups.map(g => ({
+                fulfillmentGroups: activePlan!.groups.map(g => ({
                   warehouseCode: g.warehouse.code,
                   warehouseLabel: g.warehouse.label,
                   warehouseAddress: g.warehouse.address,
                   distanceMiles: g.distanceMiles,
                   isPickup: g.isPickup,
                   shippingFee: g.shipping,
+                  pickupWindow: g.pickupWindow,
                   items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
                 })),
                 financials: {
@@ -638,6 +764,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               {deliveryLoading
                 ? (fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…')
                 : rechecking ? 'Verifying inventory…'
+                : (planHasPickup && fulfillmentChoice === null) ? 'Select Fulfillment Method'
                 : 'Place Order'}
             </Text>
           </TouchableOpacity>
@@ -899,6 +1026,8 @@ const styles = StyleSheet.create({
   fulfillItemQty: { fontSize: 12, color: '#9CA3AF', fontWeight: '500' },
   fulfillErrorBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEF2F2', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#FECACA' },
   fulfillErrorText: { flex: 1, fontSize: 13, color: '#B45309', lineHeight: 18 },
+  fulfillInfoBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#F9FAFB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#E5E7EB' },
+  fulfillInfoText: { flex: 1, fontSize: 13, color: '#6B7280', lineHeight: 18 },
   placeOrderErrorNote: { backgroundColor: '#FEF2F2', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 10, borderWidth: 1, borderColor: '#FECACA' },
   placeOrderErrorText: { fontSize: 12, color: '#B45309', textAlign: 'center' as const, lineHeight: 17 },
   fulfillFallbackBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: '#FFFBEB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#FDE68A' },
@@ -914,4 +1043,22 @@ const styles = StyleSheet.create({
   fulfillWarehouse: { fontSize: 11, color: '#9CA3AF', marginTop: 3 },
   fulfillStock: { fontSize: 11, color: '#B5B5B5', marginTop: 4 },
   fulfillDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 2 },
+
+  // Fulfillment option selector (req 9 — explicit choice)
+  fulfillChoiceHint: { fontSize: 12, color: '#6B7280', fontWeight: '500', marginBottom: 8 },
+  fulfillOptionCard: {
+    backgroundColor: 'white', borderRadius: 6, padding: 14,
+    flexDirection: 'row', alignItems: 'flex-start',
+    borderWidth: 1.5, borderColor: '#E5E7EB',
+  },
+  fulfillOptionSelected: { borderColor: '#EAB320', backgroundColor: '#FFFDF0' },
+  fulfillOptionLabel: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginBottom: 3 },
+  fulfillOptionSub: { fontSize: 12, color: '#6B7280', lineHeight: 17, marginTop: 1 },
+
+  // Pickup-specific display (req 15)
+  pickupDatesRow: { flexDirection: 'row', alignItems: 'center', marginTop: 5 },
+  pickupDateLabel: { fontSize: 12, color: '#374151', fontWeight: '500' },
+  pickupDateSep: { fontSize: 12, color: '#9CA3AF' },
+  pickupTimeWindow: { fontSize: 12, color: '#CA8A04', fontWeight: '500', marginTop: 3 },
+  pickupNotice: { fontSize: 11, color: '#9CA3AF', marginTop: 5, fontStyle: 'italic' as const },
 });

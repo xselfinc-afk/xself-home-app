@@ -18,3 +18,6 @@ build/
 
 # logs
 *.log
+
+# playwright session (contains auth cookies — never commit)
+scripts/.giga-session.json
