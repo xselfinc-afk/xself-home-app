@@ -20,6 +20,11 @@ const COLLECTIONS: Record<string, CollectionMeta> = {
     title: 'Spring Collection',
     subtitle: 'Fresh picks for the season — up to 30% off select furniture',
   },
+  'spring-sale': {
+    eyebrow: 'SPRING SALE',
+    title: 'Spring Sale',
+    subtitle: 'Up to 30% Off Selected Furniture',
+  },
 };
 
 export default function CollectionScreen({ route, navigation }: any) {
@@ -29,6 +34,7 @@ export default function CollectionScreen({ route, navigation }: any) {
   const { trackClick } = useRecommendations();
   const [items, setItems] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [topDiscount, setTopDiscount] = useState(0);
 
   useEffect(() => {
     if (!collection) { setLoading(false); return; }
@@ -39,11 +45,11 @@ export default function CollectionScreen({ route, navigation }: any) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, original_price, ' +
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, ' +
           'normalization_status, created_at',
         )
         .eq('normalization_status', 'done')
@@ -85,13 +91,13 @@ export default function CollectionScreen({ route, navigation }: any) {
         return pctB - pctA;
       });
 
-      const topDiscount = discounted[0]?.originalPrice
+      const computedTopDiscount = discounted[0]?.originalPrice
         ? Math.round(((discounted[0].originalPrice - discounted[0].price) / discounted[0].originalPrice) * 100)
         : 0;
       console.log('[SpringCollection] final mapped products:', discounted.length);
-      console.log('[SpringCollection] highest discount:', topDiscount + '%');
+      console.log('[SpringCollection] highest discount:', computedTopDiscount + '%');
 
-      if (active) { setItems(discounted); setLoading(false); }
+      if (active) { setItems(discounted); setTopDiscount(computedTopDiscount); setLoading(false); }
     }
 
     loadDiscounted();
@@ -142,7 +148,11 @@ export default function CollectionScreen({ route, navigation }: any) {
           ListHeaderComponent={
             <View style={styles.collectionHeader}>
               <Text style={styles.title}>{collection.title}</Text>
-              <Text style={styles.subtitle}>{collection.subtitle}</Text>
+              <Text style={styles.subtitle}>
+                {key === 'spring-sale' && topDiscount > 0
+                  ? `Up to ${topDiscount}% Off Selected Furniture`
+                  : collection.subtitle}
+              </Text>
               <View style={styles.divider} />
               <Text style={styles.count}>{items.length} items</Text>
             </View>

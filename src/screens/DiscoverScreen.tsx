@@ -4,7 +4,7 @@
  * Do NOT add UI-side cleaning or formatting logic.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PRODUCT_CATEGORIES, matchesCategory, normalizeForSkuMatch, matchesSearch } from '../data/categories';
+import { PRODUCT_CATEGORIES, normalizeForSkuMatch, matchesSearch } from '../data/categories';
 import { supabase } from '../lib/supabase';
 import { fetchCaAvailableProductIds } from '../services/inventoryCacheService';
 import { CategoryPillRow } from '../components/CategoryPillRow';
@@ -36,31 +36,37 @@ const SORT_OPTIONS = [
   'Best Selling',
 ];
 
-const CATEGORY_OPTIONS = [
-  'Storage Cabinet',
-  'Sideboard',
-  'Dresser',
-  'Bookshelf',
-  'TV Stand',
-  'Nightstand',
-  'Dining Chair',
-  'Coffee Table',
-  'Console Table',
-  'Bathroom Cabinet',
-];
+// Price range order for display
+const PRICE_RANGE_ORDER = ['Under $100', '$100 – $299', '$300 – $599', '$600 – $999', '$1000+'];
 
-export default function DiscoverScreen({ navigation }: any) {
+export default function DiscoverScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
   const [search, setSearch] = useState('');
+  const [selectedLevel1, setSelectedLevel1] = useState('All');
+
+  // Apply category filter when navigated from Home category circles
+  useEffect(() => {
+    const cat = route?.params?.initialCategory;
+    if (cat) setSelectedLevel1(cat);
+  }, [route?.params?.initialCategory]);
   const [products, setProducts] = useState<Product[]>([]);
   const [caAvailableIds, setCaAvailableIds] = useState<Set<string>>(new Set());
   const [filterVisible, setFilterVisible] = useState(false);
   const [sortBy, setSortBy] = useState('Recommended');
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
-  const [pendingSortBy, setPendingSortBy] = useState('Recommended');
-  const [pendingCategories, setPendingCategories] = useState<string[]>([]);
+  // Tag-based filter state (applied)
+  const [selectedPriceRanges, setSelectedPriceRanges] = useState<string[]>([]);
+  const [selectedMaterials, setSelectedMaterials]     = useState<string[]>([]);
+  const [selectedColors, setSelectedColors]           = useState<string[]>([]);
+  const [selectedStyles, setSelectedStyles]           = useState<string[]>([]);
+
+  // Tag-based filter state (pending — in-drawer before Apply)
+  const [pendingSortBy, setPendingSortBy]               = useState('Recommended');
+  const [pendingPriceRanges, setPendingPriceRanges]     = useState<string[]>([]);
+  const [pendingMaterials, setPendingMaterials]         = useState<string[]>([]);
+  const [pendingColors, setPendingColors]               = useState<string[]>([]);
+  const [pendingStyles, setPendingStyles]               = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -69,11 +75,11 @@ export default function DiscoverScreen({ navigation }: any) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, sku_search, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival',
         )
         .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
@@ -120,6 +126,14 @@ export default function DiscoverScreen({ navigation }: any) {
       console.log('[Discover] passing', deduped.length, 'rows to list renderer');
       setProducts(deduped);
 
+      if (__DEV__) {
+        const priceRanges = [...new Set(deduped.flatMap(p => p.tags?.price_range ?? []))];
+        const materials   = [...new Set(deduped.flatMap(p => p.tags?.material ?? []))].sort();
+        const colors      = [...new Set(deduped.flatMap(p => p.tags?.color ?? []))].sort();
+        const styles      = [...new Set(deduped.flatMap(p => p.tags?.style ?? []))].sort();
+        console.log('[Discover] available filter options:', { priceRanges, materials, colors, styles });
+      }
+
       // Load CA pickup availability for ranking — non-blocking, degrades to no boost if empty
       fetchCaAvailableProductIds()
         .then(ids => { if (active) setCaAvailableIds(ids); })
@@ -133,26 +147,56 @@ export default function DiscoverScreen({ navigation }: any) {
     };
   }, []);
 
+  // Available filter options — derived from loaded products
+  const availablePriceRanges = useMemo(
+    () => PRICE_RANGE_ORDER.filter(r => products.some(p => p.tags?.price_range?.includes(r))),
+    [products],
+  );
+  const availableMaterials = useMemo(
+    () => [...new Set(products.flatMap(p => p.tags?.material ?? []))].sort(),
+    [products],
+  );
+  const availableColors = useMemo(
+    () => [...new Set(products.flatMap(p => p.tags?.color ?? []))].sort(),
+    [products],
+  );
+  const availableStyles = useMemo(
+    () => [...new Set(products.flatMap(p => p.tags?.style ?? []))].sort(),
+    [products],
+  );
+
   const activeFilterCount = [
     sortBy !== 'Recommended' ? 1 : 0,
-    selectedCategories.length,
+    selectedPriceRanges.length,
+    selectedMaterials.length,
+    selectedColors.length,
+    selectedStyles.length,
   ].reduce((a, b) => a + b, 0);
 
   const openFilter = () => {
     setPendingSortBy(sortBy);
-    setPendingCategories([...selectedCategories]);
+    setPendingPriceRanges([...selectedPriceRanges]);
+    setPendingMaterials([...selectedMaterials]);
+    setPendingColors([...selectedColors]);
+    setPendingStyles([...selectedStyles]);
     setFilterVisible(true);
   };
 
   const applyFilters = () => {
     setSortBy(pendingSortBy);
-    setSelectedCategories(pendingCategories);
+    setSelectedPriceRanges(pendingPriceRanges);
+    setSelectedMaterials(pendingMaterials);
+    setSelectedColors(pendingColors);
+    setSelectedStyles(pendingStyles);
     setFilterVisible(false);
   };
 
   const resetFilters = () => {
     setPendingSortBy('Recommended');
-    setPendingCategories([]);
+    setPendingPriceRanges([]);
+    setPendingMaterials([]);
+    setPendingColors([]);
+    setPendingStyles([]);
   };
 
   const togglePendingChip = (
@@ -172,9 +216,32 @@ export default function DiscoverScreen({ navigation }: any) {
     return matchesSearch(p, search);
   });
 
-  if (selectedCategories.length > 0) {
+  if (selectedLevel1 !== 'All') {
+    filtered = filtered.filter(p => {
+      if (p.categoryPath?.level1) return p.categoryPath.level1 === selectedLevel1;
+      // Fallback for products without a structured categoryPath
+      return p.categoryLabel === selectedLevel1 || p.category === selectedLevel1;
+    });
+  }
+
+  if (selectedPriceRanges.length > 0) {
     filtered = filtered.filter(p =>
-      selectedCategories.some(c => matchesCategory(p, c)),
+      selectedPriceRanges.some(r => p.tags?.price_range?.includes(r)),
+    );
+  }
+  if (selectedMaterials.length > 0) {
+    filtered = filtered.filter(p =>
+      selectedMaterials.some(m => p.tags?.material?.includes(m)),
+    );
+  }
+  if (selectedColors.length > 0) {
+    filtered = filtered.filter(p =>
+      selectedColors.some(c => p.tags?.color?.includes(c)),
+    );
+  }
+  if (selectedStyles.length > 0) {
+    filtered = filtered.filter(p =>
+      selectedStyles.some(s => p.tags?.style?.includes(s)),
     );
   }
 
@@ -184,7 +251,7 @@ export default function DiscoverScreen({ navigation }: any) {
     console.log('[Search] normalized query:', JSON.stringify(qNorm));
     console.log('[Search] sku partial match enabled:', qNorm.length >= 2);
     console.log('[Search] result count:', filtered.length);
-    console.log('[Discover] render — products:', products.length, '| categories:', selectedCategories, '| filtered:', filtered.length);
+    console.log('[Discover] render — products:', products.length, '| filtered:', filtered.length);
   }
 
   if (sortBy === 'Price: Low to High') {
@@ -241,12 +308,8 @@ export default function DiscoverScreen({ navigation }: any) {
 
         <CategoryPillRow
           categories={PRODUCT_CATEGORIES}
-          isActive={cat =>
-            cat === 'All'
-              ? search === ''
-              : search.toLowerCase() === cat.toLowerCase()
-          }
-          onPress={cat => setSearch(cat === 'All' ? '' : cat)}
+          isActive={cat => cat === selectedLevel1}
+          onPress={cat => setSelectedLevel1(cat)}
         />
       </View>
 
@@ -346,36 +409,89 @@ export default function DiscoverScreen({ navigation }: any) {
                 </TouchableOpacity>
               ))}
 
-              <View style={styles.sectionSeparator} />
+              {availablePriceRanges.length > 0 && (
+                <>
+                  <View style={styles.sectionSeparator} />
+                  <Text style={styles.sectionTitle}>Price Range</Text>
+                  <View style={styles.chipRow}>
+                    {availablePriceRanges.map(option => {
+                      const selected = pendingPriceRanges.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[styles.chip, selected && styles.chipSelected]}
+                          onPress={() => togglePendingChip(option, pendingPriceRanges, setPendingPriceRanges)}
+                        >
+                          <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
 
-              <Text style={styles.sectionTitle}>Style</Text>
-              <View style={styles.chipRow}>
-                {CATEGORY_OPTIONS.map(option => {
-                  const selected = pendingCategories.includes(option);
-                  return (
-                    <TouchableOpacity
-                      key={option}
-                      style={[styles.chip, selected && styles.chipSelected]}
-                      onPress={() =>
-                        togglePendingChip(
-                          option,
-                          pendingCategories,
-                          setPendingCategories,
-                        )
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          selected && styles.chipTextSelected,
-                        ]}
-                      >
-                        {option}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {availableMaterials.length > 0 && (
+                <>
+                  <View style={styles.sectionSeparator} />
+                  <Text style={styles.sectionTitle}>Material</Text>
+                  <View style={styles.chipRow}>
+                    {availableMaterials.map(option => {
+                      const selected = pendingMaterials.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[styles.chip, selected && styles.chipSelected]}
+                          onPress={() => togglePendingChip(option, pendingMaterials, setPendingMaterials)}
+                        >
+                          <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+
+              {availableColors.length > 0 && (
+                <>
+                  <View style={styles.sectionSeparator} />
+                  <Text style={styles.sectionTitle}>Color</Text>
+                  <View style={styles.chipRow}>
+                    {availableColors.map(option => {
+                      const selected = pendingColors.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[styles.chip, selected && styles.chipSelected]}
+                          onPress={() => togglePendingChip(option, pendingColors, setPendingColors)}
+                        >
+                          <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+
+              {availableStyles.length > 0 && (
+                <>
+                  <View style={styles.sectionSeparator} />
+                  <Text style={styles.sectionTitle}>Style</Text>
+                  <View style={styles.chipRow}>
+                    {availableStyles.map(option => {
+                      const selected = pendingStyles.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[styles.chip, selected && styles.chipSelected]}
+                          onPress={() => togglePendingChip(option, pendingStyles, setPendingStyles)}
+                        >
+                          <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
             </ScrollView>
 
             <View style={styles.filterActions}>

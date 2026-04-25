@@ -15,7 +15,7 @@ const FAMILY_SELECT =
   'key_features_json, specifications_json, sku_custom, ' +
   'category_code, scene_code, color, color_options_json, ' +
   'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-  'primary_image, gallery_images_json, product_family_key, price, normalization_status';
+  'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status';
 
 /**
  * Builds the image array for a single standardized row, deduplicating primary
@@ -64,7 +64,7 @@ export async function loadProductFamily(familyKey: string): Promise<Product | nu
     sku: r.sku_custom as string,
     color: (r.color as string) || 'Default',
     size: '',
-    price: r.price as number,
+    price: (r.selling_price ?? r.price) as number,
     stock: 999,
     images: rowImages(r),
     enabled: true,

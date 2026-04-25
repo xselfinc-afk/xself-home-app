@@ -2,24 +2,19 @@
  * Canonical product category list — single source of truth for both
  * the Home screen filter row and the Discover screen filter row.
  *
- * Labels are short keywords that match real standardized_products category
- * values via name-substring or category-substring matching (see matchesCategory).
+ * Labels correspond to categoryPath.level1 values produced by inferCategoryPath().
  * 'All' is the "no filter" sentinel.
- *
- * Real DB categories include: 'Storage Cabinet', 'Sideboard', 'Dresser',
- * 'Bookshelf', 'TV Stand', 'Nightstand', 'Dining Chair', 'Coffee Table',
- * 'Console Table', 'Bathroom Cabinet'.
  */
 export const PRODUCT_CATEGORIES: string[] = [
   'All',
-  'Cabinet',
-  'Dresser',
-  'Table',
-  'Chair',
-  'Bookshelf',
-  'TV Stand',
-  'Nightstand',
-  'Sideboard',
+  'Storage',
+  'Living Room',
+  'Bedroom',
+  'Dining & Kitchen',
+  'Office',
+  'Outdoor & Garden',
+  'Bathroom',
+  'Pet Furniture',
 ];
 
 /**

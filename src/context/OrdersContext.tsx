@@ -58,6 +58,10 @@ export interface PlacedOrder {
   fulfillmentGroups?: OrderFulfillmentGroup[];
   /** Full financial breakdown */
   financials?: OrderFinancials;
+  /** Stripe payment status — 'paid' after successful PaymentSheet */
+  payment_status?: 'paid' | 'pending' | 'failed';
+  /** Stripe PaymentIntent ID for support/reconciliation */
+  stripe_payment_intent_id?: string;
 }
 
 interface OrdersCtx {

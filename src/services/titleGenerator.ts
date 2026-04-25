@@ -22,6 +22,7 @@ const CATEGORY_SUFFIXES_TO_STRIP: RegExp[] = [
 ];
 
 function truncateAtWord(s: string, max: number): string {
+  if (!s) return '';
   if (s.length <= max) return s;
   const cut = s.slice(0, max);
   const lastSpace = cut.lastIndexOf(' ');

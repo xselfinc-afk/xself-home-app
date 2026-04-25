@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, Animated, Easing, NativeSyntheticEvent, ImageLoadEventData } from 'react-native';
 import {
   STANDARD_CARD_RATIO,
@@ -16,6 +16,7 @@ import { useCart } from '../context/CartContext';
 import { useCartAnimation } from '../context/CartAnimationContext';
 import { useRecommendations } from '../context/RecommendationContext';
 import type { ProductCardModel } from '../types/productCard';
+import { incrementProductCounter } from '../services/analyticsService';
 
 // ── Scarcity signal — returns null if no signal for this product ──────────────
 function getScarcitySignal(p: ProductCardModel): { text: string; color: string } | null {
@@ -56,6 +57,15 @@ export default function ProductCard({
   const cartBtnRef = useRef<View>(null);
   const lastHapticAt = useRef(0);
   const [imgError, setImgError] = useState(false);
+  const viewTracked = useRef(false);
+
+  // Track card impression (view_count) once per mount
+  useEffect(() => {
+    if (viewTracked.current || !product.id) return;
+    viewTracked.current = true;
+    incrementProductCounter(product.id, 'view_count');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Ratio bucket: initialised from cache (warm), discovered via onLoad (cold)
   const [bucket, setBucket] = useState<RatioBucket | null>(() => {
@@ -98,6 +108,7 @@ export default function ProductCard({
     }
 
     trackAddToCart(product.id);
+    incrementProductCounter(product.id, 'add_to_cart_count');
     const firstVariant = product.variants?.find((v) => v.enabled && v.stock > 0);
     addItem(
       firstVariant
@@ -141,7 +152,10 @@ export default function ProductCard({
   return (
     <Animated.View style={[styles.card, style, { transform: [{ scale: cardScale }] }]}>
       <TouchableOpacity
-        onPress={() => onPress?.(product)}
+        onPress={() => {
+          incrementProductCounter(product.id, 'click_count');
+          onPress?.(product);
+        }}
         activeOpacity={0.92}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}

@@ -4,6 +4,10 @@ import { cleanTitle, toShortTitle, buildDescription, buildBulletPoints, removeSp
 // Image logic lives in imageSelector — imported and re-exported for backwards compatibility.
 import { collectImages } from './imageSelector';
 export { collectImages };
+import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
+
+// ── Debug counter (remove after Phase 3 verification) ────────────────────────
+let _debugCount = 0;
 
 // ── Input shape (Supabase supplier_products row) ──────────────────────────────
 
@@ -121,7 +125,7 @@ export function adaptSupplierRow(r: SupplierRow): Product {
       ]
     : undefined;
 
-  return {
+  const base: Product = {
     id,
     name,
     shortTitle,
@@ -140,6 +144,11 @@ export function adaptSupplierRow(r: SupplierRow): Product {
     variants,
     sales: 0,
   };
+
+  const categoryPath = inferCategoryPath(base);
+  const tags = inferProductTags(base);
+
+  return { ...base, categoryPath, tags };
 }
 
 // ── Standardized product adapter ──────────────────────────────────────────────
@@ -153,6 +162,7 @@ export type StandardizedRow = {
   supplier_product_id: string;
   product_title: string;
   product_title_display?: string;
+  optimized_title?: string | null;
   short_description: string;
   key_features_json: string[];
   specifications_json: Record<string, string>;
@@ -170,6 +180,7 @@ export type StandardizedRow = {
   gallery_images_json: string[];
   price: number;
   original_price?: number | null;
+  selling_price?: number | null;
   sku_search?: string | null;
   category_label?: string | null;
   category_priority?: number | null;
@@ -205,6 +216,13 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
   // Use the full category name from specs for display/filtering; fall back to code
   const category = specsJson['Category'] || r.category_code;
 
+  // AI-managed retail price — falls back to supplier price when not yet set
+  const customerPrice = r.selling_price != null && r.selling_price > 0 ? r.selling_price : r.price;
+  // Show strikethrough when supplier's list price is genuinely above what we charge
+  const originalPrice = r.original_price != null && r.original_price > customerPrice
+    ? r.original_price
+    : undefined;
+
   // Build a single real variant so the app hides the fake VARIANT_COLORS fallback.
   // show_color_selector = false → picker stays hidden (colorImageVariants.length <= 1 guard).
   const variants: ProductVariant[] | undefined = r.color
@@ -213,7 +231,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
           sku: r.sku_custom,
           color: r.color,
           size: '',
-          price: r.price,
+          price: customerPrice,
           stock: 999,
           images,
           enabled: true,
@@ -221,17 +239,17 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
       ]
     : undefined;
 
-  return {
+  const base: Product = {
     id: r.supplier_product_id,
-    name: r.product_title,
-    shortTitle: toShortTitle(r.product_title),
+    name: r.optimized_title || r.product_title_display || r.product_title || '',
+    shortTitle: toShortTitle(r.optimized_title || r.product_title_display || r.product_title || ''),
     displayTitle: r.product_title_display || undefined,
     category,
     desc: r.short_description,
-    price: r.price,
-    originalPrice: r.original_price != null && r.original_price > r.price ? r.original_price : undefined,
-    discountPercent: r.original_price != null && r.original_price > r.price
-      ? Math.round((1 - r.price / r.original_price) * 100)
+    price: customerPrice,
+    originalPrice,
+    discountPercent: originalPrice
+      ? Math.round((1 - customerPrice / originalPrice) * 100)
       : 0,
     rating: 4.6,
     reviewCount: 24,
@@ -256,4 +274,24 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     variants,
     sales: 0,
   };
+
+  // Enrich with structured category path and full tag set.
+  // DB fields take precedence inside inferProductTags (material from tags.material,
+  // color from variants[0].color); inference fills any remaining gaps.
+  const categoryPath = inferCategoryPath(base);
+  const tags = inferProductTags(base);
+
+  if (__DEV__ && _debugCount < 5) {
+    _debugCount++;
+    console.log('[ProductAdapter] enriched product', _debugCount + ':', {
+      id:           base.id,
+      name:         base.name,
+      oldCategory:  base.category,
+      categoryLabel: base.categoryLabel,
+      categoryPath,
+      tags,
+    });
+  }
+
+  return { ...base, categoryPath, tags };
 }

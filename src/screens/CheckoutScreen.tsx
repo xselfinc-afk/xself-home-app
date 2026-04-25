@@ -12,6 +12,9 @@ import { Address, fetchAddresses, insertAddress } from '../services/addressServi
 import { fetchSkuWarehouseStock } from '../services/gigaInventoryService';
 import { planFulfillment, FulfillmentPlan, SHIPPING_FEE } from '../services/fulfillmentPlanner';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
+import { useStripe } from '@stripe/stripe-react-native';
+import { supabase } from '../lib/supabase';
+import { incrementProductCounter } from '../services/analyticsService';
 
 /**
  * Canonical fingerprint of a fulfillment plan for change detection.
@@ -49,6 +52,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest } = useAuth();
   const { addOrder } = useOrders();
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const insets = useSafeAreaInsets();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
 
@@ -317,12 +321,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}>
         <Text style={styles.title}>Checkout</Text>
         <Text style={styles.titleSub}>Review your order before placing</Text>
-
-        {/* Demo banner */}
-        <View style={styles.demoBanner}>
-          <Ionicons name="information-circle-outline" size={14} color="#92660A" />
-          <Text style={styles.demoBannerText}>Demo mode — no payment will be charged</Text>
-        </View>
 
         {/* Shipping Address */}
         <View style={styles.section}>
@@ -700,9 +698,85 @@ export default function CheckoutScreen({ route, navigation }: any) {
               }
               setRechecking(false);
               setPlacing(true);
+
+              // ── Stripe PaymentSheet flow ──────────────────────────────────────
+              // 1. Create PaymentIntent on the server
+              const amountCents = Math.round(total * 100);
+              const { data: piData, error: piError } = await supabase.functions.invoke(
+                'create-payment-intent',
+                {
+                  body: {
+                    amount: amountCents,
+                    orderId: orderId.current,
+                    customerEmail: user?.email,
+                    shippingAddress: selectedAddress ? {
+                      name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+                      line1: selectedAddress.address_line_1,
+                      line2: selectedAddress.address_line_2 ?? undefined,
+                      city: selectedAddress.city,
+                      state: selectedAddress.state,
+                      zip: selectedAddress.zip,
+                      country: selectedAddress.country ?? 'US',
+                    } : undefined,
+                  },
+                },
+              );
+
+              if (piError || !piData?.clientSecret) {
+                setRecheckError(piError?.message ?? 'Unable to initialize payment. Please try again.');
+                setPlacing(false);
+                return;
+              }
+
+              const { clientSecret, paymentIntentId } = piData as { clientSecret: string; paymentIntentId: string };
+
+              // 2. Initialize PaymentSheet
+              const { error: initError } = await initPaymentSheet({
+                merchantDisplayName: 'Xself Home',
+                paymentIntentClientSecret: clientSecret,
+                defaultBillingDetails: selectedAddress ? {
+                  name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+                  address: {
+                    line1: selectedAddress.address_line_1,
+                    line2: selectedAddress.address_line_2 ?? undefined,
+                    city: selectedAddress.city,
+                    state: selectedAddress.state,
+                    postalCode: selectedAddress.zip,
+                    country: selectedAddress.country ?? 'US',
+                  },
+                } : undefined,
+                applePay: { merchantCountryCode: 'US' },
+                allowsDelayedPaymentMethods: true,
+              });
+
+              if (initError) {
+                setRecheckError(initError.message ?? 'Payment setup failed. Please try again.');
+                setPlacing(false);
+                return;
+              }
+
+              // 3. Present PaymentSheet — user completes or cancels payment
+              const { error: presentError } = await presentPaymentSheet();
+
+              if (presentError) {
+                if ((presentError as any).code === 'Canceled') {
+                  setPlacing(false);
+                  return;
+                }
+                setRecheckError(presentError.message ?? 'Payment failed. Please try again.');
+                setPlacing(false);
+                return;
+              }
+
+              // 4. Payment succeeded — record credit spend and save order
               if (appliedCredit > 0) {
                 recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
               }
+
+              // Increment order_count for each purchased product (fire-and-forget)
+              orderItems.forEach(item => {
+                if (item.productId) incrementProductCounter(item.productId, 'order_count');
+              });
 
               // Build SKU → warehouseCode map for item enrichment
               const skuWarehouseMap = new Map<string, string>();
@@ -713,51 +787,62 @@ export default function CheckoutScreen({ route, navigation }: any) {
               // Pickup orders enter the pickup status flow; delivery orders enter processing
               const isPickupOrder = activePlan!.groups.some(g => g.isPickup);
 
-              addOrder({
-                orderId: orderId.current,
-                orderNumber: orderNumber.current,
-                date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                total,
-                status: isPickupOrder ? 'pending_pickup' : 'processing',
-                items: orderItems.map(item => ({
-                  ...item,
-                  warehouseCode: skuWarehouseMap.get(item.sku),
-                })),
-                address: selectedAddress ? {
-                  firstName: selectedAddress.first_name,
-                  lastName: selectedAddress.last_name,
-                  line1: selectedAddress.address_line_1,
-                  line2: selectedAddress.address_line_2 ?? undefined,
-                  city: selectedAddress.city,
-                  state: selectedAddress.state,
-                  zip: selectedAddress.zip,
-                  country: selectedAddress.country ?? 'US',
-                } : undefined,
-                fulfillmentGroups: activePlan!.groups.map(g => ({
-                  warehouseCode: g.warehouse.code,
-                  warehouseLabel: g.warehouse.label,
-                  warehouseAddress: g.warehouse.address,
-                  distanceMiles: g.distanceMiles,
-                  isPickup: g.isPickup,
-                  shippingFee: g.shipping,
-                  pickupWindow: g.pickupWindow,
-                  items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
-                })),
-                financials: {
-                  subtotal,
-                  shippingTotal: shipping,
-                  tax,
+              try {
+                addOrder({
+                  orderId: orderId.current,
+                  orderNumber: orderNumber.current,
+                  date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
                   total,
-                },
-              });
-              if (!isBuyNow) clearCart();
-              navigation.navigate('OrderSuccess', {
-                total,
-                orderId: orderId.current,
-                orderNumber: orderNumber.current,
-                checkoutSessionId: checkoutSessionId.current,
-                userEmail: user?.email ?? '',
-              });
+                  status: isPickupOrder ? 'pending_pickup' : 'processing',
+                  payment_status: 'paid',
+                  stripe_payment_intent_id: paymentIntentId,
+                  items: orderItems.map(item => ({
+                    ...item,
+                    warehouseCode: skuWarehouseMap.get(item.sku),
+                  })),
+                  address: selectedAddress ? {
+                    firstName: selectedAddress.first_name,
+                    lastName: selectedAddress.last_name,
+                    line1: selectedAddress.address_line_1,
+                    line2: selectedAddress.address_line_2 ?? undefined,
+                    city: selectedAddress.city,
+                    state: selectedAddress.state,
+                    zip: selectedAddress.zip,
+                    country: selectedAddress.country ?? 'US',
+                  } : undefined,
+                  fulfillmentGroups: activePlan!.groups.map(g => ({
+                    warehouseCode: g.warehouse.code,
+                    warehouseLabel: g.warehouse.label,
+                    warehouseAddress: g.warehouse.address,
+                    distanceMiles: g.distanceMiles,
+                    isPickup: g.isPickup,
+                    shippingFee: g.shipping,
+                    pickupWindow: g.pickupWindow,
+                    items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
+                  })),
+                  financials: {
+                    subtotal,
+                    shippingTotal: shipping,
+                    tax,
+                    total,
+                  },
+                });
+                if (!isBuyNow) clearCart();
+                navigation.navigate('OrderSuccess', {
+                  total,
+                  orderId: orderId.current,
+                  orderNumber: orderNumber.current,
+                  checkoutSessionId: checkoutSessionId.current,
+                  userEmail: user?.email ?? '',
+                });
+              } catch (orderErr) {
+                // Payment was charged but order save failed — show recovery message
+                setRecheckError(
+                  `Payment processed (ref: ${paymentIntentId}) but we couldn't save your order. ` +
+                  'Please contact support with this reference number.',
+                );
+                setPlacing(false);
+              }
             }}
           >
             <Text style={styles.placeOrderText}>
@@ -768,7 +853,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 : 'Place Order'}
             </Text>
           </TouchableOpacity>
-          <Text style={styles.placeOrderTrust}>Preview only · no card required · nothing will ship</Text>
+          <Text style={styles.placeOrderTrust}>Secured by Stripe · Your payment info is encrypted</Text>
         </View>
       </ScrollView>
 

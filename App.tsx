@@ -21,8 +21,10 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
 import { loadProductFamily } from './src/services/productFamilyService';
-import { PRODUCT_CATEGORIES, matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
-import { CategoryPillRow } from './src/components/CategoryPillRow';
+import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
+import { HeroBanner } from './src/components/HeroBanner';
+import { selectHeroImage } from './src/utils/heroImageSelector';
+import { loadHomeSectionTitles, HomeSectionTitles } from './src/services/homeContentService';
 import { CartProvider, useCart, CartItem } from './src/context/CartContext';
 import { CartAnimProvider, useCartAnimation } from './src/context/CartAnimationContext';
 import { RewardsProvider, useRewards, getReferralLink } from './src/context/RewardsContext';
@@ -45,10 +47,23 @@ import { getCachedDelivery } from './src/utils/deliveryEligibility';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
 import * as SplashScreen from 'expo-splash-screen';
+import { StripeProvider } from '@stripe/stripe-react-native';
 
 SplashScreen.preventAutoHideAsync();
 
 const screenWidth = Dimensions.get('window').width;
+
+// ── Home category circle carousel ─────────────────────────────────────────────
+const CATEGORY_CIRCLES: { label: string; icon: string; bg: string; iconColor: string }[] = [
+  { label: 'Storage',          icon: 'file-tray-stacked-outline', bg: '#FEF3C7', iconColor: '#92660A' },
+  { label: 'Living Room',      icon: 'home-outline',              bg: '#E0F2FE', iconColor: '#1E6FA3' },
+  { label: 'Bedroom',          icon: 'bed-outline',               bg: '#FCE7F3', iconColor: '#9C2772' },
+  { label: 'Dining & Kitchen', icon: 'restaurant-outline',        bg: '#D1FAE5', iconColor: '#065F46' },
+  { label: 'Office',           icon: 'desktop-outline',           bg: '#EDE9FE', iconColor: '#5B21B6' },
+  { label: 'Outdoor & Garden', icon: 'leaf-outline',              bg: '#ECFDF5', iconColor: '#047857' },
+  { label: 'Bathroom',         icon: 'water-outline',             bg: '#DBEAFE', iconColor: '#1D4ED8' },
+  { label: 'Pet Furniture',    icon: 'paw-outline',               bg: '#FFF3E0', iconColor: '#D97706' },
+];
 
 type VariantColor = { type: 'color'; label: string; hex: string; disabled?: boolean };
 type VariantImage = { type: 'image'; label: string; uri: string; disabled?: boolean };
@@ -487,12 +502,25 @@ const hCardWidth = (screenWidth - 48) / 2;
 
 function HomeScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const [homeCategory, setHomeCategory] = useState('All');
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [displayCount, setDisplayCount] = useState(20);
+  const [sectionTitles, setSectionTitles] = useState<HomeSectionTitles>({
+    newArrivals: 'New This Season',
+    topPicks: 'Handpicked For You',
+    bestSellers: 'Loved By Our Customers',
+    allProducts: 'Explore All Products',
+  });
   const renderStartRef = useRef(Date.now());
+  const heroSeenRef = useRef<{ productIds: string[]; categories: string[] }>({
+    productIds: [],
+    categories: [],
+  });
 
   const { scoreProduct, trackClick } = useRecommendations();
+
+  useEffect(() => {
+    loadHomeSectionTitles().then(setSectionTitles);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -500,21 +528,28 @@ function HomeScreen({ navigation }) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
         )
         .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
-      console.log('[Home] query done — rows:', data?.length ?? 0);
+      console.log('[Home] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
       if (error || !data || !active) return;
+      if (__DEV__ && data[0]) {
+        const r0 = data[0] as any;
+        console.log('[Home] first raw row titles:', { optimized_title: r0.optimized_title, product_title_display: r0.product_title_display, product_title: r0.product_title });
+      }
 
       const mapped: Product[] = (data as any[]).flatMap((r: any) => {
         try { return [adaptStandardizedRow(r)]; }
-        catch { return []; }
+        catch (e) {
+          if (__DEV__) console.warn('[Home] adaptStandardizedRow failed for row', (r as any)?.supplier_product_id, e);
+          return [];
+        }
       });
 
       const familySeen = new Map<string, { id: string; hasImage: boolean }>();
@@ -529,6 +564,7 @@ function HomeScreen({ navigation }) {
       const representativeIds = new Set([...familySeen.values()].map(v => v.id));
       const deduped = mapped.filter(p => representativeIds.has(p.id));
       console.log('[Home] total mapped products:', deduped.length);
+      if (__DEV__ && deduped[0]) console.log('[Home] first mapped product name:', deduped[0].name);
       if (active) setAllProducts(deduped);
     }
     loadProducts();
@@ -539,6 +575,19 @@ function HomeScreen({ navigation }) {
     () => allProducts.filter(p => p.images.length > 0),
     [allProducts],
   );
+
+  // First product image per level1 category — drives the category carousel thumbnails
+  const categoryImageMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of withImages) {
+      const level1 = p.categoryPath?.level1;
+      if (level1 && !map[level1] && p.images[0]) {
+        map[level1] = p.images[0];
+      }
+      if (Object.keys(map).length >= CATEGORY_CIRCLES.length) break;
+    }
+    return map;
+  }, [withImages]);
 
   // ── Section pools — memoized, computed in display order so each pool excludes prior ──
   // ID-only exclusion across sections: family-key suppression was causing pool starvation
@@ -600,20 +649,14 @@ function HomeScreen({ navigation }) {
     return { newArrivals, topPicks, bestSellers, nearbySeenIds };
   }, [withImages]);
 
-  // ── Category filter + main grid — recompute only when category or sections change ──
+  // ── Main grid — all products ranked by score, excluding section carousels ──
   const rankedProducts = useMemo(() => {
-    const filtered = withImages.filter(p =>
-      homeCategory === 'All' ? true : p.categoryLabel === homeCategory,
-    );
     return diversify(
-      [...filtered]
+      [...withImages]
         .filter(p => !nearbySeenIds.has(p.id))
         .sort((a, b) => scoreProduct(b) - scoreProduct(a)),
     );
-  }, [withImages, homeCategory, nearbySeenIds, scoreProduct]);
-
-  // Reset pagination when category changes
-  useEffect(() => { setDisplayCount(20); }, [homeCategory]);
+  }, [withImages, nearbySeenIds, scoreProduct]);
 
   // Performance debug log — fires when product data arrives
   useEffect(() => {
@@ -634,6 +677,39 @@ function HomeScreen({ navigation }) {
     trackClick(item.id);
     navigation.navigate('ProductDetail', { product: item });
   };
+
+  // Best hero image — anti-repeat + light randomness from top-3 candidates
+  const heroImageResult = useMemo(() => {
+    const seen = heroSeenRef.current;
+    const opts = {
+      excludeProductIds: seen.productIds,
+      excludeCategories: seen.categories,
+      randomizeTopN: 3,
+    };
+    const result =
+      selectHeroImage(withImages, { ...opts, preferredCategory: 'Living Room' }) ??
+      selectHeroImage(withImages, { ...opts, preferredCategory: 'Dining & Kitchen' }) ??
+      selectHeroImage(withImages, { ...opts, preferredCategory: 'Storage' }) ??
+      selectHeroImage(withImages, { randomizeTopN: 5 });
+
+    if (result) {
+      if (result.productId) seen.productIds = [...seen.productIds, result.productId];
+      if (result.category)  seen.categories = [...seen.categories, result.category];
+    }
+    return result;
+  }, [withImages]);
+
+  // Max discount % across all products with a valid original price — drives hero subtitle
+  const maxDiscount = useMemo(() => {
+    let best = 0;
+    for (const p of withImages) {
+      if (p.originalPrice && p.originalPrice > p.price) {
+        const pct = Math.round(((p.originalPrice - p.price) / p.originalPrice) * 100);
+        if (pct > best) best = pct;
+      }
+    }
+    return best;
+  }, [withImages]);
 
   const HomeHeader = (
     <>
@@ -661,30 +737,23 @@ function HomeScreen({ navigation }) {
         </TouchableOpacity>
       </TouchableOpacity>
 
-      {/* Category shortcuts */}
-      <CategoryPillRow
-        categories={PRODUCT_CATEGORIES}
-        isActive={cat => cat === homeCategory}
-        onPress={cat => setHomeCategory(cat)}
-      />
-
       {/* Hero banner */}
-      <View style={styles.heroBanner}>
-        <Text style={styles.heroTitle}>Spring Collection{'\n'}Up to 30% off</Text>
-        <TouchableOpacity
-          style={styles.heroCTA}
-          activeOpacity={0.75}
-          onPress={() => navigation.navigate('Collection', { key: 'spring-collection' })}
-        >
-          <Text style={styles.heroCTAText}>Shop Now</Text>
-        </TouchableOpacity>
-      </View>
+      <HeroBanner
+        variant="TEXT_LEFT"
+        title="Spring Sale"
+        subtitle={maxDiscount > 0 ? `Up to ${maxDiscount}% Off Selected Furniture` : 'Up to 30% Off Selected Furniture'}
+        ctaText="Shop Deals"
+        image={heroImageResult?.uri}
+        imagePosition={heroImageResult?.position ?? 'right'}
+        useSoftBlur={false}
+        onPress={() => navigation.navigate('Collection', { key: 'spring-sale' })}
+      />
 
       {/* New Arrivals */}
       {newArrivals.length > 0 && (
         <>
           <View style={styles.homeSectionHeader}>
-            <Text style={styles.homeSectionTitle}>New Arrivals</Text>
+            <Text style={styles.homeSectionTitle}>{sectionTitles.newArrivals}</Text>
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
             {newArrivals.map(item => (
@@ -696,7 +765,7 @@ function HomeScreen({ navigation }) {
 
       {/* Top Picks */}
       <View style={styles.homeSectionHeader}>
-        <Text style={styles.homeSectionTitle}>Top Picks For You</Text>
+        <Text style={styles.homeSectionTitle}>{sectionTitles.topPicks}</Text>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
         {topPicks.map(item => (
@@ -706,7 +775,7 @@ function HomeScreen({ navigation }) {
 
       {/* Best Sellers */}
       <View style={styles.homeSectionHeader}>
-        <Text style={styles.homeSectionTitle}>Best Sellers</Text>
+        <Text style={styles.homeSectionTitle}>{sectionTitles.bestSellers}</Text>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
         {bestSellers.map(item => (
@@ -716,7 +785,7 @@ function HomeScreen({ navigation }) {
 
       {/* All Products header */}
       <View style={styles.homeSectionHeader}>
-        <Text style={styles.homeSectionTitle}>{homeCategory === 'All' ? 'All Products' : homeCategory}</Text>
+        <Text style={styles.homeSectionTitle}>{sectionTitles.allProducts}</Text>
       </View>
     </>
   );
@@ -740,6 +809,52 @@ function HomeScreen({ navigation }) {
         contentContainerStyle={styles.productsGrid}
         onEndReached={() => setDisplayCount(c => Math.min(c + 20, rankedProducts.length))}
         onEndReachedThreshold={0.5}
+        ListFooterComponent={() => (
+          <>
+            {/* Shop by Category — bottom discovery module */}
+            <View style={styles.homeSectionHeader}>
+              <Text style={styles.homeSectionTitle}>Shop by Category</Text>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 10, gap: 12, paddingBottom: 24 }}
+            >
+              {CATEGORY_CIRCLES.map(({ label, icon, bg, iconColor }) => {
+                const imageUri = categoryImageMap[label];
+                const circleSize = Math.round(screenWidth * 0.42);
+                const radius = circleSize / 2;
+                return (
+                  <TouchableOpacity
+                    key={label}
+                    style={{ alignItems: 'center', width: circleSize }}
+                    activeOpacity={0.75}
+                    onPress={() => navigation.navigate('Discover', { initialCategory: label })}
+                  >
+                    <View style={{ width: circleSize, height: circleSize, borderRadius: radius, marginBottom: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.14, shadowRadius: 7, elevation: 5 }}>
+                      <View style={{ width: circleSize, height: circleSize, borderRadius: radius, overflow: 'hidden', backgroundColor: bg, borderWidth: 2, borderColor: '#E5E3DC' }}>
+                        {imageUri ? (
+                          <Image
+                            source={{ uri: imageUri }}
+                            style={{ width: circleSize, height: circleSize }}
+                            resizeMode="contain"
+                          />
+                        ) : (
+                          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                            <Ionicons name={icon as any} size={40} color={iconColor} />
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: 13, color: '#403F3D', textAlign: 'center', fontWeight: '500', lineHeight: 16 }} numberOfLines={2}>
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </>
+        )}
       />
     </View>
   );
@@ -939,11 +1054,11 @@ function ProductDetailScreen({ route, navigation }) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
         )
         .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
@@ -1108,7 +1223,14 @@ function ProductDetailScreen({ route, navigation }) {
   const pool = poolReady
     ? realProducts.filter(p => p.id !== product.id && p.images.length > 0)
     : [];
-  const sameCategory = pool.filter(p => matchesCategory(p, product.category ?? ''));
+  // Prefer level2 match → level1 match → legacy keyword fallback
+  const sameLevel2 = product.categoryPath?.level2
+    ? pool.filter(p => p.categoryPath?.level2 === product.categoryPath!.level2)
+    : [];
+  const sameLevel1 = product.categoryPath?.level1
+    ? pool.filter(p => p.categoryPath?.level1 === product.categoryPath!.level1)
+    : pool.filter(p => matchesCategory(p, product.category ?? ''));
+  const sameCategory = sameLevel2.length >= 4 ? sameLevel2 : sameLevel1;
   const relatedSource = sameCategory.length >= 4 ? sameCategory : pool;
   const relatedProducts = poolReady
     ? diversify([...relatedSource].sort((a, b) => scoreProduct(b) - scoreProduct(a))).slice(0, 8)
@@ -1565,11 +1687,11 @@ function SearchScreen({ navigation, route }) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, sku_search, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
         )
         .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
@@ -1870,11 +1992,11 @@ function CartScreen({ navigation }) {
       const { data, error } = await supabase
         .from('standardized_products')
         .select(
-          'id, supplier_product_id, product_title, product_title_display, short_description, ' +
+          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
         )
         .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
@@ -2566,6 +2688,10 @@ export default function App() {
 
   return (
     <View style={{ flex: 1 }}>
+      <StripeProvider
+        publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ''}
+        merchantIdentifier={process.env.EXPO_PUBLIC_APPLE_MERCHANT_ID ?? 'merchant.com.xself.home'}
+      >
       <AuthProvider>
       <RecommendationProvider>
       <RewardsProvider>
@@ -2592,6 +2718,7 @@ export default function App() {
       </RewardsProvider>
       </RecommendationProvider>
       </AuthProvider>
+      </StripeProvider>
       {splashVisible && (
         <Animated.View
           style={[StyleSheet.absoluteFillObject, { opacity: splashOpacity }]}
@@ -2619,7 +2746,7 @@ const styles = StyleSheet.create({
   categoryText: { fontSize: 14, color: '#6B7280' },
   categoryTextActive: { color: 'white' },
   productsGrid: { paddingHorizontal: 6, paddingBottom: 100, paddingTop: 0 },
-  heroBanner: { marginHorizontal: 6, marginBottom: 16, borderRadius: 12, backgroundColor: '#1C1917', padding: 24, minHeight: 140, justifyContent: 'flex-end' },
+  heroBanner: { marginHorizontal: 6, marginBottom: 16, borderRadius: 12, backgroundColor: '#1C1917', padding: 24, minHeight: 140, justifyContent: 'flex-end', overflow: 'hidden' },
   heroEyebrow: { fontSize: 10, fontWeight: '600', color: '#EAB320', letterSpacing: 2, marginBottom: 6 },
   heroTitle: { fontSize: 22, fontWeight: '600', color: '#FFFFFF', lineHeight: 28, marginBottom: 16 },
   heroCTA: { alignSelf: 'flex-start', backgroundColor: '#EAB320', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },

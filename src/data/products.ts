@@ -22,9 +22,18 @@ export interface ProductVariant {
 // ─── Structured tags ─────────────────────────────────────────────────────────
 
 export interface ProductTags {
+  material?: string[];
+  color?: string[];
   style?: string[];
   room?: string[];
-  material?: string[];
+  price_range?: string[];
+}
+
+// ─── Category path ────────────────────────────────────────────────────────────
+
+export interface CategoryPath {
+  level1: string;   // e.g. "Storage", "Living Room", "Bedroom"
+  level2?: string;  // e.g. "TV Stand", "Sofa", "Dining Chair"
 }
 
 // ─── Product ─────────────────────────────────────────────────────────────────
@@ -45,6 +54,7 @@ export interface Product {
   isBestSeller?: boolean;
   isFeatured?: boolean;
   tags?: ProductTags;
+  categoryPath?: CategoryPath;  // structured category; backward-compat with category: string
   images: string[];
   image?: string;                // convenience alias for images[0]
   thumbnail?: string;            // alias for images[0], used by some card renderers
