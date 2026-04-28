@@ -22,7 +22,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#0F5C5E"
+        "backgroundColor": "#0D7A71"
       },
       "package": "com.xself.home"
     },
