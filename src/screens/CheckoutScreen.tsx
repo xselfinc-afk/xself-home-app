@@ -536,6 +536,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
       payment_method_selected: 'affirm',
       fulfillment_choice: fulfillmentChoice ?? 'delivery',
       sku_list: orderItems.map(i => i.sku).join(','),
+      checkout_session_id: checkoutSessionId.current,
+      user_email: user?.email ?? '',
     };
     if (selectedAddress) {
       piMetadata.address_city = selectedAddress.city;
@@ -1115,6 +1117,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 payment_method_selected: paymentMethod,
                 fulfillment_choice: fulfillmentChoice ?? 'delivery',
                 sku_list: orderItems.map(i => i.sku).join(','),
+                checkout_session_id: checkoutSessionId.current,
+                user_email: user?.email ?? '',
               };
               if (selectedAddress) {
                 piMetadata.address_city = selectedAddress.city;
