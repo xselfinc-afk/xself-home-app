@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,7 +11,13 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
   // orderId is the internal key used for ledger lookups and refunds
   const displayOrderNumber = orderNumber ?? `XS-${Math.floor(10000 + Math.random() * 90000)}`;
   const insets = useSafeAreaInsets();
-  const { orders } = useOrders();
+  const { orders, refreshOrders } = useOrders();
+
+  // Pull latest order state from Supabase on mount — ensures webhook-confirmed status is reflected
+  useEffect(() => {
+    refreshOrders().catch(e => console.log('[OrderSuccess] refresh failed:', e?.message));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const order = orders.find(o => o.orderId === orderId);
   const suggestions = products.filter(p => p.images.length > 0).slice(0, 6);
 

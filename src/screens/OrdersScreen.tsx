@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, Image,
   StyleSheet, Modal, TextInput, Share, Alert, ScrollView,
@@ -6,6 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRewards, getReferralLink } from '../context/RewardsContext';
 import { useOrders, PlacedOrder, OrderFulfillmentGroup } from '../context/OrdersContext';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
@@ -55,7 +56,11 @@ interface ShareTarget {
 export default function OrdersScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { trackClick } = useRewards();
-  const { orders } = useOrders();
+  const { orders, refreshOrders } = useOrders();
+
+  useFocusEffect(useCallback(() => {
+    refreshOrders().catch(e => console.log('[Orders] refresh failed:', e?.message));
+  }, []));
 
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);

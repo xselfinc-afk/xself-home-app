@@ -96,6 +96,8 @@ interface OrdersCtx {
    * Sets status to 'cancelled' (does NOT delete) so the record is preserved for auditing.
    */
   cancelOrder: (orderId: string) => Promise<void>;
+  /** Re-fetch all orders for the current user from Supabase. No-op for guests or when Supabase is not configured. */
+  refreshOrders: () => Promise<void>;
 }
 
 const OrdersContext = createContext<OrdersCtx>({
@@ -104,6 +106,7 @@ const OrdersContext = createContext<OrdersCtx>({
   createPendingOrder: async () => {},
   confirmOrder: async () => {},
   cancelOrder: async () => {},
+  refreshOrders: async () => {},
 });
 
 // ── Supabase row → PlacedOrder ────────────────────────────────────────────────
@@ -154,21 +157,25 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
 
-  // ── Load orders on auth change ────────────────────────────────────────────
-  useEffect(() => {
+  // ── Shared fetch — used on mount and by refreshOrders ────────────────────
+  const refreshOrders = async (): Promise<void> => {
     if (!user || !supabaseConfigured) return;
-    supabase
+    const { data, error } = await supabase
       .from('orders')
       .select('*')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (error) {
-          console.log('[Orders] Failed to load orders:', error.message);
-          return;
-        }
-        setOrders((data ?? []).map(row => rowToOrder(row as Record<string, unknown>)));
-      });
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.log('[Orders] refreshOrders failed:', error.message);
+      return;
+    }
+    setOrders((data ?? []).map(row => rowToOrder(row as Record<string, unknown>)));
+  };
+
+  // ── Load orders on auth change ────────────────────────────────────────────
+  useEffect(() => {
+    refreshOrders();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   // ── Clear local orders on sign-out ────────────────────────────────────────
@@ -281,7 +288,7 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <OrdersContext.Provider value={{ orders, addOrder, createPendingOrder, confirmOrder, cancelOrder }}>
+    <OrdersContext.Provider value={{ orders, addOrder, createPendingOrder, confirmOrder, cancelOrder, refreshOrders }}>
       {children}
     </OrdersContext.Provider>
   );
