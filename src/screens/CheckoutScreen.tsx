@@ -15,6 +15,8 @@ import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateServ
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { incrementProductCounter } from '../services/analyticsService';
+import { DEBUG_FLAGS } from '../config/debugFlags';
+import { debugEnabled } from '../utils/debug';
 
 /**
  * Canonical fingerprint of a fulfillment plan for change detection.
@@ -139,6 +141,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
     return fulfillmentPlan;
   })();
 
+  // True when live inventory is unavailable (real fallback or debug simulation).
+  const isInventoryFallback = !!fulfillmentPlan?.isFallback || debugEnabled(DEBUG_FLAGS.forceInventoryFallback);
+
   // No default fee while loading — show 0 until the plan resolves
   const shipping = activePlan?.totalShipping ?? 0;
   const isPickup = activePlan !== null && activePlan.groups.length > 0 && activePlan.groups.every(g => g.isPickup);
@@ -170,6 +175,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [addrModalVisible, setAddrModalVisible] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [addrSaving, setAddrSaving] = useState(false);
+  const [addrSaveError, setAddrSaveError] = useState<string | null>(null);
+  const [fulfillRetryKey, setFulfillRetryKey] = useState(0);
 
   // Load addresses from Supabase when the authenticated user is known
   useEffect(() => {
@@ -259,7 +266,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAddress?.id, orderItemsKey]);
+  }, [selectedAddress?.id, orderItemsKey, fulfillRetryKey]);
   const [addrFirstName, setAddrFirstName] = useState('');
   const [addrLastName, setAddrLastName] = useState('');
   const [addrPhone, setAddrPhone] = useState('');
@@ -344,6 +351,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
   // ── Shared post-payment: record order + navigate to success ─────────────
   async function completeOrder(paymentIntentId: string) {
+    if (debugEnabled(DEBUG_FLAGS.forceOrderSaveFailure)) {
+      throw new Error('DEBUG_FORCE_ORDER_SAVE_FAILURE');
+    }
     if (appliedCredit > 0) {
       recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
     }
@@ -420,6 +430,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
     setAffirmError(null);
     setAffirmDevDetail(null);
     setAffirmLoading(true);
+
+    if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
+      setAffirmError('Payment failed. Please try again.');
+      setAffirmLoading(false);
+      return;
+    }
 
     // Inventory recheck
     try {
@@ -547,8 +563,21 @@ export default function CheckoutScreen({ route, navigation }: any) {
     }
   }
 
+  const anyDebugActive = __DEV__ && (
+    DEBUG_FLAGS.forceInventoryFallback ||
+    DEBUG_FLAGS.forceInventoryUnavailable ||
+    DEBUG_FLAGS.forceAddressSaveFailure ||
+    DEBUG_FLAGS.forcePaymentFailure ||
+    DEBUG_FLAGS.forceOrderSaveFailure
+  );
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      {anyDebugActive && (
+        <View style={styles.debugBadge}>
+          <Text style={styles.debugBadgeText}>⚠ DEBUG MODE</Text>
+        </View>
+      )}
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}>
         <Text style={styles.title}>Checkout</Text>
         <Text style={styles.titleSub}>Review your order before placing</Text>
@@ -677,12 +706,21 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
 
-          {!deliveryLoading && fulfillmentPlan?.isFallback && (
+          {!deliveryLoading && isInventoryFallback && (
             <View style={styles.fulfillFallbackBanner}>
               <Ionicons name="warning-outline" size={13} color="#92660A" />
-              <Text style={styles.fulfillFallbackText}>
-                Live inventory unavailable — delivery estimate is based on location only
-              </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fulfillFallbackText, { flex: 0 }]}>
+                  Live inventory unavailable — delivery estimate is based on location only
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setFulfillRetryKey(k => k + 1)}
+                  activeOpacity={0.7}
+                  style={{ marginTop: 5 }}
+                >
+                  <Text style={{ fontSize: 12, color: '#92660A', fontWeight: '600' }}>Retry</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </View>
@@ -753,8 +791,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
               ) : null}
               <TouchableOpacity
-                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null) && { opacity: 0.6 }]}
-                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null}
+                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback) && { opacity: 0.6 }]}
+                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback}
                 onPress={handleAffirmPayment}
                 activeOpacity={0.8}
               >
@@ -878,8 +916,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           {paymentMethod !== 'affirm' && (<><TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete)) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete)}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback}
             onPress={async () => {
               console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
               if (!selectedAddress) {
@@ -965,6 +1003,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
               setPlacing(true);
 
               // ── Route by payment method ───────────────────────────────────────
+              if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
+                setRecheckError('Payment failed. Please try again.');
+                setPlacing(false);
+                return;
+              }
               const _stripeKeyMode = (process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').startsWith('pk_live') ? 'LIVE' : 'test';
               console.log('[Payment] selected method:', paymentMethod);
               console.log('[Payment] Stripe publishable key mode:', _stripeKeyMode);
@@ -1103,6 +1146,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               {deliveryLoading
                 ? (fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…')
                 : rechecking ? 'Verifying inventory…'
+                : isInventoryFallback ? 'Inventory Unavailable — Try Again'
                 : `Place Order · $${formatPrice(total)}`}
             </Text>
           </TouchableOpacity>
@@ -1207,8 +1251,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
                       disabled={!addrFormValid || addrSaving}
                       onPress={async () => {
                         if (addrSaving) return;
+                        setAddrSaveError(null);
                         setAddrSaving(true);
                         try {
+                          if (debugEnabled(DEBUG_FLAGS.forceAddressSaveFailure)) {
+                            throw new Error('DEBUG_FORCE_ADDRESS_SAVE_FAILURE');
+                          }
                           const input = {
                             first_name: addrFirstName.trim(),
                             last_name: addrLastName.trim(),
@@ -1234,10 +1282,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
                           setSelectedAddress(saved);
                           setAddrFirstName(''); setAddrLastName(''); setAddrPhone('');
                           setAddrLine1(''); setAddrLine2(''); setAddrCity(''); setAddrStateVal(''); setAddrZip('');
+                          setAddrSaveError(null);
                           setShowAddForm(false);
                           setAddrModalVisible(false);
                         } catch {
-                          // Keep modal open so user can retry
+                          setAddrSaveError('Failed to save address. Please try again.');
                         } finally {
                           setAddrSaving(false);
                         }
@@ -1245,6 +1294,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     >
                       <Text style={styles.addrSaveBtnText}>Save & Use</Text>
                     </TouchableOpacity>
+                    {addrSaveError && (
+                      <Text style={styles.addrSaveError}>{addrSaveError}</Text>
+                    )}
                   </ScrollView>
                 </>
               )}
@@ -1380,6 +1432,9 @@ const styles = StyleSheet.create({
   placeOrderErrorText: { fontSize: 12, color: '#B45309', textAlign: 'center' as const, lineHeight: 17 },
   fulfillFallbackBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: '#FFFBEB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#FDE68A' },
   fulfillFallbackText: { flex: 1, fontSize: 12, color: '#92660A', lineHeight: 17 },
+  addrSaveError: { marginTop: 8, fontSize: 13, color: '#B45309', textAlign: 'center' },
+  debugBadge: { backgroundColor: '#92660A', paddingVertical: 4, paddingHorizontal: 12, alignSelf: 'center', borderRadius: 4, marginVertical: 4 },
+  debugBadgeText: { color: '#FFFBEB', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
   summaryCalculating: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic' as const },
   fulfillRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#D1CFC9', alignItems: 'center', justifyContent: 'center' },
