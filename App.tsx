@@ -283,7 +283,7 @@ function SignInEntryScreen({ navigation }) {
   };
 
   const handleVerify = async () => {
-    if (otp.length < 8 || loading) return;
+    if (otp.length < 6 || loading) return;
     setLoading(true);
     setError(null);
     const { error: err } = await verifyOtp(email.trim().toLowerCase(), otp);
@@ -324,7 +324,7 @@ function SignInEntryScreen({ navigation }) {
   const stepTitle = step === 'email' ? 'Sign in to Xself Home' : 'Check your email';
   const stepSubtitle = step === 'email'
     ? 'Save favorites, track orders, and unlock member rewards.'
-    : `We sent an 8-digit code to\n${email.trim().toLowerCase()}`;
+    : `We sent a 6-digit code to\n${email.trim().toLowerCase()}`;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -402,9 +402,9 @@ function SignInEntryScreen({ navigation }) {
                 </>
               ) : (
                 <>
-                  {/* 8-slot segmented OTP display */}
+                  {/* 6-slot segmented OTP display */}
                   <Animated.View style={[styles.otpBoxRow, { transform: [{ translateX: shakeAnim }] }]}>
-                    {Array.from({ length: 8 }).map((_, i) => {
+                    {Array.from({ length: 6 }).map((_, i) => {
                       const isFilled = i < otp.length;
                       const isActive = i === otp.length && !loading;
                       return (
@@ -430,11 +430,11 @@ function SignInEntryScreen({ navigation }) {
                     ref={otpRef}
                     value={otp}
                     onChangeText={t => {
-                      const digits = t.replace(/\D/g, '').slice(0, 8);
-                      // Accept a full 8-digit autofill, or incremental changes of ±1 digit
+                      const digits = t.replace(/\D/g, '').slice(0, 6);
+                      // Accept a full 6-digit autofill, or incremental changes of ±1 digit
                       // (normal typing/backspace). Reject drastic drops to avoid false
                       // state from a failed/partial iOS suggestion tap.
-                      if (digits.length === 8 || Math.abs(digits.length - otp.length) <= 1) {
+                      if (digits.length === 6 || Math.abs(digits.length - otp.length) <= 1) {
                         setOtpError(false);
                         setError(null);
                         setOtp(digits);
@@ -446,7 +446,7 @@ function SignInEntryScreen({ navigation }) {
                     keyboardType="number-pad"
                     textContentType="oneTimeCode"
                     autoComplete="sms-otp"
-                    maxLength={8}
+                    maxLength={6}
                     style={styles.otpHiddenInput}
                     caretHidden
                   />
@@ -454,9 +454,9 @@ function SignInEntryScreen({ navigation }) {
                   {error ? <Text style={styles.signInError}>{error}</Text> : null}
 
                   <TouchableOpacity
-                    style={[styles.primaryBtn, (otp.length < 8 || loading) && { opacity: 0.4 }]}
+                    style={[styles.primaryBtn, (otp.length < 6 || loading) && { opacity: 0.4 }]}
                     onPress={handleVerify}
-                    disabled={otp.length < 8 || loading}
+                    disabled={otp.length < 6 || loading}
                   >
                     {loading
                       ? <ActivityIndicator color="white" size="small" />
@@ -1026,6 +1026,7 @@ function ProductDetailScreen({ route, navigation }) {
   const [qty, setQty] = useState(1);
   const [activeImage, setActiveImage] = useState(0);
   const [added, setAdded] = useState(false);
+  const [addedPermanent, setAddedPermanent] = useState(false);
   const [bundleAdded, setBundleAdded] = useState(false);
   const carouselRef = useRef<ScrollView>(null);
   const btnRef = useRef<View>(null);
@@ -1043,6 +1044,15 @@ function ProductDetailScreen({ route, navigation }) {
 
   // Track product view (weight 1)
   React.useEffect(() => { trackView(product.id); }, [product.id]);
+
+  // Reset add-state when screen comes back into focus
+  React.useEffect(() => {
+    const unsub = navigation.addListener('focus', () => {
+      setAdded(false);
+      setAddedPermanent(false);
+    });
+    return unsub;
+  }, [navigation]);
 
   // ── Real product pool for recommendations ─────────────────────────────────
   const [realProducts, setRealProducts] = useState<Product[]>([]);
@@ -1476,12 +1486,16 @@ function ProductDetailScreen({ route, navigation }) {
                 activeOpacity={0.85}
                 onPress={() => {
                   if (isOutOfStock) return;
+                  if (addedPermanent) {
+                    navigation.navigate('Main', { screen: 'Cart' });
+                    return;
+                  }
                   handleAddToCart();
                   (btnRef.current as any)?.measureInWindow((x: number, y: number, w: number, h: number) => {
                     triggerAnimation(x + w / 2, y + h / 2);
                   });
                   setAdded(true);
-                  setTimeout(() => setAdded(false), 1000);
+                  setTimeout(() => { setAdded(false); setAddedPermanent(true); }, 1000);
                   Animated.sequence([
                     Animated.spring(btnScaleAnim, { toValue: 1.12, useNativeDriver: true, speed: 300, bounciness: 0 }),
                     Animated.spring(btnScaleAnim, { toValue: 1, useNativeDriver: true, speed: 200, bounciness: 3 }),
@@ -1489,7 +1503,7 @@ function ProductDetailScreen({ route, navigation }) {
                 }}
               >
                 <Text style={[styles.addToCartText, isOutOfStock && styles.ctaBtnTextDisabled]}>
-                  {added ? 'Added \u2713' : 'Add to Cart'}
+                  {addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
                 </Text>
               </TouchableOpacity>
             </Animated.View>
@@ -1622,13 +1636,17 @@ function ProductDetailScreen({ route, navigation }) {
           activeOpacity={0.88}
           onPress={() => {
             if (isOutOfStock) return;
+            if (addedPermanent) {
+              navigation.navigate('Main', { screen: 'Cart' });
+              return;
+            }
             handleAddToCart();
             setAdded(true);
-            setTimeout(() => setAdded(false), 1000);
+            setTimeout(() => { setAdded(false); setAddedPermanent(true); }, 1000);
           }}
         >
           <Text style={styles.floatCtaBtnText}>
-            {isOutOfStock ? 'Unavailable' : added ? 'Added \u2713' : 'Add to Cart'}
+            {isOutOfStock ? 'Unavailable' : addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
           </Text>
         </TouchableOpacity>
       </Animated.View>
@@ -1846,22 +1864,6 @@ function SearchScreen({ navigation, route }) {
         )}
       />
     </SafeAreaView>
-  );
-}
-function BrandSplash({ textOpacity }: { textOpacity: Animated.Value }) {
-  return (
-    <View style={{ flex: 1, backgroundColor: '#F9F8F6', alignItems: 'center', justifyContent: 'center' }}>
-      {/* X mark — always visible, matches system splash PNG */}
-      <View style={{ width: 60, height: 60, alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
-        <View style={{ position: 'absolute', width: 52, height: 8, backgroundColor: '#D4A017', borderRadius: 4, transform: [{ rotate: '45deg' }] }} />
-        <View style={{ position: 'absolute', width: 52, height: 8, backgroundColor: '#D4A017', borderRadius: 4, transform: [{ rotate: '-45deg' }] }} />
-      </View>
-      {/* Text fades in after system splash dismisses */}
-      <Animated.View style={{ opacity: textOpacity, alignItems: 'center' }}>
-        <Text style={{ fontSize: 22, fontWeight: '600', color: '#111111', letterSpacing: -0.5, marginBottom: 8 }}>Xself Home</Text>
-        <Text style={{ fontSize: 13, color: '#9CA3AF', letterSpacing: 1 }}>Build Your Space</Text>
-      </Animated.View>
-    </View>
   );
 }
 
@@ -2635,24 +2637,8 @@ function TabNavigator() {
 }
 
 export default function App() {
-  const splashOpacity = useRef(new Animated.Value(1)).current;
-  const textOpacity = useRef(new Animated.Value(0)).current;
-  const [splashVisible, setSplashVisible] = useState(true);
-
   useEffect(() => {
-    // Wait one frame so BrandSplash (X mark) is painted before dismissing native splash.
-    // hideAsync resolves once native splash is gone — then fade in the text.
-    requestAnimationFrame(() => {
-      SplashScreen.hideAsync().then(() => {
-        Animated.timing(textOpacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-      });
-    });
-    // Hold custom splash briefly, then fade out to main app
-    const t = setTimeout(() => {
-      Animated.timing(splashOpacity, { toValue: 0, duration: 320, useNativeDriver: true })
-        .start(() => setSplashVisible(false));
-    }, 1300);
-    return () => clearTimeout(t);
+    SplashScreen.hideAsync();
   }, []);
 
   return (
@@ -2689,14 +2675,6 @@ export default function App() {
       </RecommendationProvider>
       </AuthProvider>
       </StripeProvider>
-      {splashVisible && (
-        <Animated.View
-          style={[StyleSheet.absoluteFillObject, { opacity: splashOpacity }]}
-          pointerEvents="none"
-        >
-          <BrandSplash textOpacity={textOpacity} />
-        </Animated.View>
-      )}
     </View>
   );
 }
