@@ -98,6 +98,8 @@ interface OrdersCtx {
   cancelOrder: (orderId: string) => Promise<void>;
   /** Re-fetch all orders for the current user from Supabase. No-op for guests or when Supabase is not configured. */
   refreshOrders: () => Promise<void>;
+  /** Update an order's status directly — used for fulfillment lifecycle transitions (e.g. shipped, ready_for_pickup). */
+  updateOrderStatus: (orderId: string, status: PlacedOrder['status']) => Promise<void>;
 }
 
 const OrdersContext = createContext<OrdersCtx>({
@@ -107,6 +109,7 @@ const OrdersContext = createContext<OrdersCtx>({
   confirmOrder: async () => {},
   cancelOrder: async () => {},
   refreshOrders: async () => {},
+  updateOrderStatus: async () => {},
 });
 
 // ── Supabase row → PlacedOrder ────────────────────────────────────────────────
@@ -287,8 +290,26 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const updateOrderStatus = async (orderId: string, status: PlacedOrder['status']): Promise<void> => {
+    const existing = orders.find(o => o.orderId === orderId);
+    applyLocalUpdate(orderId, { status });
+
+    if (!supabaseConfigured) return;
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('order_id', orderId);
+
+    if (error) {
+      if (existing) applyLocalUpdate(orderId, { status: existing.status });
+      console.log('[Orders] updateOrderStatus failed:', error.message);
+      throw new Error(error.message);
+    }
+  };
+
   return (
-    <OrdersContext.Provider value={{ orders, addOrder, createPendingOrder, confirmOrder, cancelOrder, refreshOrders }}>
+    <OrdersContext.Provider value={{ orders, addOrder, createPendingOrder, confirmOrder, cancelOrder, refreshOrders, updateOrderStatus }}>
       {children}
     </OrdersContext.Provider>
   );

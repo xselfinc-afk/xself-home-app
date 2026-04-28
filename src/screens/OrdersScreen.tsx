@@ -31,9 +31,9 @@ const STATUS_LABELS: Record<string, string> = {
   delivered:      'Delivered',
   shipped:        'Shipped',
   processing:     'Processing',
-  pending_pickup: 'Pending Pickup',
-  ready_for_pickup: 'Ready for Pickup',
-  picked_up:      'Picked Up',
+  pending_pickup: 'Preparing for pickup',
+  ready_for_pickup: 'Ready for pickup',
+  picked_up:      'Picked up',
 };
 const STEP_ACTIVE: Record<string, number> = { processing: 0, shipped: 1, delivered: 2 };
 const PICKUP_STEP_ACTIVE: Record<string, number> = {
@@ -56,7 +56,7 @@ interface ShareTarget {
 export default function OrdersScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { trackClick } = useRewards();
-  const { orders, refreshOrders } = useOrders();
+  const { orders, refreshOrders, updateOrderStatus } = useOrders();
 
   useFocusEffect(useCallback(() => {
     refreshOrders().catch(e => console.log('[Orders] refresh failed:', e?.message));
@@ -205,6 +205,27 @@ export default function OrdersScreen({ navigation }: any) {
                 </Text>
               </View>
             ))}
+          </View>
+        )}
+
+        {order.status === 'pending_pickup' && (
+          <View style={styles.orderActionRow}>
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => updateOrderStatus(order.orderId, 'ready_for_pickup').catch(() => {})}
+            >
+              <Text style={styles.actionText}>Mark as Ready</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {order.status === 'processing' && !isPickupOrder && (
+          <View style={styles.orderActionRow}>
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => updateOrderStatus(order.orderId, 'shipped').catch(() => {})}
+            >
+              <Text style={styles.actionText}>Mark as Shipped</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -392,6 +413,7 @@ const styles = StyleSheet.create({
   itemVariant: { fontSize: 11, color: '#6B7280', marginTop: 2 },
   itemSku: { fontSize: 10, color: '#9CA3AF', marginTop: 1, fontFamily: 'monospace' as any },
   itemPrice: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginTop: 3 },
+  orderActionRow: { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   actionRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' },
   actionBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: '#E5E7EB' },
   actionBtnReviewed: { borderColor: '#D1FAE5', backgroundColor: '#F0FDF4' },
