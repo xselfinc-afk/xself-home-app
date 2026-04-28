@@ -25,9 +25,9 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
             <Ionicons name="checkmark" size={36} color="#FFFFFF" />
           </View>
           <Text style={styles.title}>Order Confirmed</Text>
-          <Text style={styles.subtitle}>This is a demo — nothing will ship or be charged.</Text>
+          <Text style={styles.subtitle}>Your order has been received.</Text>
           <Text style={styles.orderNum}>{displayOrderNumber}</Text>
-          <Text style={styles.demoNote}>Demo order · No payment was charged</Text>
+          <Text style={styles.demoNote}>Payment confirmed</Text>
           {total && <Text style={styles.totalLine}>Order total: <Text style={styles.totalAmt}>${formatPrice(total)}</Text></Text>}
         </View>
 
@@ -36,7 +36,7 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
           <View style={[styles.nextRow, { borderBottomWidth: 0 }]}>
             <Ionicons name="receipt-outline" size={16} color="#CA8A04" />
             <TouchableOpacity onPress={() => navigation.navigate('Main', { screen: 'Account', params: { screen: 'Orders' } })}>
-              <Text style={[styles.nextText, { color: '#CA8A04' }]}>View your demo order →</Text>
+              <Text style={[styles.nextText, { color: '#CA8A04' }]}>View your order →</Text>
             </TouchableOpacity>
           </View>
         </View>
