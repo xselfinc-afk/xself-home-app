@@ -42,7 +42,14 @@
           "cameraPermission": "Allow Xself Home to use your camera to search similar products."
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": ["merchant.com.xself.home"],
+          "enableGooglePay": false
+        }
+      ]
     ]
   }
 }

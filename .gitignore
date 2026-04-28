@@ -1,23 +1,32 @@
-# dependencies
-node_modules/
-
-# env
-.env
-.env.local
-
-# system
-.DS_Store
-
-# OpenClaw / Claude / local state
-.omc/
-
-# build / cache
-dist/
-build/
+# Expo
 .expo/
-
-# logs
+.expo-shared/
 *.log
 
-# playwright session (contains auth cookies — never commit)
+# Node
+node_modules/
+
+# Env
+.env
+.env.*
+
+# iOS
+ios/Pods/
+ios/build/
+
+# Android
+android/
+
+# macOS
+.DS_Store
+# OpenClaw / agent state
+.omc/
+
+# Expo local state
+.expo/
+*.log
+
+# Sessions / secrets
 scripts/.giga-session.json
+.env
+.env.*

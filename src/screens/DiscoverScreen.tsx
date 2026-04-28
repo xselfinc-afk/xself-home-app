@@ -11,10 +11,10 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
+  FlatList,
   ScrollView,
   Modal,
   Dimensions,
-  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,6 +25,7 @@ import { CategoryPillRow } from '../components/CategoryPillRow';
 import { adaptStandardizedRow } from '../services/detailProductAdapter';
 import type { Product } from '../data/products';
 import DiscoverCard from '../components/DiscoverCard';
+import SearchPillBar from '../components/SearchPillBar';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -67,6 +68,17 @@ export default function DiscoverScreen({ navigation, route }: any) {
   const [pendingMaterials, setPendingMaterials]         = useState<string[]>([]);
   const [pendingColors, setPendingColors]               = useState<string[]>([]);
   const [pendingStyles, setPendingStyles]               = useState<string[]>([]);
+
+  // Quick-add overlay — only one card open at a time
+  const [openCardId, setOpenCardId] = useState<string | null>(null);
+  const handleCardPress = (item: Product) => {
+    if (openCardId === item.id) {
+      navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
+      setOpenCardId(null);
+    } else {
+      setOpenCardId(item.id);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -273,15 +285,27 @@ export default function DiscoverScreen({ navigation, route }: any) {
     }
   }
 
-  const col0 = filtered.filter((_, i) => i % 3 === 0);
-  const col1 = filtered.filter((_, i) => i % 3 === 1);
-  const col2 = filtered.filter((_, i) => i % 3 === 2);
-
   return (
     <View style={styles.container}>
       <View style={[styles.topArea, { paddingTop: insets.top }]}>
-        <View style={styles.searchPill}>
-          <Ionicons name="search-outline" size={18} color="#6B7280" />
+        <SearchPillBar
+          rightSlot={
+            <TouchableOpacity
+              style={styles.filterPillBtn}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              onPress={openFilter}
+            >
+              <View>
+                <Ionicons name="options-outline" size={18} color="#1C1917" />
+                {activeFilterCount > 0 && (
+                  <View style={styles.filterBadge}>
+                    <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          }
+        >
           <TextInput
             style={styles.searchInput}
             placeholder='Try "Cabinet"...'
@@ -289,22 +313,7 @@ export default function DiscoverScreen({ navigation, route }: any) {
             onChangeText={setSearch}
             placeholderTextColor="#9CA3AF"
           />
-          <View style={styles.searchDivider} />
-          <TouchableOpacity
-            style={styles.filterPillBtn}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            onPress={openFilter}
-          >
-            <View>
-              <Ionicons name="options-outline" size={18} color="#1C1917" />
-              {activeFilterCount > 0 && (
-                <View style={styles.filterBadge}>
-                  <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
-                </View>
-              )}
-            </View>
-          </TouchableOpacity>
-        </View>
+        </SearchPillBar>
 
         <CategoryPillRow
           categories={PRODUCT_CATEGORIES}
@@ -313,54 +322,23 @@ export default function DiscoverScreen({ navigation, route }: any) {
         />
       </View>
 
-      <ScrollView
+      <FlatList
+        data={filtered}
+        keyExtractor={(item) => item.id.toString()}
+        numColumns={3}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.feed}
-      >
-        <View style={styles.columns}>
-          <View style={styles.column}>
-            {col0.map((item, i) => (
-              <DiscoverCard
-                key={item.id}
-                product={item}
-                debugLog={i < 2}
-                onPress={() => {
-                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
-                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
-                }}
-              />
-            ))}
+        onScrollBeginDrag={() => setOpenCardId(null)}
+        renderItem={({ item }) => (
+          <View style={styles.gridItem}>
+            <DiscoverCard
+              product={item}
+              isOverlayOpen={openCardId === item.id}
+              onCardPress={() => handleCardPress(item)}
+            />
           </View>
-
-          <View style={styles.column}>
-            {col1.map((item, i) => (
-              <DiscoverCard
-                key={item.id}
-                product={item}
-                debugLog={i < 2}
-                onPress={() => {
-                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
-                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
-                }}
-              />
-            ))}
-          </View>
-
-          <View style={styles.column}>
-            {col2.map((item, i) => (
-              <DiscoverCard
-                key={item.id}
-                product={item}
-                debugLog={i < 2}
-                onPress={() => {
-                  console.log('[Discover] opening family:', item.product_family_key ?? item.id);
-                  navigation.navigate('ProductDetail', { product: item, product_family_key: item.product_family_key });
-                }}
-              />
-            ))}
-          </View>
-        </View>
-      </ScrollView>
+        )}
+      />
 
       <Modal
         visible={filterVisible}
@@ -510,23 +488,11 @@ export default function DiscoverScreen({ navigation, route }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAF9' },
+  container: { flex: 1, backgroundColor: '#F3F1EB' },
 
   topArea: {
     marginBottom: 0,
     paddingHorizontal: 6,
-  },
-
-  searchPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 999,
-    height: 40,
-    paddingLeft: 12,
-    paddingRight: 8,
-    marginHorizontal: 6,
-    gap: 8,
   },
 
   searchInput: {
@@ -534,12 +500,6 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     fontSize: 15,
     color: '#1C1917',
-  },
-
-  searchDivider: {
-    width: 1,
-    height: 18,
-    backgroundColor: '#E5E7EB',
   },
 
   filterPillBtn: {
@@ -551,17 +511,14 @@ const styles = StyleSheet.create({
   },
 
   feed: {
-    paddingHorizontal: 4,
-    paddingBottom: 100,
+    paddingHorizontal: 8,
+    paddingTop: 6,
+    paddingBottom: 120,
   },
 
-  columns: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-
-  column: {
+  gridItem: {
     flex: 1,
+    margin: 3,
   },
 
 
@@ -593,8 +550,8 @@ const styles = StyleSheet.create({
 
   filterPanel: {
     backgroundColor: '#F3F1EB',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
 
   handleBar: {
@@ -614,17 +571,18 @@ const styles = StyleSheet.create({
   },
 
   sectionTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#403F3D',
+    color: '#1C1917',
     marginBottom: 12,
-    marginTop: 4,
+    marginTop: 8,
+    letterSpacing: 0.1,
   },
 
   radioRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 10,
     gap: 10,
   },
 
@@ -651,7 +609,7 @@ const styles = StyleSheet.create({
 
   radioLabel: {
     fontSize: 14,
-    color: '#403F3D',
+    color: '#1C1917',
   },
 
   chipRow: {
@@ -671,8 +629,8 @@ const styles = StyleSheet.create({
   },
 
   chipSelected: {
-    backgroundColor: '#EAB320',
-    borderColor: '#EAB320',
+    backgroundColor: 'rgba(234,179,32,0.08)',
+    borderColor: '#CA8A04',
   },
 
   chipText: {
@@ -681,13 +639,13 @@ const styles = StyleSheet.create({
   },
 
   chipTextSelected: {
-    color: '#FFFFFF',
+    color: '#CA8A04',
     fontWeight: '600',
   },
 
   sectionSeparator: {
-    height: 1,
-    backgroundColor: '#E5E3DC',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(0,0,0,0.06)',
     marginVertical: 16,
   },
 
@@ -695,18 +653,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     paddingHorizontal: 20,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E3DC',
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.06)',
     backgroundColor: '#F3F1EB',
   },
 
   resetBtn: {
     flex: 1,
-    height: 46,
-    borderRadius: 8,
+    height: 58,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E5E3DC',
+    borderColor: 'rgba(202,138,4,0.3)',
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
@@ -715,13 +673,13 @@ const styles = StyleSheet.create({
   resetBtnText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#403F3D',
+    color: '#1C1917',
   },
 
   applyBtn: {
     flex: 2,
-    height: 46,
-    borderRadius: 8,
+    height: 58,
+    borderRadius: 14,
     backgroundColor: '#EAB320',
     alignItems: 'center',
     justifyContent: 'center',
@@ -729,7 +687,7 @@ const styles = StyleSheet.create({
 
   applyBtnText: {
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#FFFFFF',
   },
 });

@@ -12,7 +12,7 @@ import { Address, fetchAddresses, insertAddress } from '../services/addressServi
 import { fetchSkuWarehouseStock } from '../services/gigaInventoryService';
 import { planFulfillment, FulfillmentPlan, SHIPPING_FEE } from '../services/fulfillmentPlanner';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
-import { useStripe } from '@stripe/stripe-react-native';
+import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { incrementProductCounter } from '../services/analyticsService';
 
@@ -52,7 +52,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest } = useAuth();
   const { addOrder } = useOrders();
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const { confirmPayment, confirmPlatformPayPayment } = useStripe();
   const insets = useSafeAreaInsets();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
 
@@ -121,11 +121,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
 
   // When plan changes: auto-select 'delivery' when no pickup is available;
-  // require explicit selection (null) when pickup IS available (req 9).
+  // Default to delivery; user can switch to pickup if available.
   useEffect(() => {
     if (!fulfillmentPlan) { setFulfillmentChoice(null); return; }
-    setFulfillmentChoice(fulfillmentPlan.groups.some(g => g.isPickup) ? null : 'delivery');
+    setFulfillmentChoice('delivery');
   }, [fulfillmentPlan]);
+
 
   // Whether the raw plan includes a pickup-capable warehouse
   const planHasPickup = fulfillmentPlan?.groups.some(g => g.isPickup) ?? false;
@@ -270,14 +271,39 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const addrFormValid = addrFirstName.trim() && addrLastName.trim() && addrPhone.trim() &&
     addrLine1.trim() && addrCity.trim() && addrStateVal.trim() && addrZip.length === 5;
 
-  type PaymentMethod = 'apple_pay' | 'card' | 'paypal';
+  type PaymentMethod = 'apple_pay' | 'card' | 'affirm';
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('apple_pay');
+  const [reviewExpanded, setReviewExpanded] = useState(false);
+  // Tracks inline CardField completeness — null until user interacts
+  const [cardDetails, setCardDetails] = useState<{ complete: boolean } | null>(null);
+  // Affirm-specific loading/error states (separate from the main placing flow)
+  const [affirmLoading, setAffirmLoading] = useState(false);
+  const [affirmError, setAffirmError] = useState<string | null>(null);
+  // Dev-only: raw Stripe error detail shown below the Affirm block in __DEV__ builds
+  const [affirmDevDetail, setAffirmDevDetail] = useState<string | null>(null);
 
   // Prevent double-tap / duplicate recordCreditSpend calls
   const [placing, setPlacing] = useState(false);
 
   // Reset placing if user navigates back from OrderSuccess
   useFocusEffect(useCallback(() => { setPlacing(false); }, []));
+
+  // Debug: log Place Order button state whenever any blocking condition changes.
+  // If the button is disabled, onPress never fires — this is the only way to see why.
+  useEffect(() => {
+    if (__DEV__) {
+      const isDisabled = !selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete);
+      console.log('[Payment] button state —', isDisabled ? 'DISABLED' : 'ENABLED', {
+        hasAddress: !!selectedAddress,
+        placing,
+        deliveryLoading,
+        rechecking,
+        hasActivePlan: !!activePlan,
+        fulfillmentChoice,
+        cardComplete: cardDetails?.complete ?? null,
+      });
+    }
+  }, [selectedAddress, placing, deliveryLoading, rechecking, activePlan, fulfillmentChoice, paymentMethod, cardDetails]);
 
   // Guest gate — sign-in or guest required for checkout
   if (!user && !isGuest) {
@@ -316,6 +342,211 @@ export default function CheckoutScreen({ route, navigation }: any) {
     );
   }
 
+  // ── Shared post-payment: record order + navigate to success ─────────────
+  async function completeOrder(paymentIntentId: string) {
+    if (appliedCredit > 0) {
+      recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
+    }
+    orderItems.forEach(item => {
+      if (item.productId) incrementProductCounter(item.productId, 'order_count');
+    });
+    const skuWarehouseMap = new Map<string, string>();
+    activePlan!.groups.forEach(g => {
+      g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
+    });
+    const isPickupOrder = activePlan!.groups.some(g => g.isPickup);
+    try {
+      addOrder({
+        orderId: orderId.current,
+        orderNumber: orderNumber.current,
+        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        total,
+        status: isPickupOrder ? 'pending_pickup' : 'processing',
+        payment_status: 'paid',
+        stripe_payment_intent_id: paymentIntentId,
+        items: orderItems.map(item => ({
+          ...item,
+          warehouseCode: skuWarehouseMap.get(item.sku),
+        })),
+        address: selectedAddress ? {
+          firstName: selectedAddress.first_name,
+          lastName: selectedAddress.last_name,
+          line1: selectedAddress.address_line_1,
+          line2: selectedAddress.address_line_2 ?? undefined,
+          city: selectedAddress.city,
+          state: selectedAddress.state,
+          zip: selectedAddress.zip,
+          country: selectedAddress.country ?? 'US',
+        } : undefined,
+        fulfillmentGroups: activePlan!.groups.map(g => ({
+          warehouseCode: g.warehouse.code,
+          warehouseLabel: g.warehouse.label,
+          warehouseAddress: g.warehouse.address,
+          distanceMiles: g.distanceMiles,
+          isPickup: g.isPickup,
+          shippingFee: g.shipping,
+          pickupWindow: g.pickupWindow,
+          items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
+        })),
+        financials: {
+          subtotal,
+          shippingTotal: shipping,
+          tax,
+          total,
+        },
+      });
+      if (!isBuyNow) clearCart();
+      navigation.navigate('OrderSuccess', {
+        total,
+        orderId: orderId.current,
+        orderNumber: orderNumber.current,
+        checkoutSessionId: checkoutSessionId.current,
+        userEmail: user?.email ?? '',
+      });
+    } catch {
+      throw new Error(
+        `Payment processed (ref: ${paymentIntentId}) but we couldn't save your order. ` +
+        'Please contact support with this reference number.',
+      );
+    }
+  }
+
+  // ── Affirm payment handler ────────────────────────────────────────────────
+  async function handleAffirmPayment() {
+    if (affirmLoading || placing) return;
+    if (!selectedAddress) { setShowAddForm(true); setAddrModalVisible(true); return; }
+    if (!activePlan || fulfillmentChoice === null) return;
+
+    setAffirmError(null);
+    setAffirmDevDetail(null);
+    setAffirmLoading(true);
+
+    // Inventory recheck
+    try {
+      const skus = orderItems.map(item => item.productId || item.sku);
+      const freshInventory = await fetchSkuWarehouseStock(skus);
+      const addrParts = [
+        selectedAddress.address_line_1,
+        selectedAddress.address_line_2,
+        selectedAddress.city,
+        `${selectedAddress.state} ${selectedAddress.zip}`,
+        selectedAddress.country,
+      ].filter(Boolean);
+      const freshPlan = await planFulfillment(
+        orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
+        addrParts.join(', '),
+        freshInventory,
+      );
+      if (planFingerprint(freshPlan) !== planFingerprint(fulfillmentPlan)) {
+        setFulfillmentPlan(freshPlan);
+        setAffirmError('Your delivery details changed. Please review and try again.');
+        setAffirmLoading(false);
+        return;
+      }
+    } catch {
+      setAffirmError('Could not verify current inventory. Please try again.');
+      setAffirmLoading(false);
+      return;
+    }
+
+    // Create PaymentIntent (Affirm)
+    const amountCents = Math.round(total * 100);
+    const piMetadata: Record<string, string> = {
+      payment_method_selected: 'affirm',
+      fulfillment_choice: fulfillmentChoice ?? 'delivery',
+      sku_list: orderItems.map(i => i.sku).join(','),
+    };
+    if (selectedAddress) {
+      piMetadata.address_city = selectedAddress.city;
+      piMetadata.address_state = selectedAddress.state;
+    }
+    const { data: piData, error: piError } = await supabase.functions.invoke(
+      'create-payment-intent',
+      {
+        body: {
+          amount: amountCents,
+          orderId: orderId.current,
+          customerEmail: user?.email,
+          metadata: piMetadata,
+          shippingAddress: {
+            name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+            line1: selectedAddress.address_line_1,
+            line2: selectedAddress.address_line_2 ?? undefined,
+            city: selectedAddress.city,
+            state: selectedAddress.state,
+            zip: selectedAddress.zip,
+            country: selectedAddress.country ?? 'US',
+          },
+        },
+      },
+    );
+
+    console.log('[Affirm] PaymentIntent response:', JSON.stringify(piData, null, 2));
+    if (piError || !piData?.clientSecret) {
+      console.log('[Affirm] PaymentIntent creation failed:', piError?.message);
+      setAffirmError('Affirm could not be started. Please try again or choose another payment method.');
+      setAffirmLoading(false);
+      return;
+    }
+
+    const { clientSecret, paymentIntentId } = piData as { clientSecret: string; paymentIntentId: string };
+
+    console.log('[Affirm] confirmPayment params:', {
+      clientSecretExists: !!clientSecret,
+      amount: Math.round(total * 100),
+      currency: 'usd',
+      paymentMethod: 'affirm',
+      urlScheme: 'xselfhome',
+    });
+
+    // Confirm Affirm payment — Stripe opens Affirm authorization in browser.
+    // Shipping is already set on the PaymentIntent by the Edge Function (secret key);
+    // passing it again here would cause a "cannot change with publishable key" error.
+    const { error: confirmError, paymentIntent: confirmedPI } = await confirmPayment(clientSecret, {
+      paymentMethodType: 'Affirm',
+      paymentMethodData: {
+        billingDetails: {
+          name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+          email: user?.email,
+          address: {
+            line1: selectedAddress.address_line_1,
+            line2: selectedAddress.address_line_2 ?? undefined,
+            city: selectedAddress.city,
+            state: selectedAddress.state,
+            postalCode: selectedAddress.zip,
+            country: selectedAddress.country ?? 'US',
+          },
+        },
+      },
+    });
+
+    console.log('[Affirm] confirmPayment error:', JSON.stringify(confirmError, null, 2));
+    console.log('[Affirm] paymentIntent:', JSON.stringify(confirmedPI, null, 2));
+
+    if (confirmError) {
+      if ((confirmError as any).code === 'Canceled') {
+        setAffirmLoading(false);
+        return;
+      }
+      const devDetail = (confirmError as any).message
+        || (confirmError as any).localizedMessage
+        || JSON.stringify(confirmError);
+      console.log('[Affirm] confirm error detail:', devDetail);
+      if (__DEV__) setAffirmDevDetail(devDetail);
+      setAffirmError('Affirm could not be started. Please try again or choose another payment method.');
+      setAffirmLoading(false);
+      return;
+    }
+
+    // Payment authorized — record order and navigate
+    try {
+      await completeOrder(paymentIntentId);
+    } catch (err) {
+      setAffirmError((err as Error).message);
+      setAffirmLoading(false);
+    }
+  }
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}>
@@ -324,7 +555,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
         {/* Shipping Address */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Shipping Address</Text>
+          <Text style={styles.sectionTitle}>Delivery</Text>
           {selectedAddress ? (
             <View style={styles.card}>
               <View style={styles.addrRow}>
@@ -348,7 +579,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
         {/* Fulfillment */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Fulfillment</Text>
 
           {deliveryLoading && (
             <View style={styles.card}>
@@ -376,11 +606,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
 
-          {/* Pickup available — show both options, require explicit selection (req 9) */}
+          {/* Pickup available — delivery pre-selected, user can switch to pickup */}
           {!deliveryLoading && fulfillmentPlan && planHasPickup && (
             <>
-              <Text style={styles.fulfillChoiceHint}>Choose how to receive your order:</Text>
-
               {/* Pickup option */}
               <TouchableOpacity
                 style={[styles.fulfillOptionCard, fulfillmentChoice === 'pickup' && styles.fulfillOptionSelected]}
@@ -397,28 +625,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
                       <Text style={styles.fulfillOptionSub}>
                         {g.warehouse.label} · {g.distanceMiles.toFixed(1)} mi
                       </Text>
-                      <Text style={styles.fulfillOptionSub}>
-                        {g.warehouse.address.replace(', United States', '')}
-                      </Text>
                       {g.pickupWindow && (
-                        <View style={styles.pickupDatesRow}>
-                          <Text style={styles.pickupDateLabel}>
-                            Earliest: {formatPickupDate(g.pickupWindow.earliest)}
-                          </Text>
-                          <Text style={styles.pickupDateSep}> · </Text>
-                          <Text style={styles.pickupDateLabel}>
-                            Latest: {formatPickupDate(g.pickupWindow.latest)}
-                          </Text>
-                        </View>
+                        <Text style={styles.fulfillOptionSub}>
+                          {formatPickupDate(g.pickupWindow.earliest)} – {formatPickupDate(g.pickupWindow.latest)}
+                        </Text>
                       )}
-                      <Text style={styles.pickupTimeWindow}>
-                        Pickup window: {PICKUP_TIME_WINDOW}
-                      </Text>
                     </View>
                   ))}
-                  <Text style={styles.pickupNotice}>
-                    Same-day pickup not available · Weekends excluded
-                  </Text>
                 </View>
               </TouchableOpacity>
 
@@ -433,13 +646,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.fulfillOptionLabel}>Home Delivery — ${SHIPPING_FEE}</Text>
-                  {fulfillmentPlan.groups.map(g => (
-                    <Text key={g.warehouse.code} style={styles.fulfillOptionSub}>
-                      Ships from {g.warehouse.label} · {g.distanceMiles.toFixed(1)} mi
-                    </Text>
-                  ))}
                   <Text style={styles.fulfillOptionSub}>
-                    Estimated: {fulfillmentPlan.groups[0]
+                    {fulfillmentPlan.groups[0]
                       ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
                         : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'
                         : '3–7 business days')
@@ -454,35 +662,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
           {!deliveryLoading && fulfillmentPlan && !planHasPickup && (
             <View style={styles.card}>
               {fulfillmentPlan.groups.map((group, idx) => (
-                <View key={group.warehouse.code} style={[idx > 0 && { marginTop: 8 }]}>
-                  {fulfillmentPlan.groups.length > 1 && (
-                    <Text style={styles.fulfillGroupLabel}>
-                      Shipment {idx + 1} of {fulfillmentPlan.groups.length}
-                    </Text>
-                  )}
+                <View key={group.warehouse.code} style={[idx > 0 && { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F2EE' }]}>
                   <View style={styles.fulfillRow}>
                     <Ionicons name="cube-outline" size={15} color="#CA8A04" />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
-                        Shipping — ${group.shipping}
-                      </Text>
-                      <Text style={styles.fulfillSub}>Delivered to your address</Text>
-                      <Text style={styles.fulfillWarehouse}>
-                        {group.warehouse.label ?? group.warehouse.code} · {group.distanceMiles.toFixed(1)} mi
+                        {group.shipping === 0 ? 'Free shipping' : `Shipping — $${group.shipping}`}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>{group.estimatedDelivery}</Text>
                     </View>
                   </View>
-                  {fulfillmentPlan.groups.length > 1 && group.items.length > 0 && (
-                    <View style={styles.fulfillItemList}>
-                      {group.items.map(item => (
-                        <View key={item.sku} style={styles.fulfillItemRow}>
-                          <Text style={styles.fulfillItemName} numberOfLines={1}>{item.name}</Text>
-                          <Text style={styles.fulfillItemQty}>×{item.qty}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
                 </View>
               ))}
             </View>
@@ -503,9 +692,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           <Text style={styles.sectionTitle}>Payment</Text>
           <View style={styles.card}>
             {([
-              { id: 'apple_pay', icon: 'logo-apple', label: 'Apple Pay', sub: 'Recommended' },
-              { id: 'card',      icon: 'card-outline',   label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
-              { id: 'paypal',    icon: 'logo-paypal',    label: 'PayPal', sub: null },
+              { id: 'apple_pay', icon: 'logo-apple',    label: 'Apple Pay',           sub: 'Recommended' },
+              { id: 'card',      icon: 'card-outline',  label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
+              { id: 'affirm',    icon: 'cash-outline',  label: 'Affirm',              sub: `From $${Math.ceil(total / 12)}/mo` },
             ] as { id: PaymentMethod; icon: any; label: string; sub: string | null }[]).map((pm, idx, arr) => (
               <TouchableOpacity
                 key={pm.id}
@@ -526,34 +715,103 @@ export default function CheckoutScreen({ route, navigation }: any) {
           </View>
         </View>
 
+        {/* Inline card entry — rendered below the selector when card is selected */}
+        {paymentMethod === 'card' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Card Details</Text>
+            <CardField
+              postalCodeEnabled={true}
+              style={{ height: 52, width: '100%' }}
+              cardStyle={{
+                backgroundColor: '#FFFFFF',
+                textColor: '#1C1917',
+                placeholderColor: '#9CA3AF',
+                borderColor: '#E5E3DC',
+                borderWidth: 1,
+                borderRadius: 12,
+              }}
+              onCardChange={details => setCardDetails(details)}
+            />
+            {__DEV__ && (
+              <Text style={{ fontSize: 11, color: '#9CA3AF', marginTop: 6 }}>
+                Test mode: use card 4242 4242 4242 4242
+              </Text>
+            )}
+          </View>
+        )}
+
+        {/* Affirm inline info block */}
+        {paymentMethod === 'affirm' && (
+          <View style={styles.section}>
+            <View style={styles.affirmCard}>
+              <Text style={styles.affirmTitle}>Affirm</Text>
+              <Text style={styles.affirmSubtitle}>From ${Math.ceil(total / 12)}/mo · Subject to approval</Text>
+              {affirmError ? (
+                <Text style={styles.affirmError}>{affirmError}</Text>
+              ) : null}
+              {__DEV__ && affirmDevDetail ? (
+                <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
+              ) : null}
+              <TouchableOpacity
+                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null) && { opacity: 0.6 }]}
+                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null}
+                onPress={handleAffirmPayment}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.affirmBtnText}>
+                  {affirmLoading ? 'Opening Affirm...' : 'Continue with Affirm'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Order Summary */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Order Summary</Text>
+            <Text style={styles.sectionTitle}>Review</Text>
             <TouchableOpacity onPress={() => navigation.goBack()}>
               <Text style={styles.editLink}>Edit</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.card}>
-            {orderItems.map((item, idx) => (
-              <View
-                key={item.sku}
-                style={[styles.orderItem, idx === orderItems.length - 1 && { borderBottomWidth: 0 }]}
-              >
-                <Image source={{ uri: item.img }} style={styles.orderImg} />
-                <View style={styles.orderInfo}>
-                  <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-                  <Text style={styles.itemVariants}>
-                    {[item.color, item.size].filter(Boolean).join(' · ')}
-                  </Text>
-                  <View style={styles.itemBottom}>
-                    <Text style={styles.itemPrice}>${formatPrice(item.price * item.qty)}</Text>
-                    <Text style={styles.itemQty}>Qty: {item.qty}</Text>
-                  </View>
-                </View>
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => setReviewExpanded(v => !v)}
+            activeOpacity={0.7}
+          >
+            {!reviewExpanded ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={styles.summaryLabel}>
+                  {orderItems.length} {orderItems.length === 1 ? 'item' : 'items'} · ${formatPrice(subtotal)}
+                </Text>
+                <Ionicons name="chevron-down-outline" size={16} color="#9CA3AF" />
               </View>
-            ))}
-          </View>
+            ) : (
+              <>
+                {orderItems.map((item, idx) => (
+                  <View
+                    key={item.sku}
+                    style={[styles.orderItem, idx === orderItems.length - 1 && { borderBottomWidth: 0 }]}
+                  >
+                    <Image source={{ uri: item.img }} style={styles.orderImg} />
+                    <View style={styles.orderInfo}>
+                      <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
+                      <Text style={styles.itemVariants}>
+                        {[item.color, item.size].filter(Boolean).join(' · ')}
+                      </Text>
+                      <View style={styles.itemBottom}>
+                        <Text style={styles.itemPrice}>${formatPrice(item.price * item.qty)}</Text>
+                        <Text style={styles.itemQty}>Qty: {item.qty}</Text>
+                      </View>
+                    </View>
+                  </View>
+                ))}
+                <View style={{ alignItems: 'center', paddingTop: 8 }}>
+                  <Ionicons name="chevron-up-outline" size={16} color="#9CA3AF" />
+                </View>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
 
         {/* Summary + CTA */}
@@ -619,12 +877,19 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.placeOrderErrorText}>{recheckError}</Text>
             </View>
           )}
-          <TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null}
+          {paymentMethod !== 'affirm' && (<><TouchableOpacity
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete)) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete)}
             onPress={async () => {
-              if (!selectedAddress) { setShowAddForm(true); setAddrModalVisible(true); return; }
-              if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) return;
+              console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
+              if (!selectedAddress) {
+                console.log('[Payment] blocked: no address selected');
+                setShowAddForm(true); setAddrModalVisible(true); return;
+              }
+              if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) {
+                console.log('[Payment] blocked:', { placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice });
+                return;
+              }
 
               // Final inventory recheck before submission
               setRecheckError(null);
@@ -699,9 +964,23 @@ export default function CheckoutScreen({ route, navigation }: any) {
               setRechecking(false);
               setPlacing(true);
 
-              // ── Stripe PaymentSheet flow ──────────────────────────────────────
-              // 1. Create PaymentIntent on the server
+              // ── Route by payment method ───────────────────────────────────────
+              const _stripeKeyMode = (process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').startsWith('pk_live') ? 'LIVE' : 'test';
+              console.log('[Payment] selected method:', paymentMethod);
+              console.log('[Payment] Stripe publishable key mode:', _stripeKeyMode);
+
+              // ── Create PaymentIntent (Apple Pay + Card) ──────────────────────
               const amountCents = Math.round(total * 100);
+              console.log('[Payment] amount:', amountCents, 'cents | calling create-payment-intent');
+              const piMetadata: Record<string, string> = {
+                payment_method_selected: paymentMethod,
+                fulfillment_choice: fulfillmentChoice ?? 'delivery',
+                sku_list: orderItems.map(i => i.sku).join(','),
+              };
+              if (selectedAddress) {
+                piMetadata.address_city = selectedAddress.city;
+                piMetadata.address_state = selectedAddress.state;
+              }
               const { data: piData, error: piError } = await supabase.functions.invoke(
                 'create-payment-intent',
                 {
@@ -709,6 +988,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     amount: amountCents,
                     orderId: orderId.current,
                     customerEmail: user?.email,
+                    metadata: piMetadata,
                     shippingAddress: selectedAddress ? {
                       name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
                       line1: selectedAddress.address_line_1,
@@ -722,125 +1002,99 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 },
               );
 
+              console.log('[Payment] create-payment-intent result — clientSecret:', !!piData?.clientSecret, '| error:', piError?.message ?? null);
               if (piError || !piData?.clientSecret) {
-                setRecheckError(piError?.message ?? 'Unable to initialize payment. Please try again.');
+                // Extract the actual error body from FunctionsHttpError when available.
+                let paymentErrMsg = piError?.message ?? 'Unable to initialize payment. Please try again.';
+                try {
+                  const httpErr = piError as any;
+                  if (httpErr?.context?.response) {
+                    const body = await httpErr.context.response.clone().json();
+                    if (body?.error) {
+                      paymentErrMsg = body.error;
+                      console.log('[Payment] edge fn error body:', body.error);
+                    }
+                  }
+                } catch {
+                  // fall through to generic message
+                }
+                setRecheckError(paymentErrMsg);
                 setPlacing(false);
                 return;
               }
 
               const { clientSecret, paymentIntentId } = piData as { clientSecret: string; paymentIntentId: string };
 
-              // 2. Initialize PaymentSheet
-              const { error: initError } = await initPaymentSheet({
-                merchantDisplayName: 'Xself Home',
-                paymentIntentClientSecret: clientSecret,
-                defaultBillingDetails: selectedAddress ? {
-                  name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
-                  address: {
-                    line1: selectedAddress.address_line_1,
-                    line2: selectedAddress.address_line_2 ?? undefined,
-                    city: selectedAddress.city,
-                    state: selectedAddress.state,
-                    postalCode: selectedAddress.zip,
-                    country: selectedAddress.country ?? 'US',
-                  },
-                } : undefined,
-                applePay: { merchantCountryCode: 'US' },
-                allowsDelayedPaymentMethods: true,
-              });
-
-              if (initError) {
-                setRecheckError(initError.message ?? 'Payment setup failed. Please try again.');
-                setPlacing(false);
-                return;
-              }
-
-              // 3. Present PaymentSheet — user completes or cancels payment
-              const { error: presentError } = await presentPaymentSheet();
-
-              if (presentError) {
-                if ((presentError as any).code === 'Canceled') {
+              // ── Apple Pay: Platform Pay flow ──────────────────────────────────
+              if (paymentMethod === 'apple_pay') {
+                if (__DEV__) {
+                  console.warn('[Payment] Apple Pay requires a development build / EAS build — will not work in Expo Go.');
+                }
+                const applePaySupported = await isPlatformPaySupported();
+                if (!applePaySupported) {
+                  setRecheckError('Apple Pay is not available on this device or build.');
                   setPlacing(false);
                   return;
                 }
-                setRecheckError(presentError.message ?? 'Payment failed. Please try again.');
-                setPlacing(false);
-                return;
-              }
-
-              // 4. Payment succeeded — record credit spend and save order
-              if (appliedCredit > 0) {
-                recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
-              }
-
-              // Increment order_count for each purchased product (fire-and-forget)
-              orderItems.forEach(item => {
-                if (item.productId) incrementProductCounter(item.productId, 'order_count');
-              });
-
-              // Build SKU → warehouseCode map for item enrichment
-              const skuWarehouseMap = new Map<string, string>();
-              activePlan!.groups.forEach(g => {
-                g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
-              });
-
-              // Pickup orders enter the pickup status flow; delivery orders enter processing
-              const isPickupOrder = activePlan!.groups.some(g => g.isPickup);
-
-              try {
-                addOrder({
-                  orderId: orderId.current,
-                  orderNumber: orderNumber.current,
-                  date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                  total,
-                  status: isPickupOrder ? 'pending_pickup' : 'processing',
-                  payment_status: 'paid',
-                  stripe_payment_intent_id: paymentIntentId,
-                  items: orderItems.map(item => ({
-                    ...item,
-                    warehouseCode: skuWarehouseMap.get(item.sku),
-                  })),
-                  address: selectedAddress ? {
-                    firstName: selectedAddress.first_name,
-                    lastName: selectedAddress.last_name,
-                    line1: selectedAddress.address_line_1,
-                    line2: selectedAddress.address_line_2 ?? undefined,
-                    city: selectedAddress.city,
-                    state: selectedAddress.state,
-                    zip: selectedAddress.zip,
-                    country: selectedAddress.country ?? 'US',
-                  } : undefined,
-                  fulfillmentGroups: activePlan!.groups.map(g => ({
-                    warehouseCode: g.warehouse.code,
-                    warehouseLabel: g.warehouse.label,
-                    warehouseAddress: g.warehouse.address,
-                    distanceMiles: g.distanceMiles,
-                    isPickup: g.isPickup,
-                    shippingFee: g.shipping,
-                    pickupWindow: g.pickupWindow,
-                    items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
-                  })),
-                  financials: {
-                    subtotal,
-                    shippingTotal: shipping,
-                    tax,
-                    total,
+                const _merchantId = process.env.EXPO_PUBLIC_APPLE_MERCHANT_ID ?? 'merchant.com.xself.home';
+                console.log('[Payment] Apple merchantIdentifier:', _merchantId);
+                console.log('[Payment] merchantCountryCode: US | currencyCode: USD');
+                const { error: applePayError } = await confirmPlatformPayPayment(clientSecret, {
+                  applePay: {
+                    cartItems: [
+                      {
+                        label: 'Xself Home',
+                        amount: total.toFixed(2),
+                        paymentType: PlatformPay.PaymentType.Immediate,
+                      },
+                    ],
+                    merchantCountryCode: 'US',
+                    currencyCode: 'USD',
                   },
                 });
-                if (!isBuyNow) clearCart();
-                navigation.navigate('OrderSuccess', {
-                  total,
-                  orderId: orderId.current,
-                  orderNumber: orderNumber.current,
-                  checkoutSessionId: checkoutSessionId.current,
-                  userEmail: user?.email ?? '',
+                console.log('[Payment] confirmPlatformPayPayment result:', applePayError?.message ?? 'ok', '| code:', (applePayError as any)?.code ?? null);
+                if (applePayError) {
+                  if ((applePayError as any).code === 'Canceled') {
+                    setPlacing(false);
+                    return;
+                  }
+                  setRecheckError(applePayError.message ?? 'Apple Pay failed. Please try again.');
+                  setPlacing(false);
+                  return;
+                }
+                // Apple Pay succeeded — fall through to order recording below
+              } else {
+                // ── Card: inline CardField ────────────────────────────────────────
+                console.log('[CardPayment] confirming payment with inline card field');
+                const { error: confirmError } = await confirmPayment(clientSecret, {
+                  paymentMethodType: 'Card',
+                  paymentMethodData: {
+                    billingDetails: selectedAddress ? {
+                      name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+                      address: {
+                        line1: selectedAddress.address_line_1,
+                        line2: selectedAddress.address_line_2 ?? undefined,
+                        city: selectedAddress.city,
+                        state: selectedAddress.state,
+                        postalCode: selectedAddress.zip,
+                        country: selectedAddress.country ?? 'US',
+                      },
+                    } : undefined,
+                  },
                 });
+                console.log('[CardPayment] confirm result:', confirmError?.message ?? 'ok');
+                if (confirmError) {
+                  setRecheckError(confirmError.message ?? 'Payment failed. Please try again.');
+                  setPlacing(false);
+                  return;
+                }
+              }
+
+              // 4. Payment succeeded — record order and navigate
+              try {
+                await completeOrder(paymentIntentId);
               } catch (orderErr) {
-                // Payment was charged but order save failed — show recovery message
-                setRecheckError(
-                  `Payment processed (ref: ${paymentIntentId}) but we couldn't save your order. ` +
-                  'Please contact support with this reference number.',
-                );
+                setRecheckError((orderErr as Error).message);
                 setPlacing(false);
               }
             }}
@@ -849,11 +1103,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
               {deliveryLoading
                 ? (fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…')
                 : rechecking ? 'Verifying inventory…'
-                : (planHasPickup && fulfillmentChoice === null) ? 'Select Fulfillment Method'
-                : 'Place Order'}
+                : `Place Order · $${formatPrice(total)}`}
             </Text>
           </TouchableOpacity>
           <Text style={styles.placeOrderTrust}>Secured by Stripe · Your payment info is encrypted</Text>
+          </>)}
         </View>
       </ScrollView>
 
@@ -1052,9 +1306,9 @@ const styles = StyleSheet.create({
   summaryLabel: { fontSize: 12, color: '#9CA3AF' },
   summaryValue: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
   summaryFree: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
-  summaryTotalBlock: { paddingTop: 14, paddingBottom: 20 },
-  summaryTotalLabel: { fontSize: 12, color: '#9CA3AF', fontWeight: '500', letterSpacing: 0.8, textTransform: 'uppercase' as const, marginBottom: 4 },
-  summaryTotalValue: { fontSize: 21, fontWeight: '600', color: '#111111' },
+  summaryTotalBlock: { paddingTop: 16, paddingBottom: 24 },
+  summaryTotalLabel: { fontSize: 12, color: '#9CA3AF', fontWeight: '500', letterSpacing: 0.8, textTransform: 'uppercase' as const, marginBottom: 6 },
+  summaryTotalValue: { fontSize: 28, fontWeight: '700', color: '#111111' },
   summaryTotalSub: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
 
 
@@ -1071,9 +1325,18 @@ const styles = StyleSheet.create({
   gateDivider: { alignSelf: 'stretch', height: 1, backgroundColor: '#F3F4F6', marginBottom: 20 },
   gateBenefits: { gap: 6, alignItems: 'center' },
   gateBenefit: { fontSize: 12, color: '#9CA3AF' },
-  placeOrderBtn: { backgroundColor: '#EAB320', paddingVertical: 14, borderRadius: 8, alignItems: 'center' },
+  placeOrderBtn: { backgroundColor: '#EAB320', paddingVertical: 16, borderRadius: 10, alignItems: 'center', marginTop: 4 },
   placeOrderText: { color: 'white', fontSize: 15, fontWeight: '700' },
   placeOrderTrust: { fontSize: 11, color: '#9CA3AF', textAlign: 'center', marginTop: 10 },
+
+  affirmCard: { backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#E5E3DC', padding: 18 },
+  affirmTitle: { fontSize: 16, fontWeight: '600' as const, color: '#1C1917', marginBottom: 4 },
+  affirmSubtitle: { fontSize: 13, color: '#6B7280', lineHeight: 18, marginBottom: 6 },
+  affirmDivider: { height: 1, backgroundColor: '#E5E3DC', marginVertical: 10 },
+  affirmDetail: { fontSize: 13, color: '#4B5563', lineHeight: 22 },
+  affirmError: { fontSize: 13, color: '#DC2626', marginTop: 10, lineHeight: 18 },
+  affirmBtn: { marginTop: 16, backgroundColor: '#1C1917', borderRadius: 10, paddingVertical: 14, alignItems: 'center' as const },
+  affirmBtnText: { fontSize: 15, fontWeight: '600' as const, color: '#FFFFFF', letterSpacing: 0.2 },
   reserveText: { fontSize: 11, color: '#CA8A04', fontWeight: '500', marginTop: 6 },
   demoBanner: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 20, marginBottom: 8, backgroundColor: '#FFFBEB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#FDE68A' },
   demoBannerText: { fontSize: 12, color: '#92660A', flex: 1 },

@@ -404,3 +404,9 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 
 [functions.giga-warehouse-stock]
 verify_jwt = false
+
+[functions.dynamic-pricing]
+verify_jwt = false
+
+[functions.create-payment-intent]
+verify_jwt = false

@@ -46,6 +46,7 @@ import CollectionScreen from './src/screens/CollectionScreen';
 import { getCachedDelivery } from './src/utils/deliveryEligibility';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
+import SearchPillBar from './src/components/SearchPillBar';
 import * as SplashScreen from 'expo-splash-screen';
 import { StripeProvider } from '@stripe/stripe-react-native';
 
@@ -714,28 +715,26 @@ function HomeScreen({ navigation }) {
   const HomeHeader = (
     <>
       {/* Search pill */}
-      <TouchableOpacity
-        activeOpacity={0.9}
-        style={styles.searchPill}
+      <SearchPillBar
         onPress={() => navigation.navigate('Search')}
+        rightSlot={
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert('Search by photo', 'Choose a source', [
+                { text: 'Take Photo', onPress: async () => { const uri = await pickSearchImage('camera'); if (uri) navigation.navigate('Search', { imageUri: uri }); } },
+                { text: 'Upload Photo', onPress: async () => { const uri = await pickSearchImage('library'); if (uri) navigation.navigate('Search', { imageUri: uri }); } },
+                { text: 'Cancel', style: 'cancel' },
+              ]);
+            }}
+            style={styles.searchPillCamBtn}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="camera-outline" size={18} color="#1C1917" />
+          </TouchableOpacity>
+        }
       >
-        <Ionicons name="search-outline" size={18} color="#6B7280" />
         <Text style={styles.searchPillPlaceholder}>Search Xself</Text>
-        <View style={styles.searchPillDivider} />
-        <TouchableOpacity
-          onPress={() => {
-            Alert.alert('Search by photo', 'Choose a source', [
-              { text: 'Take Photo', onPress: async () => { const uri = await pickSearchImage('camera'); if (uri) navigation.navigate('Search', { imageUri: uri }); } },
-              { text: 'Upload Photo', onPress: async () => { const uri = await pickSearchImage('library'); if (uri) navigation.navigate('Search', { imageUri: uri }); } },
-              { text: 'Cancel', style: 'cancel' },
-            ]);
-          }}
-          style={styles.searchPillCamBtn}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="camera-outline" size={18} color="#1C1917" />
-        </TouchableOpacity>
-      </TouchableOpacity>
+      </SearchPillBar>
 
       {/* Hero banner */}
       <HeroBanner
@@ -755,7 +754,7 @@ function HomeScreen({ navigation }) {
           <View style={styles.homeSectionHeader}>
             <Text style={styles.homeSectionTitle}>{sectionTitles.newArrivals}</Text>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}>
             {newArrivals.map(item => (
               <ProductCard key={item.id} product={item} onPress={() => goToProduct(item)} style={{ width: hCardWidth }} flexibleRatio />
             ))}
@@ -767,7 +766,7 @@ function HomeScreen({ navigation }) {
       <View style={styles.homeSectionHeader}>
         <Text style={styles.homeSectionTitle}>{sectionTitles.topPicks}</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}>
         {topPicks.map(item => (
           <ProductCard key={item.id} product={item} onPress={() => goToProduct(item)} style={{ width: hCardWidth }} />
         ))}
@@ -777,7 +776,7 @@ function HomeScreen({ navigation }) {
       <View style={styles.homeSectionHeader}>
         <Text style={styles.homeSectionTitle}>{sectionTitles.bestSellers}</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 6, gap: 6 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}>
         {bestSellers.map(item => (
           <ProductCard key={item.id} product={item} onPress={() => goToProduct(item)} style={{ width: hCardWidth }} />
         ))}
@@ -2025,21 +2024,50 @@ function CartScreen({ navigation }) {
   }, []);
 
   if (cart.length === 0) {
+    const trending = realProducts.filter(p => p.images.length > 0).slice(0, 6);
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.cartEmptyOuter}>
-          <View style={styles.cartEmptyBlock}>
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <Text style={styles.screenTitle}>Cart</Text>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}>
+          {/* Empty-state card */}
+          <View style={styles.cartEmptyCard}>
             <View style={styles.cartEmptyIconWrap}>
-              <Ionicons name="cart-outline" size={32} color="#CA8A04" />
+              <Ionicons name="home-outline" size={26} color="#CA8A04" />
             </View>
-            <Text style={styles.cartEmptyTitle}>Your cart is empty</Text>
-            <Text style={styles.cartEmptySubtitle}>Browse our collection and add items to get started.</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('Home')} style={styles.cartSignInBtn}>
-              <Text style={styles.cartSignInBtnText}>Start Shopping</Text>
+            <Text style={styles.cartEmptyHeroTitle}>Start your space</Text>
+            <Text style={styles.cartEmptyHeroSub}>Discover furniture you'll love.</Text>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Home')}
+              style={styles.cartEmptyBrowseBtn}
+              activeOpacity={0.82}
+            >
+              <Text style={styles.cartEmptyBrowseBtnText}>Browse Collection</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </SafeAreaView>
+
+          {/* Trending */}
+          {trending.length > 0 && (
+            <View style={styles.cartEmptyTrending}>
+              <View style={styles.cartEmptyTrendingHeader}>
+                <Text style={styles.cartEmptyTrendingTitle}>Trending now</Text>
+                <TouchableOpacity onPress={() => navigation.navigate('Home')}>
+                  <Text style={styles.cartEmptyTrendingLink}>See all</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingRight: 16 }}>
+                {trending.map(p => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    onPress={() => navigation.navigate('ProductDetail', { product: p })}
+                    style={{ width: hCardWidth, marginBottom: 0 }}
+                  />
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </ScrollView>
+      </View>
     );
   }
 
@@ -2078,7 +2106,7 @@ function CartScreen({ navigation }) {
           <Text style={styles.reserveBannerText}>Prices reserved · {reserveTimeLeft}</Text>
         </View>
       ) : null}
-      <ScrollView contentContainerStyle={{ paddingTop: 8, paddingBottom: insets.bottom + 140 }}>
+      <ScrollView contentContainerStyle={{ paddingTop: 8, paddingBottom: insets.bottom + 100 }}>
         {/* Shipping banner */}
         {remaining > 0 ? (
           <View style={styles.shipBanner}>
@@ -2103,7 +2131,7 @@ function CartScreen({ navigation }) {
             key={item.sku}
             style={[styles.cartItem, { opacity: removeAnims.current[item.sku] ?? 1 }]}
           >
-            <Image source={{ uri: item.img }} style={styles.cartImage} />
+            <Image source={{ uri: item.img }} style={styles.cartImage} resizeMode="cover" />
             <View style={styles.cartInfo}>
               <Text style={styles.cartName} numberOfLines={2}>{item.name}</Text>
               {(item.color || item.size) && (
@@ -2183,17 +2211,16 @@ function CartScreen({ navigation }) {
             <Text style={styles.summaryTotalValue}>${formatPrice(total)}</Text>
             {shipping === 0 && <Text style={styles.summaryTotalSub}>Free shipping included</Text>}
           </View>
-          {/* Action */}
+          {/* CTA */}
           <TouchableOpacity
-            style={[styles.checkoutBtn, checkoutLoading && { opacity: 0.7 }]}
+            style={[styles.summaryCheckoutBtn, checkoutLoading && { opacity: 0.7 }]}
             disabled={checkoutLoading}
             onPress={() => { setCheckoutLoading(true); navigation.navigate('Checkout', { mode: 'cart', creditAmount: creditDeduction }); }}
           >
             {checkoutLoading
               ? <ActivityIndicator size="small" color="white" />
-              : <Text style={styles.checkoutBtnText}>Checkout</Text>}
+              : <Text style={styles.summaryCheckoutBtnText}>Checkout · ${formatPrice(total)}</Text>}
           </TouchableOpacity>
-          <Text style={styles.checkoutTrustText}>Secure payment · Free returns · Fast delivery</Text>
         </View>
 
         {/* Saved for later */}
@@ -2223,7 +2250,12 @@ function CartScreen({ navigation }) {
         {/* Complete Your Space */}
         {recommended.length > 0 && (
           <View style={styles.cartRecommendSection}>
-            <Text style={styles.cartRecommendTitle}>Complete Your Space</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <Text style={[styles.cartRecommendTitle, { marginBottom: 0 }]}>Complete Your Space</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('Home')}>
+                <Text style={{ fontSize: 13, color: '#CA8A04', fontWeight: '500' }}>See all</Text>
+              </TouchableOpacity>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingRight: 12 }}>
               {recommended.map(p => (
                 <TouchableOpacity key={p.id} style={styles.cartRecommendCard} onPress={() => navigation.navigate('ProductDetail', { product: p })}>
@@ -2295,7 +2327,7 @@ function AccountScreen({ navigation }) {
   if (!user) {
     return (
       <SafeAreaView style={styles.container}>
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 48 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
           <View style={styles.guestIdentity}>
             <View style={styles.guestAvatarWrap}>
               <Ionicons name="person-outline" size={32} color="#CA8A04" />
@@ -2314,7 +2346,7 @@ function AccountScreen({ navigation }) {
           </View>
 
           <Text style={styles.menuSectionLabel}>MY ACCOUNT</Text>
-          <View style={styles.menuList}>
+          <View style={styles.menuListCard}>
             {accountItems.map((item, i) => renderItem(item, i, accountItems, true))}
           </View>
 
@@ -2329,25 +2361,25 @@ function AccountScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 48 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
 
-        {/* Membership Card */}
+        {/* Membership Card — premium dark focal point */}
         <View style={styles.memberCard}>
+          <LinearGradient
+            colors={['#1E1C18', '#111010']}
+            style={StyleSheet.absoluteFillObject}
+            start={{ x: 0.0, y: 0.0 }}
+            end={{ x: 1.0, y: 1.0 }}
+          />
+          <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
             <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
             <Text style={styles.memberCardSince}>Member since 2024</Text>
           </View>
-          <View style={styles.profileRow}>
-            <View style={[styles.avatarRing, styles.avatarRingMember]}>
-              <View style={styles.avatarInner}>
-                <Text style={styles.avatarInitials}>{initials}</Text>
-              </View>
-            </View>
-            <View style={styles.profileInfo}>
-              <Text style={styles.memberCardName}>{user.displayName}</Text>
-              <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
-              <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
-            </View>
+          <Text style={styles.memberCardName}>{user.displayName}</Text>
+          <View style={{ marginTop: 12 }}>
+            <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
+            <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
           </View>
           <TouchableOpacity onPress={() => navigation.navigate('Membership')} style={styles.memberCardCTA} activeOpacity={0.75}>
             <Text style={styles.memberCardCTAText}>Manage Membership →</Text>
@@ -2356,30 +2388,31 @@ function AccountScreen({ navigation }) {
 
         {/* Your Benefits */}
         <Text style={styles.menuSectionLabel}>YOUR BENEFITS</Text>
-        <View style={styles.menuList}>
+        <View style={styles.menuListCard}>
           {([
             { icon: 'cash-outline',     text: 'Cashback on purchases' },
             { icon: 'pricetag-outline', text: 'Member-only deals' },
             { icon: 'star-outline',     text: 'Exclusive member pricing' },
           ] as const).map((b, i, arr) => (
             <View key={i} style={[styles.benefitRow, i < arr.length - 1 && styles.menuItemBorder]}>
-              <Ionicons name={b.icon} size={18} color="#D4A017" />
+              <Ionicons name={b.icon} size={17} color="#CA8A04" />
               <Text style={styles.benefitText}>{b.text}</Text>
+              <Ionicons name="chevron-forward" size={14} color="#D1CFC9" />
             </View>
           ))}
         </View>
 
         {/* My Account */}
         <Text style={styles.menuSectionLabel}>MY ACCOUNT</Text>
-        <View style={styles.menuList}>
+        <View style={styles.menuListCard}>
           {accountItems.map((item, i) => renderItem(item, i, accountItems))}
         </View>
 
-        <View style={[styles.menuList, { marginTop: 24, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#EEEBE4', backgroundColor: '#FFFFFF' }]}>
+        <View style={[styles.menuListCard, { marginTop: 24 }]}>
           <TouchableOpacity style={styles.menuItem} onPress={signOut} activeOpacity={0.65}>
-            <Ionicons name="log-out-outline" size={20} color="#DC2626" />
+            <Ionicons name="log-out-outline" size={20} color="#E05252" />
             <View style={styles.menuTextWrap}>
-              <Text style={[styles.menuText, { color: '#DC2626' }]}>Sign Out</Text>
+              <Text style={[styles.menuText, { color: '#E05252' }]}>Sign Out</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -2391,37 +2424,13 @@ function AccountScreen({ navigation }) {
 }
 
 function MembershipScreen({ navigation }) {
-  const { user, updateDisplayName } = useAuth();
+  const { user } = useAuth();
   const { balance } = useRewards();
-  const [editVisible, setEditVisible] = useState(false);
-  const [editName, setEditName] = useState(user?.displayName ?? '');
 
   // Guard: if user is null (signed out while screen was mounted), go back
   useEffect(() => { if (!user) navigation.goBack(); }, [user]);
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
   if (!user) return null;
-  const initials = user.displayName.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
-
-  async function pickPhoto() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Allow photo access to change your profile picture.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) setAvatarUri(result.assets[0].uri);
-  }
-
-  function saveProfile() {
-    if (editName.trim()) updateDisplayName(editName.trim());
-    setEditVisible(false);
-  }
 
   const benefits = [
     { icon: 'cash-outline',     text: 'Cashback on purchases' },
@@ -2439,42 +2448,36 @@ function MembershipScreen({ navigation }) {
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
-        {/* Card — editable avatar */}
+        {/* Premium dark card */}
         <View style={styles.memberCard}>
+          <LinearGradient
+            colors={['#1A1816', '#0D0C0B']}
+            style={StyleSheet.absoluteFillObject}
+            start={{ x: 0.0, y: 0.0 }}
+            end={{ x: 1.0, y: 1.0 }}
+          />
+          <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
             <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
             <Text style={styles.memberCardSince}>Member since 2024</Text>
           </View>
-          <View style={styles.profileRow}>
-            <TouchableOpacity onPress={() => { setEditName(user.displayName); setEditVisible(true); }} activeOpacity={0.8}>
-              <View style={[styles.avatarRing, styles.avatarRingMember]}>
-                {avatarUri
-                  ? <Image source={{ uri: avatarUri }} style={{ width: 54, height: 54, borderRadius: 27 }} />
-                  : <View style={styles.avatarInner}><Text style={styles.avatarInitials}>{initials}</Text></View>}
-              </View>
-              <View style={{ position: 'absolute', bottom: 0, right: 0, width: 20, height: 20, borderRadius: 10, backgroundColor: '#D4A017', alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="pencil" size={10} color="#fff" />
-              </View>
-            </TouchableOpacity>
-            <View style={styles.profileInfo}>
-              <Text style={styles.memberCardName}>{user.displayName}</Text>
-              <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
-              <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
-            </View>
+          <View style={{ marginTop: 14 }}>
+            <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
+            <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
           </View>
         </View>
 
         {/* Your Plan */}
         <Text style={styles.menuSectionLabel}>YOUR PLAN</Text>
-        <View style={{ marginHorizontal: 16, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden' }}>
+        <View style={styles.menuListCard}>
           <View style={[styles.menuItem, styles.menuItemBorder]}>
-            <Ionicons name="shield-checkmark-outline" size={20} color="#0F5C5E" />
+            <Ionicons name="shield-checkmark-outline" size={20} color="#CA8A04" />
             <View style={styles.menuTextWrap}>
               <Text style={styles.menuText}>Xself Gold</Text>
               <Text style={styles.menuSubText}>$29 / month · Cancel anytime</Text>
             </View>
-            <View style={{ backgroundColor: '#E8F5F5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
-              <Text style={{ fontSize: 10, fontWeight: '600', color: '#0F5C5E' }}>ACTIVE</Text>
+            <View style={{ backgroundColor: '#FEF9EC', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
+              <Text style={{ fontSize: 10, fontWeight: '600', color: '#CA8A04' }}>ACTIVE</Text>
             </View>
           </View>
           <TouchableOpacity
@@ -2491,18 +2494,19 @@ function MembershipScreen({ navigation }) {
 
         {/* Your Benefits */}
         <Text style={styles.menuSectionLabel}>YOUR BENEFITS</Text>
-        <View style={styles.menuList}>
+        <View style={styles.menuListCard}>
           {benefits.map((b, i, arr) => (
             <View key={i} style={[styles.benefitRow, i < arr.length - 1 && styles.menuItemBorder]}>
-              <Ionicons name={b.icon} size={18} color="#D4A017" />
+              <Ionicons name={b.icon} size={17} color="#CA8A04" />
               <Text style={styles.benefitText}>{b.text}</Text>
+              <Ionicons name="chevron-forward" size={14} color="#D1CFC9" />
             </View>
           ))}
         </View>
 
         {/* Earn More */}
         <Text style={styles.menuSectionLabel}>EARN MORE</Text>
-        <View style={styles.menuList}>
+        <View style={styles.menuListCard}>
           <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('Earn')} activeOpacity={0.7}>
             <Ionicons name="gift-outline" size={20} color="#EAB320" />
             <View style={styles.menuTextWrap}>
@@ -2513,41 +2517,6 @@ function MembershipScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       </ScrollView>
-
-      {/* Edit Profile Modal */}
-      <Modal visible={editVisible} transparent animationType="slide" onRequestClose={() => setEditVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
-          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' }} />
-          <View style={{ backgroundColor: '#FFFFFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24 }}>
-            <Text style={{ fontSize: 17, fontWeight: '600', color: '#1C1917', marginBottom: 24, textAlign: 'center' }}>Edit Profile</Text>
-            <TouchableOpacity onPress={pickPhoto} activeOpacity={0.8} style={{ alignSelf: 'center', marginBottom: 24 }}>
-              <View style={[styles.avatarRing, styles.avatarRingMember, { width: 76, height: 76, borderRadius: 38 }]}>
-                {avatarUri
-                  ? <Image source={{ uri: avatarUri }} style={{ width: 66, height: 66, borderRadius: 33 }} />
-                  : <View style={[styles.avatarInner, { width: 66, height: 66, borderRadius: 33 }]}><Text style={[styles.avatarInitials, { fontSize: 22 }]}>{initials}</Text></View>}
-              </View>
-              <View style={{ position: 'absolute', bottom: 0, right: 0, width: 24, height: 24, borderRadius: 12, backgroundColor: '#D4A017', alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="camera" size={12} color="#fff" />
-              </View>
-            </TouchableOpacity>
-            <Text style={{ fontSize: 11, fontWeight: '600', color: '#9CA3AF', letterSpacing: 1, marginBottom: 6 }}>DISPLAY NAME</Text>
-            <TextInput
-              value={editName}
-              onChangeText={setEditName}
-              style={{ borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#1C1917', marginBottom: 20 }}
-              autoCapitalize="words"
-              returnKeyType="done"
-              onSubmitEditing={saveProfile}
-            />
-            <TouchableOpacity onPress={saveProfile} style={{ backgroundColor: '#EAB320', paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginBottom: 12 }} activeOpacity={0.8}>
-              <Text style={{ fontSize: 15, fontWeight: '600', color: '#FFFFFF' }}>Save</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setEditVisible(false)} style={{ alignItems: 'center', paddingVertical: 10 }} activeOpacity={0.7}>
-              <Text style={{ fontSize: 14, color: '#9CA3AF' }}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -2691,6 +2660,7 @@ export default function App() {
       <StripeProvider
         publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ''}
         merchantIdentifier={process.env.EXPO_PUBLIC_APPLE_MERCHANT_ID ?? 'merchant.com.xself.home'}
+        urlScheme="xselfhome"
       >
       <AuthProvider>
       <RecommendationProvider>
@@ -2732,7 +2702,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAF9', paddingBottom: 0 },
+  container: { flex: 1, backgroundColor: '#F3F1EB', paddingBottom: 0 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16 },
   greeting: { fontSize: 12, color: '#9CA3AF', textTransform: 'uppercase' },
   title: { fontSize: 28, fontWeight: '600', color: '#1C1917' },
@@ -2745,13 +2715,13 @@ const styles = StyleSheet.create({
   categoryPillActive: { backgroundColor: '#1C1917', borderColor: '#1C1917' },
   categoryText: { fontSize: 14, color: '#6B7280' },
   categoryTextActive: { color: 'white' },
-  productsGrid: { paddingHorizontal: 6, paddingBottom: 100, paddingTop: 0 },
+  productsGrid: { paddingHorizontal: 10, paddingBottom: 100, paddingTop: 4 },
   heroBanner: { marginHorizontal: 6, marginBottom: 16, borderRadius: 12, backgroundColor: '#1C1917', padding: 24, minHeight: 140, justifyContent: 'flex-end', overflow: 'hidden' },
   heroEyebrow: { fontSize: 10, fontWeight: '600', color: '#EAB320', letterSpacing: 2, marginBottom: 6 },
   heroTitle: { fontSize: 22, fontWeight: '600', color: '#FFFFFF', lineHeight: 28, marginBottom: 16 },
   heroCTA: { alignSelf: 'flex-start', backgroundColor: '#EAB320', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
   heroCTAText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
-  homeSectionHeader: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 8 },
+  homeSectionHeader: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 8 },
   homeSectionTitle: { fontSize: 15, fontWeight: '600', color: '#1C1917' },
   productCard: { flex: 1, marginHorizontal: 3, marginVertical: 3, backgroundColor: 'white', borderRadius: 6, overflow: 'hidden', minHeight: 240 },
   productImage: { width: '100%', aspectRatio: 4 / 5, backgroundColor: '#F3F4F6' },
@@ -2788,8 +2758,8 @@ const styles = StyleSheet.create({
   qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 0, backgroundColor: '#F3F4F6', borderRadius: 6, overflow: 'hidden' },
   qtyBtn: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
   qtyValue: { fontSize: 15, fontWeight: '600', color: '#1C1917', width: 32, textAlign: 'center' },
-  cartItem: { flexDirection: 'row', padding: 12, backgroundColor: 'white', marginHorizontal: 16, marginBottom: 8, borderRadius: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  cartImage: { width: 72, height: 72, borderRadius: 6, backgroundColor: '#F3F4F6' },
+  cartItem: { flexDirection: 'row', padding: 12, backgroundColor: 'white', marginHorizontal: 16, marginBottom: 8, borderRadius: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
+  cartImage: { width: 80, aspectRatio: 4 / 5, borderRadius: 6, backgroundColor: '#F3F4F6' },
   cartInfo: { flex: 1, marginLeft: 10, paddingRight: 20 },
   cartName: { fontSize: 13, fontWeight: '500', color: '#1C1917', lineHeight: 18 },
   cartVariants: { fontSize: 11, color: '#9CA3AF', marginTop: 3 },
@@ -2813,7 +2783,7 @@ const styles = StyleSheet.create({
   cartRecommendRating: { fontSize: 10, color: '#9CA3AF', marginTop: 3 },
   cartRecommendBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
   cartRecommendPrice: { fontSize: 12, fontWeight: '700', color: '#1C1917' },
-  cartRecommendIconBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(234,179,32,0.12)', alignItems: 'center', justifyContent: 'center' },
+  cartRecommendIconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   specsCard: { backgroundColor: '#F9FAFB', borderRadius: 8 },
   specGroup: { marginTop: 2 },
   specGroupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E5E3DC' },
@@ -2833,7 +2803,12 @@ const styles = StyleSheet.create({
   summaryValue: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
   summaryFree: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
   summaryMuted: { fontSize: 12, color: '#C4C0BA', textAlign: 'right' as const },
-  summaryTotalBlock: { paddingTop: 14, paddingBottom: 20 },
+  summaryTotalBlock: { paddingTop: 14, paddingBottom: 16 },
+  summaryCheckoutBtn: { backgroundColor: '#EAB320', height: 56, borderRadius: 14, alignItems: 'center', justifyContent: 'center', shadowColor: '#EAB320', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3 },
+  summaryCheckoutBtnText: { color: 'white', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
+  floatingCtaContainer: { position: 'absolute', left: 16, right: 16, zIndex: 10 },
+  floatingCheckoutBtn: { backgroundColor: '#EAB320', paddingVertical: 16, borderRadius: 14, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 6 },
+  floatingCheckoutBtnText: { color: 'white', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
   summaryTotalLabel: { fontSize: 12, fontWeight: '500', color: '#9CA3AF', marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: 0.8 },
   summaryTotalValue: { fontSize: 21, fontWeight: '600', color: '#111111' },
   summaryTotalSub: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
@@ -2853,17 +2828,19 @@ const styles = StyleSheet.create({
   avatarRing: { width: 62, height: 62, borderRadius: 31, alignItems: 'center', justifyContent: 'center' },
   avatarRingMember: { borderWidth: 2, borderColor: '#EAB320' },
   // Membership card
-  memberCard: { marginHorizontal: 16, marginTop: 20, marginBottom: 8, backgroundColor: '#0F5C5E', borderRadius: 14, padding: 20 },
-  memberCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
+  memberCard: { marginHorizontal: 16, marginTop: 20, marginBottom: 8, borderRadius: 16, padding: 20, overflow: 'hidden' },
+  memberCardHighlight: { position: 'absolute', top: -50, right: -50, width: 180, height: 180, borderRadius: 90, backgroundColor: 'rgba(255,255,255,0.05)' },
+  memberCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   memberCardBadge: { fontSize: 10, fontWeight: '700', color: '#D4A017', letterSpacing: 2 },
-  memberCardSince: { fontSize: 10, color: 'rgba(255,255,255,0.5)' },
-  memberCardName: { fontSize: 17, fontWeight: '600', color: '#FFFFFF', marginBottom: 8 },
-  memberCardBalanceLabel: { fontSize: 11, color: 'rgba(255,255,255,0.55)', marginBottom: 2 },
-  memberCardBalance: { fontSize: 24, fontWeight: '700', color: '#FFFFFF' },
-  memberCardCTA: { marginTop: 20, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.15)', paddingTop: 14 },
+  memberCardSince: { fontSize: 10, color: 'rgba(255,255,255,0.45)' },
+  memberCardName: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+  memberCardBalanceLabel: { fontSize: 13, color: 'rgba(255,255,255,0.55)', marginBottom: 4 },
+  memberCardBalance: { fontSize: 34, fontWeight: '600', color: '#FFFFFF' },
+  memberCardCTA: { marginTop: 14, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.12)', paddingTop: 12 },
   memberCardCTAText: { fontSize: 13, color: '#D4A017', fontWeight: '500' },
-  benefitRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 20, gap: 14 },
-  benefitText: { fontSize: 14, color: '#6B7280' },
+  benefitRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 20, gap: 14 },
+  benefitText: { flex: 1, fontSize: 14, color: '#374151' },
+  menuListCard: { marginHorizontal: 16, backgroundColor: '#FFFFFF', borderRadius: 16, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
   avatarRingGuest: { borderWidth: 1.5, borderColor: '#D1CFC9' },
   avatarInner: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#EAB320', alignItems: 'center', justifyContent: 'center' },
   avatarInitials: { fontSize: 19, fontWeight: '600', color: '#FFFFFF' },
@@ -2893,13 +2870,13 @@ const styles = StyleSheet.create({
   menuText: { fontSize: 15, color: '#1C1917' },
   menuSubText: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
   earnMoreHint: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
-  floatTabBar: { position: 'absolute', left: 40, right: 40, height: 60, borderRadius: 32, overflow: 'hidden', flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.96)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)', shadowColor: '#1C1917', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.10, shadowRadius: 12, elevation: 14 },
+  floatTabBar: { position: 'absolute', left: 32, right: 32, height: 76, borderRadius: 38, flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.82)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 18, elevation: 4 },
   floatTabItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   floatTabContent: { alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4 },
-  floatTabIconWrap: { width: 44, height: 32, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginBottom: 1 },
-  floatTabIconWrapActive: { backgroundColor: 'rgba(234,179,32,0.13)' },
-  floatTabLabel: { fontSize: 11, fontWeight: '500' as const, color: '#6B7280', marginTop: 2 },
-  floatTabLabelActive: { color: '#EAB320' },
+  floatTabIconWrap: { alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
+  floatTabIconWrapActive: {},
+  floatTabLabel: { fontSize: 10, fontWeight: '500' as const, color: '#9CA3AF', marginTop: 2 },
+  floatTabLabelActive: { color: '#CA8A04', fontWeight: '600' as const },
   floatTabBadge: { position: 'absolute', top: -3, right: -5, backgroundColor: '#EAB320', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
   floatTabBadgeText: { color: 'white', fontSize: 9, fontWeight: '700' as const },
   // Product details collapsible
@@ -3016,18 +2993,21 @@ const styles = StyleSheet.create({
 
   accountFooter: { textAlign: 'center', fontSize: 12, color: '#C4C0BA', marginTop: 28, marginBottom: 8 },
 
-  primaryBtn: { backgroundColor: '#EAB320', paddingVertical: 14, borderRadius: 8, alignItems: 'center', marginTop: 14 },
+  primaryBtn: { backgroundColor: '#EAB320', height: 58, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
   primaryBtnText: { color: 'white', fontSize: 15, fontWeight: '700' },
   secondaryBtn: { paddingVertical: 12, alignItems: 'center' },
   secondaryBtnText: { color: '#1C1917', fontSize: 14, fontWeight: '600' },
 
-  cartEmptyOuter: { flex: 1, justifyContent: 'flex-start', paddingTop: 60, paddingHorizontal: 28 },
-  cartEmptyBlock: { alignItems: 'center' },
-  cartEmptyIconWrap: { width: 68, height: 68, borderRadius: 34, backgroundColor: 'rgba(202,138,4,0.10)', alignItems: 'center', justifyContent: 'center', marginBottom: 18 },
-  cartEmptyTitle: { fontSize: 22, fontWeight: '700', color: '#1C1917', textAlign: 'center', marginBottom: 8 },
-  cartEmptySubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', lineHeight: 20, marginBottom: 28 },
-  cartSignInBtn: { backgroundColor: '#EAB320', paddingVertical: 14, paddingHorizontal: 48, borderRadius: 8, alignItems: 'center', marginBottom: 12, alignSelf: 'stretch' },
-  cartSignInBtnText: { color: 'white', fontSize: 16, fontWeight: '700' },
+  cartEmptyCard: { marginHorizontal: 20, marginTop: 16, backgroundColor: '#FFFFFF', borderRadius: 20, padding: 30, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 2 },
+  cartEmptyIconWrap: { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(202,138,4,0.10)', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  cartEmptyHeroTitle: { fontSize: 22, fontWeight: '700', color: '#1C1917', marginBottom: 8, textAlign: 'center' },
+  cartEmptyHeroSub: { fontSize: 14, color: '#6B7280', lineHeight: 21, marginBottom: 24, textAlign: 'center' },
+  cartEmptyBrowseBtn: { backgroundColor: '#EAB320', height: 56, borderRadius: 14, alignItems: 'center', justifyContent: 'center', alignSelf: 'stretch', shadowColor: '#EAB320', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.28, shadowRadius: 8, elevation: 4 },
+  cartEmptyBrowseBtnText: { color: 'white', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
+  cartEmptyTrending: { paddingTop: 28, paddingLeft: 16 },
+  cartEmptyTrendingHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16, marginBottom: 14 },
+  cartEmptyTrendingTitle: { fontSize: 16, fontWeight: '600', color: '#1C1917' },
+  cartEmptyTrendingLink: { fontSize: 13, color: '#CA8A04', fontWeight: '500' },
   cartKeepBtn: { paddingVertical: 10, alignItems: 'center' },
   cartKeepBtnText: { color: '#6B7280', fontSize: 14, fontWeight: '500' },
 
@@ -3040,7 +3020,7 @@ const styles = StyleSheet.create({
   searchPhotoSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
 
   // Wayfair-style compact pill search (shared)
-  searchPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 999, height: 40, paddingLeft: 12, paddingRight: 8, marginHorizontal: 6, marginTop: 0, marginBottom: 0, gap: 8 },
+  searchPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 999, height: 44, paddingLeft: 14, paddingRight: 8, marginHorizontal: 16, marginTop: 8, marginBottom: 4, gap: 8, borderWidth: 1, borderColor: 'rgba(0,0,0,0.07)' },
   searchPillPlaceholder: { flex: 1, color: '#9CA3AF', fontSize: 15 },
   searchPillInput: { flex: 1, paddingVertical: 0, fontSize: 15, color: '#1C1917' },
   searchPillCamBtn: { paddingLeft: 10, paddingRight: 4, paddingVertical: 6, alignItems: 'center', justifyContent: 'center' },
