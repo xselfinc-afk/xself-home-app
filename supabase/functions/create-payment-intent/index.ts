@@ -94,13 +94,18 @@ serve(async (req: Request) => {
     console.log('[Stripe] Creating PaymentIntent — amount:', amount, 'orderId:', orderId,
       '| key prefix:', STRIPE_SECRET_KEY.slice(0, 8), '| key len:', STRIPE_SECRET_KEY.length);
 
+    // orderId is used as the Stripe idempotency key so that retrying the same
+    // checkout session never creates a second PaymentIntent or a second charge.
+    const requestHeaders: Record<string, string> = {
+      'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Stripe-Version': '2024-06-20',
+    };
+    if (orderId) requestHeaders['Idempotency-Key'] = orderId;
+
     const res = await fetch('https://api.stripe.com/v1/payment_intents', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Stripe-Version': '2024-06-20',
-      },
+      headers: requestHeaders,
       body: params.toString(),
     });
 

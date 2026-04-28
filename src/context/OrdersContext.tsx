@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { supabase, supabaseConfigured } from '../lib/supabase';
+import { useAuth } from './AuthContext';
 
 export interface PlacedOrderItem {
   sku: string;
@@ -50,7 +52,16 @@ export interface PlacedOrder {
   orderNumber: string;
   date: string;
   total: number;
-  status: 'processing' | 'shipped' | 'delivered' | 'pending_pickup' | 'ready_for_pickup' | 'picked_up';
+  status:
+    | 'pending'
+    | 'processing'
+    | 'shipped'
+    | 'delivered'
+    | 'pending_pickup'
+    | 'ready_for_pickup'
+    | 'picked_up'
+    | 'failed'
+    | 'cancelled';
   items: PlacedOrderItem[];
   /** Address snapshot captured at time of checkout */
   address?: OrderAddressSnapshot;
@@ -66,15 +77,212 @@ export interface PlacedOrder {
 
 interface OrdersCtx {
   orders: PlacedOrder[];
-  addOrder: (order: PlacedOrder) => void;
+  /** Legacy: adds a fully-formed order in one step. Kept for backward compatibility. */
+  addOrder: (order: PlacedOrder) => Promise<void>;
+  /**
+   * Phase 1 — create a pending order before payment is confirmed.
+   * Idempotent: if an order with the same orderId already exists, this is a no-op.
+   * Throws on Supabase failure so the caller can block the Stripe call.
+   */
+  createPendingOrder: (order: PlacedOrder) => Promise<void>;
+  /**
+   * Phase 3 — mark an existing pending order as paid after Stripe confirms.
+   * Derives final status from fulfillmentGroups (pickup vs. shipping).
+   * Throws on Supabase failure so the caller can surface a recovery message.
+   */
+  confirmOrder: (orderId: string, paymentIntentId: string) => Promise<void>;
+  /**
+   * Cancel a pending order when payment fails or is abandoned.
+   * Sets status to 'cancelled' (does NOT delete) so the record is preserved for auditing.
+   */
+  cancelOrder: (orderId: string) => Promise<void>;
 }
 
-const OrdersContext = createContext<OrdersCtx>({ orders: [], addOrder: () => {} });
+const OrdersContext = createContext<OrdersCtx>({
+  orders: [],
+  addOrder: async () => {},
+  createPendingOrder: async () => {},
+  confirmOrder: async () => {},
+  cancelOrder: async () => {},
+});
+
+// ── Supabase row → PlacedOrder ────────────────────────────────────────────────
+function rowToOrder(row: Record<string, unknown>): PlacedOrder {
+  return {
+    orderId: row.order_id as string,
+    orderNumber: row.order_number as string,
+    date: (row.date as string) ?? new Date(row.created_at as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    total: Number(row.total),
+    status: row.status as PlacedOrder['status'],
+    payment_status: row.payment_status as PlacedOrder['payment_status'],
+    stripe_payment_intent_id: (row.stripe_payment_intent_id as string | null) ?? undefined,
+    items: (row.items_json as PlacedOrderItem[]) ?? [],
+    address: (row.address_json as OrderAddressSnapshot | null) ?? undefined,
+    fulfillmentGroups: (row.fulfillment_groups_json as OrderFulfillmentGroup[] | null) ?? undefined,
+    financials: row.subtotal != null
+      ? {
+          subtotal: Number(row.subtotal),
+          shippingTotal: Number(row.shipping_total),
+          tax: Number(row.tax),
+          total: Number(row.total),
+        }
+      : undefined,
+  };
+}
+
+// ── PlacedOrder → Supabase upsert payload ─────────────────────────────────────
+function orderToRow(order: PlacedOrder, userId: string | null) {
+  return {
+    order_id: order.orderId,
+    order_number: order.orderNumber,
+    user_id: userId,
+    status: order.status,
+    payment_status: order.payment_status ?? 'pending',
+    stripe_payment_intent_id: order.stripe_payment_intent_id ?? null,
+    total: order.total,
+    subtotal: order.financials?.subtotal ?? 0,
+    shipping_total: order.financials?.shippingTotal ?? 0,
+    tax: order.financials?.tax ?? 0,
+    date: order.date,
+    address_json: order.address ?? null,
+    items_json: order.items,
+    fulfillment_groups_json: order.fulfillmentGroups ?? [],
+  };
+}
 
 export function OrdersProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
-  const addOrder = (order: PlacedOrder) => setOrders(prev => [order, ...prev]);
-  return <OrdersContext.Provider value={{ orders, addOrder }}>{children}</OrdersContext.Provider>;
+
+  // ── Load orders on auth change ────────────────────────────────────────────
+  useEffect(() => {
+    if (!user || !supabaseConfigured) return;
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (error) {
+          console.log('[Orders] Failed to load orders:', error.message);
+          return;
+        }
+        setOrders((data ?? []).map(row => rowToOrder(row as Record<string, unknown>)));
+      });
+  }, [user?.id]);
+
+  // ── Clear local orders on sign-out ────────────────────────────────────────
+  useEffect(() => {
+    if (!user) setOrders([]);
+  }, [user]);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function applyLocalOptimistic(order: PlacedOrder) {
+    setOrders(prev => {
+      if (prev.some(o => o.orderId === order.orderId)) return prev;
+      return [order, ...prev];
+    });
+  }
+
+  function applyLocalUpdate(orderId: string, patch: Partial<PlacedOrder>) {
+    setOrders(prev => prev.map(o => o.orderId === orderId ? { ...o, ...patch } : o));
+  }
+
+  // ── Context functions ─────────────────────────────────────────────────────
+
+  const createPendingOrder = async (order: PlacedOrder): Promise<void> => {
+    // Optimistic local update first
+    applyLocalOptimistic(order);
+
+    if (!supabaseConfigured) return;
+
+    const { error } = await supabase
+      .from('orders')
+      .upsert(orderToRow(order, user?.id ?? null), { onConflict: 'order_id', ignoreDuplicates: true });
+
+    if (error) {
+      // Roll back the optimistic update
+      setOrders(prev => prev.filter(o => o.orderId !== order.orderId));
+      console.log('[Orders] createPendingOrder failed:', error.message);
+      throw new Error(error.message);
+    }
+  };
+
+  const confirmOrder = async (orderId: string, paymentIntentId: string): Promise<void> => {
+    const existing = orders.find(o => o.orderId === orderId);
+    const isPickup = existing?.fulfillmentGroups?.some(g => g.isPickup) ?? false;
+    const newStatus = isPickup ? 'pending_pickup' as const : 'processing' as const;
+
+    // Optimistic local update
+    applyLocalUpdate(orderId, {
+      status: newStatus,
+      payment_status: 'paid',
+      stripe_payment_intent_id: paymentIntentId,
+    });
+
+    if (!supabaseConfigured) return;
+
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        status: newStatus,
+        payment_status: 'paid',
+        stripe_payment_intent_id: paymentIntentId,
+      })
+      .eq('order_id', orderId);
+
+    if (error) {
+      // Roll back
+      if (existing) {
+        applyLocalUpdate(orderId, {
+          status: existing.status,
+          payment_status: existing.payment_status,
+          stripe_payment_intent_id: existing.stripe_payment_intent_id,
+        });
+      }
+      console.log('[Orders] confirmOrder failed:', error.message);
+      throw new Error(error.message);
+    }
+  };
+
+  const cancelOrder = async (orderId: string): Promise<void> => {
+    // Optimistic: mark cancelled locally (not removed — preserved for auditing)
+    applyLocalUpdate(orderId, { status: 'cancelled', payment_status: 'failed' });
+
+    if (!supabaseConfigured) return;
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: 'cancelled', payment_status: 'failed' })
+      .eq('order_id', orderId);
+
+    if (error) {
+      console.log('[Orders] cancelOrder failed (non-fatal):', error.message);
+      // Not re-throwing — cancel failure is non-fatal; the record stays locally cancelled
+    }
+  };
+
+  const addOrder = async (order: PlacedOrder): Promise<void> => {
+    applyLocalOptimistic(order);
+
+    if (!supabaseConfigured) return;
+
+    const { error } = await supabase
+      .from('orders')
+      .upsert(orderToRow(order, user?.id ?? null), { onConflict: 'order_id' });
+
+    if (error) {
+      console.log('[Orders] addOrder failed:', error.message);
+      throw new Error(error.message);
+    }
+  };
+
+  return (
+    <OrdersContext.Provider value={{ orders, addOrder, createPendingOrder, confirmOrder, cancelOrder }}>
+      {children}
+    </OrdersContext.Provider>
+  );
 }
 
 export const useOrders = () => useContext(OrdersContext);

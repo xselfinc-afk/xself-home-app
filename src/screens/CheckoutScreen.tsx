@@ -53,7 +53,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { cart, reserveExpiry, clearCart } = useCart();
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest } = useAuth();
-  const { addOrder } = useOrders();
+  const { addOrder, createPendingOrder, confirmOrder, cancelOrder } = useOrders();
   const { confirmPayment, confirmPlatformPayPayment } = useStripe();
   const insets = useSafeAreaInsets();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
@@ -177,6 +177,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrSaveError, setAddrSaveError] = useState<string | null>(null);
   const [fulfillRetryKey, setFulfillRetryKey] = useState(0);
+  // Set to the Stripe paymentIntentId when payment succeeds but order confirmation fails.
+  // Triggers the inline recovery message — cart is NOT cleared in this state.
+  const [recoveryRef, setRecoveryRef] = useState<string | null>(null);
+  const [recoveryRetrying, setRecoveryRetrying] = useState(false);
 
   // Load addresses from Supabase when the authenticated user is known
   useEffect(() => {
@@ -349,10 +353,54 @@ export default function CheckoutScreen({ route, navigation }: any) {
     );
   }
 
-  // ── Shared post-payment: record order + navigate to success ─────────────
-  async function completeOrder(paymentIntentId: string) {
+  // ── Build a pending order snapshot (called BEFORE payment) ─────────────
+  function buildPendingOrderPayload() {
+    const skuWarehouseMap = new Map<string, string>();
+    activePlan!.groups.forEach(g => {
+      g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
+    });
+    return {
+      orderId: orderId.current,
+      orderNumber: orderNumber.current,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      total,
+      status: 'pending' as const,
+      payment_status: 'pending' as const,
+      items: orderItems.map(item => ({
+        ...item,
+        warehouseCode: skuWarehouseMap.get(item.sku),
+      })),
+      address: selectedAddress ? {
+        firstName: selectedAddress.first_name,
+        lastName: selectedAddress.last_name,
+        line1: selectedAddress.address_line_1,
+        line2: selectedAddress.address_line_2 ?? undefined,
+        city: selectedAddress.city,
+        state: selectedAddress.state,
+        zip: selectedAddress.zip,
+        country: selectedAddress.country ?? 'US',
+      } : undefined,
+      fulfillmentGroups: activePlan!.groups.map(g => ({
+        warehouseCode: g.warehouse.code,
+        warehouseLabel: g.warehouse.label,
+        warehouseAddress: g.warehouse.address,
+        distanceMiles: g.distanceMiles,
+        isPickup: g.isPickup,
+        shippingFee: g.shipping,
+        pickupWindow: g.pickupWindow,
+        items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
+      })),
+      financials: { subtotal, shippingTotal: shipping, tax, total },
+    };
+  }
+
+  // ── Finalize order after payment is confirmed (Phase 3) ──────────────────
+  // Returns true on success (navigates away). Returns false on failure
+  // (sets recoveryRef — cart is intentionally NOT cleared).
+  async function finishOrder(paymentIntentId: string): Promise<boolean> {
     if (debugEnabled(DEBUG_FLAGS.forceOrderSaveFailure)) {
-      throw new Error('DEBUG_FORCE_ORDER_SAVE_FAILURE');
+      setRecoveryRef(paymentIntentId);
+      return false;
     }
     if (appliedCredit > 0) {
       recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
@@ -360,51 +408,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
     orderItems.forEach(item => {
       if (item.productId) incrementProductCounter(item.productId, 'order_count');
     });
-    const skuWarehouseMap = new Map<string, string>();
-    activePlan!.groups.forEach(g => {
-      g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
-    });
-    const isPickupOrder = activePlan!.groups.some(g => g.isPickup);
     try {
-      addOrder({
-        orderId: orderId.current,
-        orderNumber: orderNumber.current,
-        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        total,
-        status: isPickupOrder ? 'pending_pickup' : 'processing',
-        payment_status: 'paid',
-        stripe_payment_intent_id: paymentIntentId,
-        items: orderItems.map(item => ({
-          ...item,
-          warehouseCode: skuWarehouseMap.get(item.sku),
-        })),
-        address: selectedAddress ? {
-          firstName: selectedAddress.first_name,
-          lastName: selectedAddress.last_name,
-          line1: selectedAddress.address_line_1,
-          line2: selectedAddress.address_line_2 ?? undefined,
-          city: selectedAddress.city,
-          state: selectedAddress.state,
-          zip: selectedAddress.zip,
-          country: selectedAddress.country ?? 'US',
-        } : undefined,
-        fulfillmentGroups: activePlan!.groups.map(g => ({
-          warehouseCode: g.warehouse.code,
-          warehouseLabel: g.warehouse.label,
-          warehouseAddress: g.warehouse.address,
-          distanceMiles: g.distanceMiles,
-          isPickup: g.isPickup,
-          shippingFee: g.shipping,
-          pickupWindow: g.pickupWindow,
-          items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
-        })),
-        financials: {
-          subtotal,
-          shippingTotal: shipping,
-          tax,
-          total,
-        },
-      });
+      await confirmOrder(orderId.current, paymentIntentId);
       if (!isBuyNow) clearCart();
       navigation.navigate('OrderSuccess', {
         total,
@@ -413,11 +418,32 @@ export default function CheckoutScreen({ route, navigation }: any) {
         checkoutSessionId: checkoutSessionId.current,
         userEmail: user?.email ?? '',
       });
+      return true;
     } catch {
-      throw new Error(
-        `Payment processed (ref: ${paymentIntentId}) but we couldn't save your order. ` +
-        'Please contact support with this reference number.',
-      );
+      setRecoveryRef(paymentIntentId);
+      return false;
+    }
+  }
+
+  // ── Retry order confirmation without re-triggering Stripe ────────────────
+  async function handleRecoveryRetry() {
+    if (!recoveryRef || recoveryRetrying) return;
+    setRecoveryRetrying(true);
+    try {
+      await confirmOrder(orderId.current, recoveryRef);
+      if (!isBuyNow) clearCart();
+      setRecoveryRef(null);
+      navigation.navigate('OrderSuccess', {
+        total,
+        orderId: orderId.current,
+        orderNumber: orderNumber.current,
+        checkoutSessionId: checkoutSessionId.current,
+        userEmail: user?.email ?? '',
+      });
+    } catch {
+      // Keep showing the banner — user can try again later
+    } finally {
+      setRecoveryRetrying(false);
     }
   }
 
@@ -465,6 +491,15 @@ export default function CheckoutScreen({ route, navigation }: any) {
       return;
     }
 
+    // Phase 1: create pending order BEFORE Stripe call.
+    try {
+      await createPendingOrder(buildPendingOrderPayload());
+    } catch {
+      setAffirmError('Unable to prepare your order. Please try again.');
+      setAffirmLoading(false);
+      return;
+    }
+
     // Create PaymentIntent (Affirm)
     const amountCents = Math.round(total * 100);
     const piMetadata: Record<string, string> = {
@@ -500,6 +535,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     console.log('[Affirm] PaymentIntent response:', JSON.stringify(piData, null, 2));
     if (piError || !piData?.clientSecret) {
       console.log('[Affirm] PaymentIntent creation failed:', piError?.message);
+      await cancelOrder(orderId.current);
       setAffirmError('Affirm could not be started. Please try again or choose another payment method.');
       setAffirmLoading(false);
       return;
@@ -540,6 +576,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     console.log('[Affirm] paymentIntent:', JSON.stringify(confirmedPI, null, 2));
 
     if (confirmError) {
+      await cancelOrder(orderId.current);
       if ((confirmError as any).code === 'Canceled') {
         setAffirmLoading(false);
         return;
@@ -554,13 +591,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
       return;
     }
 
-    // Payment authorized — record order and navigate
-    try {
-      await completeOrder(paymentIntentId);
-    } catch (err) {
-      setAffirmError((err as Error).message);
-      setAffirmLoading(false);
-    }
+    // Payment authorized — finalize order (Phase 3)
+    const ok = await finishOrder(paymentIntentId);
+    if (!ok) setAffirmLoading(false);
   }
 
   const anyDebugActive = __DEV__ && (
@@ -779,7 +812,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         )}
 
         {/* Affirm inline info block */}
-        {paymentMethod === 'affirm' && (
+        {paymentMethod === 'affirm' && !recoveryRef && (
           <View style={styles.section}>
             <View style={styles.affirmCard}>
               <Text style={styles.affirmTitle}>Affirm</Text>
@@ -915,7 +948,30 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.placeOrderErrorText}>{recheckError}</Text>
             </View>
           )}
-          {paymentMethod !== 'affirm' && (<><TouchableOpacity
+          {recoveryRef && (
+            <View style={styles.recoveryBanner}>
+              <Ionicons name="warning-outline" size={16} color="#92660A" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recoveryTitle}>Payment received — order not confirmed</Text>
+                <Text style={styles.recoveryBody}>
+                  Your payment was processed but the order record could not be saved.
+                  Please contact support with reference:
+                </Text>
+                <Text style={styles.recoveryRef} selectable>{recoveryRef}</Text>
+                <TouchableOpacity
+                  onPress={handleRecoveryRetry}
+                  disabled={recoveryRetrying}
+                  style={{ marginTop: 8, alignSelf: 'flex-start', opacity: recoveryRetrying ? 0.6 : 1 }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#92660A' }}>
+                    {recoveryRetrying ? 'Saving order…' : 'Try Again'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+          {paymentMethod !== 'affirm' && !recoveryRef && (<><TouchableOpacity
             style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback) && { opacity: 0.6 }]}
             disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback}
             onPress={async () => {
@@ -1003,7 +1059,17 @@ export default function CheckoutScreen({ route, navigation }: any) {
               setPlacing(true);
 
               // ── Route by payment method ───────────────────────────────────────
+              // Phase 1: create pending order BEFORE any Stripe call.
+              try {
+                await createPendingOrder(buildPendingOrderPayload());
+              } catch {
+                setRecheckError('Unable to prepare your order. Please try again.');
+                setPlacing(false);
+                return;
+              }
+
               if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
+                await cancelOrder(orderId.current);
                 setRecheckError('Payment failed. Please try again.');
                 setPlacing(false);
                 return;
@@ -1061,6 +1127,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 } catch {
                   // fall through to generic message
                 }
+                await cancelOrder(orderId.current);
                 setRecheckError(paymentErrMsg);
                 setPlacing(false);
                 return;
@@ -1097,6 +1164,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 });
                 console.log('[Payment] confirmPlatformPayPayment result:', applePayError?.message ?? 'ok', '| code:', (applePayError as any)?.code ?? null);
                 if (applePayError) {
+                  await cancelOrder(orderId.current);
                   if ((applePayError as any).code === 'Canceled') {
                     setPlacing(false);
                     return;
@@ -1127,19 +1195,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 });
                 console.log('[CardPayment] confirm result:', confirmError?.message ?? 'ok');
                 if (confirmError) {
+                  await cancelOrder(orderId.current);
                   setRecheckError(confirmError.message ?? 'Payment failed. Please try again.');
                   setPlacing(false);
                   return;
                 }
               }
 
-              // 4. Payment succeeded — record order and navigate
-              try {
-                await completeOrder(paymentIntentId);
-              } catch (orderErr) {
-                setRecheckError((orderErr as Error).message);
-                setPlacing(false);
-              }
+              // 4. Payment succeeded — finalize order (Phase 3)
+              const ok = await finishOrder(paymentIntentId);
+              if (!ok) setPlacing(false);
             }}
           >
             <Text style={styles.placeOrderText}>
@@ -1435,6 +1500,10 @@ const styles = StyleSheet.create({
   addrSaveError: { marginTop: 8, fontSize: 13, color: '#B45309', textAlign: 'center' },
   debugBadge: { backgroundColor: '#92660A', paddingVertical: 4, paddingHorizontal: 12, alignSelf: 'center', borderRadius: 4, marginVertical: 4 },
   debugBadgeText: { color: '#FFFBEB', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
+  recoveryBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: '#FFFBEB', borderRadius: 8, padding: 14, marginTop: 8, borderWidth: 1, borderColor: '#FDE68A' },
+  recoveryTitle: { fontSize: 14, fontWeight: '600', color: '#92660A', marginBottom: 4 },
+  recoveryBody: { fontSize: 13, color: '#92660A', lineHeight: 18 },
+  recoveryRef: { fontSize: 12, fontWeight: '700', color: '#1C1917', marginTop: 6, fontVariant: ['tabular-nums'] },
   summaryCalculating: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic' as const },
   fulfillRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#D1CFC9', alignItems: 'center', justifyContent: 'center' },
