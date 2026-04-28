@@ -223,17 +223,18 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
 
     if (!supabaseConfigured) return;
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('orders')
       .update({
         status: newStatus,
         payment_status: 'paid',
         stripe_payment_intent_id: paymentIntentId,
       })
-      .eq('order_id', orderId);
+      .eq('order_id', orderId)
+      .select('order_id, status, payment_status, stripe_payment_intent_id');
 
-    if (error) {
-      // Roll back
+    if (error || !data || data.length === 0) {
+      // Roll back optimistic update — no row was actually written
       if (existing) {
         applyLocalUpdate(orderId, {
           status: existing.status,
@@ -241,8 +242,9 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
           stripe_payment_intent_id: existing.stripe_payment_intent_id,
         });
       }
-      console.log('[Orders] confirmOrder failed:', error.message);
-      throw new Error(error.message);
+      const msg = error?.message ?? 'Order confirmation did not update any record';
+      console.log('[Orders] confirmOrder failed:', msg);
+      throw new Error(msg);
     }
   };
 
