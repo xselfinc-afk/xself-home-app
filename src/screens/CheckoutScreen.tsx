@@ -938,7 +938,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>
-                {deliveryLoading ? 'Shipping' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Shipping (${shippingGroupCount} shipments)` : 'Shipping'}
+                {deliveryLoading ? 'Shipping' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Shipping (${shippingGroupCount} warehouses)` : 'Shipping'}
               </Text>
               {deliveryLoading
                 ? <Text style={styles.summaryCalculating}>Calculating…</Text>

@@ -12,28 +12,34 @@ import { useOrders, PlacedOrder, OrderFulfillmentGroup } from '../context/Orders
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 
 const STATUS_COLORS: Record<string, string> = {
-  delivered:      '#16A34A',
-  shipped:        '#2563EB',
-  processing:     '#F59E0B',
-  pending_pickup: '#CA8A04',
-  ready_for_pickup: '#0D5F67',
-  picked_up:      '#16A34A',
+  delivered:        '#16A34A',
+  shipped:          '#374151',
+  processing:       '#CA8A04',
+  pending_pickup:   '#CA8A04',
+  ready_for_pickup: '#CA8A04',
+  picked_up:        '#16A34A',
+  cancelled:        '#9CA3AF',
+  failed:           '#9CA3AF',
 };
 const STATUS_ICONS: Record<string, any> = {
-  delivered:      'checkmark-circle',
-  shipped:        'cube-outline',
-  processing:     'time-outline',
-  pending_pickup: 'storefront-outline',
+  delivered:        'checkmark-circle',
+  shipped:          'cube-outline',
+  processing:       'time-outline',
+  pending_pickup:   'storefront-outline',
   ready_for_pickup: 'storefront',
-  picked_up:      'checkmark-circle',
+  picked_up:        'checkmark-circle',
+  cancelled:        'close-circle-outline',
+  failed:           'alert-circle-outline',
 };
 const STATUS_LABELS: Record<string, string> = {
-  delivered:      'Delivered',
-  shipped:        'Shipped',
-  processing:     'Processing',
-  pending_pickup: 'Preparing for pickup',
+  delivered:        'Delivered',
+  shipped:          'Shipped',
+  processing:       'Processing',
+  pending_pickup:   'Preparing for pickup',
   ready_for_pickup: 'Ready for pickup',
-  picked_up:      'Picked up',
+  picked_up:        'Picked up',
+  cancelled:        'Cancelled',
+  failed:           'Failed',
 };
 const STEP_ACTIVE: Record<string, number> = { processing: 0, shipped: 1, delivered: 2 };
 const PICKUP_STEP_ACTIVE: Record<string, number> = {
@@ -170,7 +176,10 @@ export default function OrdersScreen({ navigation }: any) {
           <View style={styles.fulfillSection}>
             {order.fulfillmentGroups.length > 1 && (
               <Text style={styles.fulfillSectionNote}>
-                Split across {order.fulfillmentGroups.length} warehouses
+                {order.fulfillmentGroups.length} warehouses
+                {(order.financials?.shippingTotal ?? 0) > 0
+                  ? ` · $${order.financials!.shippingTotal} shipping`
+                  : ''}
               </Text>
             )}
             {order.fulfillmentGroups.map((group: OrderFulfillmentGroup, idx: number) => (
@@ -178,24 +187,26 @@ export default function OrdersScreen({ navigation }: any) {
                 key={group.warehouseCode}
                 style={[styles.fulfillGroupBlock, idx > 0 && styles.fulfillGroupBlockBorder]}
               >
+                {order.fulfillmentGroups!.length > 1 && (
+                  <Text style={styles.shipmentLabel}>Shipment {idx + 1} of {order.fulfillmentGroups!.length}</Text>
+                )}
                 <View style={styles.fulfillGroupMethodRow}>
                   <Ionicons
                     name={group.isPickup ? 'storefront-outline' : 'cube-outline'}
                     size={13}
                     color="#CA8A04"
                   />
-                  <Text style={styles.fulfillGroupMethod}>
-                    {order.fulfillmentGroups!.length > 1 ? `Shipment ${idx + 1} · ` : ''}
-                    {group.isPickup ? `Pickup · ${group.warehouseLabel}` : `Ships from ${group.warehouseLabel}`}
-                    {!group.isPickup && ` · $${group.shippingFee}`}
-                  </Text>
+                  <Text style={styles.fulfillGroupWarehouse}>{group.warehouseLabel}</Text>
                 </View>
                 <Text style={styles.fulfillGroupAddr}>
                   {group.warehouseAddress.replace(', United States', '')}
                 </Text>
+                <Text style={styles.fulfillGroupShipping}>
+                  {group.isPickup ? 'Pickup — Free' : `Shipping — $${group.shippingFee}`}
+                </Text>
                 {group.isPickup && group.pickupWindow && (
                   <View style={styles.pickupWindowRow}>
-                    <Ionicons name="calendar-outline" size={11} color="#0D5F67" style={{ marginRight: 4 }} />
+                    <Ionicons name="calendar-outline" size={11} color="#9CA3AF" style={{ marginRight: 4 }} />
                     <Text style={styles.pickupWindowText}>
                       {formatPickupDate(group.pickupWindow.earliest)} – {formatPickupDate(group.pickupWindow.latest)}
                     </Text>
@@ -238,7 +249,7 @@ export default function OrdersScreen({ navigation }: any) {
             <View key={item.sku} style={styles.item}>
               <Image source={{ uri: item.img }} style={styles.itemImg} />
               <View style={styles.itemInfo}>
-                <Text style={styles.itemName}>{item.name}</Text>
+                <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                 {(item.color || item.size) && (
                   <Text style={styles.itemVariant}>{[item.color, item.size].filter(Boolean).join(' · ')}</Text>
                 )}
@@ -284,7 +295,7 @@ export default function OrdersScreen({ navigation }: any) {
         data={orders}
         renderItem={renderOrder}
         keyExtractor={item => item.orderId}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 120 }]}
         showsVerticalScrollIndicator={false}
       />
 
@@ -373,49 +384,51 @@ export default function OrdersScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F1EB' },
   title: { fontSize: 22, fontWeight: '600', color: '#1C1917', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
-  list: { padding: 16, paddingTop: 8 },
+  list: { padding: 16, paddingTop: 8, paddingBottom: 0 },
 
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: 80, gap: 12 },
   emptyTitle: { fontSize: 17, fontWeight: '600', color: '#1C1917' },
   emptySub: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', paddingHorizontal: 40 },
 
-  card: { backgroundColor: 'white', borderRadius: 6, marginBottom: 16, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', padding: 14, backgroundColor: '#FAFAF9', borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  card: { backgroundColor: 'white', borderRadius: 12, marginBottom: 20, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 3, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(0,0,0,0.06)' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', padding: 16, backgroundColor: '#FAFAF9', borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
   orderId: { fontSize: 13, fontWeight: '600', color: '#1C1917' },
   orderTotal: { fontSize: 13, fontWeight: '600', color: '#1C1917' },
   orderDate: { fontSize: 11, color: '#9CA3AF', marginTop: 2 },
-  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999 },
-  badgeText: { fontSize: 11, fontWeight: '600' },
+  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
+  badgeText: { fontSize: 12, fontWeight: '600' },
 
-  tracker: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  tracker: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
   stepWrap: { alignItems: 'center' },
-  stepDot: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  stepDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(0,0,0,0.07)', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
   stepDotActive: { backgroundColor: '#CA8A04' },
-  stepLabel: { fontSize: 10, color: '#D1D5DB' },
+  stepLabel: { fontSize: 10, color: '#C4C4C4' },
   stepLabelActive: { color: '#6B7280', fontWeight: '500' },
-  stepLine: { flex: 1, height: 2, backgroundColor: '#E5E7EB', marginBottom: 14, marginHorizontal: 2 },
-  stepLineActive: { backgroundColor: '#CA8A04' },
+  stepLine: { flex: 1, height: 1.5, backgroundColor: 'rgba(0,0,0,0.07)', marginBottom: 14, marginHorizontal: 2 },
+  stepLineActive: { backgroundColor: '#D97706' },
 
-  fulfillSection: { borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingHorizontal: 14, paddingVertical: 10, backgroundColor: '#FAFAF9' },
+  fulfillSection: { borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#FAFAF9' },
   fulfillSectionNote: { fontSize: 11, fontWeight: '600', color: '#6B7280', letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 8 },
   fulfillGroupBlock: { paddingVertical: 6 },
-  fulfillGroupBlockBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E5E7EB', marginTop: 6, paddingTop: 8 },
-  fulfillGroupMethodRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
-  fulfillGroupMethod: { fontSize: 13, fontWeight: '600', color: '#374151', flex: 1 },
-  fulfillGroupAddr: { fontSize: 11, color: '#6B7280', marginBottom: 3, marginLeft: 18 },
-  fulfillGroupItems: { fontSize: 11, color: '#374151', marginLeft: 18, lineHeight: 16 },
-  pickupWindowRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 18, marginTop: 3, marginBottom: 2 },
-  pickupWindowText: { fontSize: 11, color: '#0D5F67', fontWeight: '500' },
+  fulfillGroupBlockBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(0,0,0,0.07)', marginTop: 8, paddingTop: 10 },
+  fulfillGroupMethodRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  fulfillGroupWarehouse: { fontSize: 13, fontWeight: '600', color: '#1C1917', flex: 1 },
+  fulfillGroupAddr: { fontSize: 11, color: '#9CA3AF', marginBottom: 2, marginLeft: 20 },
+  fulfillGroupShipping: { fontSize: 11, color: '#6B7280', marginLeft: 20, marginTop: 1, marginBottom: 3 },
+  shipmentLabel: { fontSize: 10, fontWeight: '600', color: '#9CA3AF', letterSpacing: 0.4, textTransform: 'uppercase' as const, marginBottom: 5 },
+  fulfillGroupItems: { fontSize: 11, color: '#374151', marginLeft: 20, lineHeight: 16 },
+  pickupWindowRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 20, marginTop: 3, marginBottom: 2 },
+  pickupWindowText: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
   pickupWindowTime: { fontSize: 11, color: '#CA8A04', fontWeight: '500' },
 
-  item: { flexDirection: 'row', padding: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  itemImg: { width: 56, height: 56, borderRadius: 6, backgroundColor: '#F3F4F6' },
-  itemInfo: { flex: 1, marginLeft: 12 },
-  itemName: { fontSize: 13, fontWeight: '500', color: '#1C1917' },
+  item: { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
+  itemImg: { width: 68, height: 68, borderRadius: 8, backgroundColor: '#F3F4F6' },
+  itemInfo: { flex: 1, marginLeft: 14 },
+  itemName: { fontSize: 14, fontWeight: '500', color: '#1C1917' },
   itemVariant: { fontSize: 11, color: '#6B7280', marginTop: 2 },
-  itemSku: { fontSize: 10, color: '#9CA3AF', marginTop: 1, fontFamily: 'monospace' as any },
-  itemPrice: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginTop: 3 },
-  orderActionRow: { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  itemSku: { fontSize: 10, color: '#C4C4C4', marginTop: 1, fontFamily: 'monospace' as any },
+  itemPrice: { fontSize: 14, fontWeight: '700', color: '#1C1917', marginTop: 4 },
+  orderActionRow: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
   actionRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' },
   actionBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: '#E5E7EB' },
   actionBtnReviewed: { borderColor: '#D1FAE5', backgroundColor: '#F0FDF4' },
