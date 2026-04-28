@@ -112,6 +112,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
         size: item.size,
       }));
 
+  // Guard: at least one purchasable item is required to proceed to payment.
+  // For Buy Now, also requires a named product with a positive price.
+  const hasValidItems = isBuyNow
+    ? (!!product?.name && (selectedVariant?.price ?? product?.price ?? 0) > 0)
+    : orderItems.length > 0;
+
   const [fulfillmentPlan, setFulfillmentPlan] = useState<FulfillmentPlan | null>(null);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [rechecking, setRechecking] = useState(false);
@@ -353,6 +359,28 @@ export default function CheckoutScreen({ route, navigation }: any) {
     );
   }
 
+  // Empty-order gate — must have at least one valid item to proceed
+  if (!hasValidItems) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <TouchableOpacity style={styles.gateBackBtn} onPress={() => navigation.goBack()}>
+          <Ionicons name="chevron-back" size={18} color="#6B7280" />
+          <Text style={styles.gateBackText}>Back to cart</Text>
+        </TouchableOpacity>
+        <View style={styles.gateWrap}>
+          <View style={styles.gateIconWrap}>
+            <Ionicons name="cart-outline" size={26} color="#CA8A04" />
+          </View>
+          <Text style={styles.gateTitle}>Your cart is empty</Text>
+          <Text style={styles.gateSub}>Add an item before checkout.</Text>
+          <TouchableOpacity style={styles.gateSignInBtn} onPress={() => navigation.goBack()}>
+            <Text style={styles.gateSignInText}>Browse Products →</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   // ── Build a pending order snapshot (called BEFORE payment) ─────────────
   function buildPendingOrderPayload() {
     const skuWarehouseMap = new Map<string, string>();
@@ -417,6 +445,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         orderNumber: orderNumber.current,
         checkoutSessionId: checkoutSessionId.current,
         userEmail: user?.email ?? '',
+        paymentIntentId,
       });
       return true;
     } catch {
@@ -439,6 +468,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         orderNumber: orderNumber.current,
         checkoutSessionId: checkoutSessionId.current,
         userEmail: user?.email ?? '',
+        paymentIntentId: recoveryRef,
       });
     } catch {
       // Keep showing the banner — user can try again later

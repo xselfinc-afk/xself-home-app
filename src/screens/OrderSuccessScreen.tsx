@@ -6,7 +6,7 @@ import { products, formatPrice } from '../data/products';
 import { useOrders } from '../context/OrdersContext';
 
 export default function OrderSuccessScreen({ route, navigation }: any) {
-  const { total, orderId, orderNumber, checkoutSessionId, userEmail } = route.params ?? {};
+  const { total, orderId, orderNumber, checkoutSessionId, userEmail, paymentIntentId } = route.params ?? {};
   // orderNumber is the display-safe identifier shown to users
   // orderId is the internal key used for ledger lookups and refunds
   const displayOrderNumber = orderNumber ?? `XS-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -26,8 +26,12 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
           </View>
           <Text style={styles.title}>Order Confirmed</Text>
           <Text style={styles.subtitle}>Your order has been received.</Text>
-          <Text style={styles.orderNum}>{displayOrderNumber}</Text>
-          <Text style={styles.demoNote}>Payment confirmed</Text>
+          <Text style={styles.orderNum}>Order #: {displayOrderNumber}</Text>
+          {paymentIntentId ? (
+            <Text style={styles.demoNote} selectable>Payment ID: {paymentIntentId}</Text>
+          ) : (
+            <Text style={styles.demoNote}>Payment confirmed</Text>
+          )}
           {total && <Text style={styles.totalLine}>Order total: <Text style={styles.totalAmt}>${formatPrice(total)}</Text></Text>}
         </View>
 
