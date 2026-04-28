@@ -110,6 +110,8 @@ export default function OrdersScreen({ navigation }: any) {
 
   const renderOrder = ({ item: order }: { item: PlacedOrder }) => {
     const isPickupOrder = order.status === 'pending_pickup' || order.status === 'ready_for_pickup' || order.status === 'picked_up';
+    // Fulfillment type from groups — determines which action button to show, independent of current status
+    const isPickupFulfillment = order.fulfillmentGroups?.some(g => g.isPickup) ?? false;
     const activeStep = isPickupOrder
       ? (PICKUP_STEP_ACTIVE[order.status] ?? 0)
       : (STEP_ACTIVE[order.status] ?? 0);
@@ -208,7 +210,7 @@ export default function OrdersScreen({ navigation }: any) {
           </View>
         )}
 
-        {order.status === 'pending_pickup' && (
+        {isPickupFulfillment && order.status === 'pending_pickup' && (
           <View style={styles.orderActionRow}>
             <TouchableOpacity
               style={styles.actionBtn}
@@ -218,7 +220,7 @@ export default function OrdersScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
         )}
-        {order.status === 'processing' && !isPickupOrder && (
+        {!isPickupFulfillment && order.status === 'processing' && (
           <View style={styles.orderActionRow}>
             <TouchableOpacity
               style={styles.actionBtn}
