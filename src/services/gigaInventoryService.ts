@@ -14,8 +14,10 @@ export type SkuInventory = {
  * Fetch warehouse-level stock for a list of SKUs.
  * Signing happens server-side in the giga-warehouse-stock Edge Function.
  */
-export async function fetchSkuWarehouseStock(skus: string[]): Promise<SkuInventory[]> {
-  if (skus.length === 0) return [];
+export type WarehouseStockResult = { inventory: SkuInventory[]; stale: boolean };
+
+export async function fetchSkuWarehouseStock(skus: string[]): Promise<WarehouseStockResult> {
+  if (skus.length === 0) return { inventory: [], stale: false };
 
   console.log('[GigaInventory] Fetching warehouse stock for', skus.length, 'SKU(s):', skus);
 
@@ -59,5 +61,5 @@ export async function fetchSkuWarehouseStock(skus: string[]): Promise<SkuInvento
     result.map(r => `${r.sku}:[${r.warehouseStock.map(w => `${w.warehouseCode}×${w.availableQty}`).join(',')}]`).join(' | '),
   );
 
-  return result;
+  return { inventory: result, stale: Boolean(data?.stale) };
 }

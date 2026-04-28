@@ -7,6 +7,11 @@ import { getPickupWindow, PickupWindow } from './pickupDateService';
 export const SHIPPING_FEE = 99;
 export const PICKUP_THRESHOLD_MILES = 30;
 
+/** Mirrors the Edge Function supportsPickup() — only CA-prefixed warehouses support pickup. */
+function warehouseSupportsPickup(code: string): boolean {
+  return /^CA/i.test(code);
+}
+
 export type FulfillmentGroup = {
   warehouse: Warehouse;
   distanceMiles: number;
@@ -118,14 +123,14 @@ export async function planFulfillment(
 
   // ── Attempt 1: single warehouse (nearest that stocks everything) ──────────
   // Prefer pickup warehouses first, then any warehouse
-  const pickupCandidates = ranked.filter(r => r.distanceMiles <= PICKUP_THRESHOLD_MILES);
-  const shippingCandidates = ranked.filter(r => r.distanceMiles > PICKUP_THRESHOLD_MILES);
+  const pickupCandidates = ranked.filter(r => r.distanceMiles <= PICKUP_THRESHOLD_MILES && warehouseSupportsPickup(r.warehouse.code));
+  const shippingCandidates = ranked.filter(r => !(r.distanceMiles <= PICKUP_THRESHOLD_MILES && warehouseSupportsPickup(r.warehouse.code)));
 
   const orderedCandidates = [...pickupCandidates, ...shippingCandidates];
 
   for (const candidate of orderedCandidates) {
     if (warehouseHasAllStock(candidate.warehouse.code)) {
-      const isPickup = candidate.distanceMiles <= PICKUP_THRESHOLD_MILES;
+      const isPickup = candidate.distanceMiles <= PICKUP_THRESHOLD_MILES && warehouseSupportsPickup(candidate.warehouse.code);
       console.log(
         `[Fulfillment] Single-warehouse: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)} mi) — ${isPickup ? 'PICKUP' : 'SHIPPING'}`,
       );
@@ -197,7 +202,7 @@ export async function planFulfillment(
   const groups: FulfillmentGroup[] = Array.from(groupMap.values())
     .sort((a, b) => a.warehouseEntry.distanceMiles - b.warehouseEntry.distanceMiles)
     .map(({ warehouseEntry, items }) => {
-    const isPickup = warehouseEntry.distanceMiles <= PICKUP_THRESHOLD_MILES;
+    const isPickup = warehouseEntry.distanceMiles <= PICKUP_THRESHOLD_MILES && warehouseSupportsPickup(warehouseEntry.warehouse.code);
     return {
       warehouse: warehouseEntry.warehouse,
       distanceMiles: warehouseEntry.distanceMiles,
@@ -243,7 +248,7 @@ export async function planFulfillmentFallback(
   }
 
   const nearest = ranked[0];
-  const isPickup = nearest.distanceMiles <= PICKUP_THRESHOLD_MILES;
+  const isPickup = nearest.distanceMiles <= PICKUP_THRESHOLD_MILES && warehouseSupportsPickup(nearest.warehouse.code);
   console.log(`[Fulfillment] Fallback nearest: ${nearest.warehouse.code} ${nearest.distanceMiles.toFixed(1)} mi — ${isPickup ? 'PICKUP' : 'SHIPPING'}`);
 
   return {

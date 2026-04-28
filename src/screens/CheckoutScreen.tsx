@@ -124,6 +124,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [recheckError, setRecheckError] = useState<string | null>(null);
   // Tracks WHY the fulfillment plan is missing — drives the correct error message in the UI
   const [deliveryErrorKind, setDeliveryErrorKind] = useState<'inventory_failed' | 'geocode_failed' | null>(null);
+  // True when Edge Function returned stale: true — blocks checkout until user retries
+  const [isInventoryStale, setIsInventoryStale] = useState(false);
 
   // 'pickup' | 'delivery' | null — null means user hasn't chosen yet (req 9)
   const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
@@ -220,6 +222,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     setDeliveryLoading(true);
     setRecheckError(null);
     setDeliveryErrorKind(null);
+    setIsInventoryStale(false);
 
     // productId = supplier_product_id = GIGA native SKU (what GIGA expects)
     // item.sku = sku_custom ("XH-...") = Xself display SKU — GIGA does not know this
@@ -229,8 +232,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
     console.log('[Checkout] Sending to GIGA:', gigaSkus);
 
     fetchSkuWarehouseStock(gigaSkus)
-      .then(inventory => {
+      .then(result => {
         if (cancelled) return;
+        if (result.stale) {
+          setIsInventoryStale(true);
+          return undefined;
+        }
         console.log('[Checkout] Inventory fetched, planning fulfillment...');
         return planFulfillment(
           orderItems.map(item => ({
@@ -242,7 +249,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
             qty: item.qty,
           })),
           addressString,
-          inventory,
+          result.inventory,
         );
       })
       .catch(err => {
@@ -496,7 +503,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
     // Inventory recheck
     try {
       const skus = orderItems.map(item => item.productId || item.sku);
-      const freshInventory = await fetchSkuWarehouseStock(skus);
+      const stockResult = await fetchSkuWarehouseStock(skus);
+      if (stockResult.stale) {
+        setAffirmError('Inventory data is temporarily outdated. Please try again in a few minutes.');
+        setAffirmLoading(false);
+        return;
+      }
       const addrParts = [
         selectedAddress.address_line_1,
         selectedAddress.address_line_2,
@@ -507,7 +519,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
       const freshPlan = await planFulfillment(
         orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
         addrParts.join(', '),
-        freshInventory,
+        stockResult.inventory,
       );
       if (planFingerprint(freshPlan) !== planFingerprint(fulfillmentPlan)) {
         setFulfillmentPlan(freshPlan);
@@ -856,8 +868,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
               ) : null}
               <TouchableOpacity
-                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback) && { opacity: 0.6 }]}
-                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback}
+                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback || isInventoryStale) && { opacity: 0.6 }]}
+                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback || isInventoryStale}
                 onPress={handleAffirmPayment}
                 activeOpacity={0.8}
               >
@@ -980,6 +992,20 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.placeOrderErrorText}>{recheckError}</Text>
             </View>
           )}
+          {isInventoryStale && !deliveryLoading && (
+            <View style={styles.placeOrderErrorNote}>
+              <Text style={styles.placeOrderErrorText}>
+                Inventory data is temporarily outdated. Please try again in a few minutes.
+              </Text>
+              <TouchableOpacity
+                onPress={() => { setIsInventoryStale(false); setFulfillRetryKey(k => k + 1); }}
+                style={{ marginTop: 6, alignSelf: 'flex-start' }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.editLink}>Try Again →</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {recoveryRef && (
             <View style={styles.recoveryBanner}>
               <Ionicons name="warning-outline" size={16} color="#92660A" />
@@ -1004,8 +1030,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           {paymentMethod !== 'affirm' && !recoveryRef && (<><TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale}
             onPress={async () => {
               console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
               if (!selectedAddress) {
@@ -1022,7 +1048,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
               setRechecking(true);
               try {
                 const skus = orderItems.map(item => item.productId || item.sku);
-                const freshInventory = await fetchSkuWarehouseStock(skus);
+                const stockResult = await fetchSkuWarehouseStock(skus);
+                if (stockResult.stale) {
+                  setRecheckError('Inventory data is temporarily outdated. Please try again in a few minutes.');
+                  setRechecking(false);
+                  return;
+                }
                 const addrParts = [
                   selectedAddress.address_line_1,
                   selectedAddress.address_line_2,
@@ -1033,7 +1064,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 const freshPlan = await planFulfillment(
                   orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
                   addrParts.join(', '),
-                  freshInventory,
+                  stockResult.inventory,
                 );
                 const prevFp = planFingerprint(fulfillmentPlan);
                 const freshFp = planFingerprint(freshPlan);
