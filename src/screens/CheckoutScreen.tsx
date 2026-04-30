@@ -863,6 +863,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.affirmSubtitle}>From ${Math.ceil(total / 12)}/mo · Subject to approval</Text>
               {affirmError ? (
                 <Text style={styles.affirmError}>{affirmError}</Text>
+              ) : (isInventoryFallback || isInventoryStale) ? (
+                <Text style={styles.affirmError}>
+                  Affirm is unavailable until delivery and inventory are verified. Please try again or use a card.
+                </Text>
               ) : null}
               {__DEV__ && affirmDevDetail ? (
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
@@ -982,7 +986,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
             <View style={styles.placeOrderErrorNote}>
               <Text style={styles.placeOrderErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
-                  ? 'Delivery unavailable for this address. Please choose a different address.'
+                  ? "We couldn't verify this address. Please check the address and try again."
                   : 'Unable to verify inventory. Please try again later.'}
               </Text>
             </View>
@@ -1138,6 +1142,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 return;
               }
               const _stripeKeyMode = (process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').startsWith('pk_live') ? 'LIVE' : 'test';
+              if (_stripeKeyMode === 'test') { console.warn('[Payment] Stripe is in test mode — set pk_live key before App Store submission'); }
               console.log('[Payment] selected method:', paymentMethod);
               console.log('[Payment] Stripe publishable key mode:', _stripeKeyMode);
 

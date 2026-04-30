@@ -327,8 +327,17 @@ function SignInEntryScreen({ navigation }) {
     : `We sent a 6-digit code to\n${email.trim().toLowerCase()}`;
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
+    <View style={{ flex: 1 }}>
+      {/* Full-screen background image */}
+      <Image
+        source={{ uri: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1200' }}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode="cover"
+      />
+      {/* Teal overlay — 50% opacity so image stays visible */}
+      <View style={[StyleSheet.absoluteFillObject, { backgroundColor: '#0F766E', opacity: 0.48 }]} />
+      <SafeAreaView style={{ flex: 1 }}>
+      <StatusBar barStyle="light-content" />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView
           ref={scrollRef}
@@ -336,11 +345,10 @@ function SignInEntryScreen({ navigation }) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Image
-            source={{ uri: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1200' }}
-            style={[styles.signInHero, step === 'otp' && { height: 160 }]}
-            resizeMode="cover"
-          />
+          {/* Logo above card */}
+          <View style={styles.signInLogoWrap}>
+            <Image source={require('./assets/splash-clean.png')} style={styles.signInLogo} resizeMode="contain" />
+          </View>
 
           <View style={styles.signInCard}>
             <Animated.View style={{ opacity: stepAnim }}>
@@ -493,7 +501,8 @@ function SignInEntryScreen({ navigation }) {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -808,6 +817,11 @@ function HomeScreen({ navigation }) {
         contentContainerStyle={styles.productsGrid}
         onEndReached={() => setDisplayCount(c => Math.min(c + 20, rankedProducts.length))}
         onEndReachedThreshold={0.5}
+        ListEmptyComponent={() => (
+          <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+            <Text style={{ fontSize: 14, color: '#9CA3AF' }}>No products available yet</Text>
+          </View>
+        )}
         ListFooterComponent={() => (
           <>
             {/* Shop by Category — bottom discovery module */}
@@ -1867,6 +1881,23 @@ function SearchScreen({ navigation, route }) {
   );
 }
 
+function SplashOverlay({ opacity }: { opacity: Animated.Value }) {
+  return (
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFillObject,
+        { backgroundColor: '#0F766E', alignItems: 'center', justifyContent: 'center', opacity },
+      ]}
+    >
+      <Image
+        source={require('./assets/splash-clean.png')}
+        style={{ width: 160, height: 160, transform: [{ translateY: -40 }] }}
+        resizeMode="contain"
+      />
+    </Animated.View>
+  );
+}
+
 function CartAddIcon({ onPress }: { onPress: () => void }) {
   const scale = useRef(new Animated.Value(1)).current;
   const handlePress = () => {
@@ -2376,7 +2407,6 @@ function AccountScreen({ navigation }) {
           <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
             <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
-            <Text style={styles.memberCardSince}>Member since 2024</Text>
           </View>
           <Text style={styles.memberCardName}>{user.displayName}</Text>
           <View style={{ marginTop: 12 }}>
@@ -2461,7 +2491,6 @@ function MembershipScreen({ navigation }) {
           <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
             <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
-            <Text style={styles.memberCardSince}>Member since 2024</Text>
           </View>
           <View style={{ marginTop: 14 }}>
             <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
@@ -2476,16 +2505,16 @@ function MembershipScreen({ navigation }) {
             <Ionicons name="shield-checkmark-outline" size={20} color="#CA8A04" />
             <View style={styles.menuTextWrap}>
               <Text style={styles.menuText}>Xself Gold</Text>
-              <Text style={styles.menuSubText}>$29 / month · Cancel anytime</Text>
+              <Text style={styles.menuSubText}>Membership coming soon</Text>
             </View>
-            <View style={{ backgroundColor: '#FEF9EC', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
-              <Text style={{ fontSize: 10, fontWeight: '600', color: '#CA8A04' }}>ACTIVE</Text>
+            <View style={{ backgroundColor: '#F3F4F6', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
+              <Text style={{ fontSize: 10, fontWeight: '600', color: '#9CA3AF' }}>PREVIEW</Text>
             </View>
           </View>
           <TouchableOpacity
             style={styles.menuItem}
             activeOpacity={0.7}
-            onPress={() => Alert.alert('Manage Plan', 'Subscription management coming soon.')}>
+            onPress={() => Linking.openURL('https://xselfhome.com/membership')}>
             <Ionicons name="settings-outline" size={20} color="#9CA3AF" />
             <View style={styles.menuTextWrap}>
               <Text style={styles.menuText}>Manage Plan</Text>
@@ -2505,6 +2534,11 @@ function MembershipScreen({ navigation }) {
             </View>
           ))}
         </View>
+
+        {/* Disclaimer */}
+        <Text style={{ fontSize: 12, color: '#9CA3AF', marginHorizontal: 20, marginTop: 8, marginBottom: 4, lineHeight: 18, textAlign: 'center' }}>
+          Membership features are not yet available and will be released in a future update.
+        </Text>
 
         {/* Earn More */}
         <Text style={styles.menuSectionLabel}>EARN MORE</Text>
@@ -2637,12 +2671,25 @@ function TabNavigator() {
 }
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const splashOpacity = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
-    SplashScreen.hideAsync();
+    const run = async () => {
+      await SplashScreen.hideAsync();
+      // Fade in the React splash overlay
+      Animated.timing(splashOpacity, { toValue: 1, duration: 350, useNativeDriver: true }).start();
+      // After brief hold, fade out and unmount
+      setTimeout(() => {
+        Animated.timing(splashOpacity, { toValue: 0, duration: 400, useNativeDriver: true })
+          .start(() => setShowSplash(false));
+      }, 900);
+    };
+    run();
   }, []);
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: '#0F766E' }}>
       <StripeProvider
         publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ''}
         merchantIdentifier={process.env.EXPO_PUBLIC_APPLE_MERCHANT_ID ?? 'merchant.com.xself.home'}
@@ -2675,6 +2722,7 @@ export default function App() {
       </RecommendationProvider>
       </AuthProvider>
       </StripeProvider>
+      {showSplash && <SplashOverlay opacity={splashOpacity} />}
     </View>
   );
 }
@@ -2933,10 +2981,11 @@ const styles = StyleSheet.create({
   savedMoveBtnText: { fontSize: 11, fontWeight: '700', color: 'white' },
   savedRemoveText: { fontSize: 11, color: '#9CA3AF' },
 
-  signInWrap: { paddingBottom: 40 },
-  signInHero: { width: '100%', height: 320, backgroundColor: '#F3F4F6' },
-  signInCard: { padding: 20, marginTop: -8, marginHorizontal: 20, backgroundColor: 'white', borderRadius: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 4 },
-  signInTitle: { fontSize: 24, fontWeight: '700', color: '#1C1917' },
+  signInWrap: { paddingBottom: 48 },
+  signInLogoWrap: { alignItems: 'center', paddingTop: 64, paddingBottom: 20 },
+  signInLogo: { width: 140, height: 140, opacity: 0.9 },
+  signInCard: { padding: 24, marginHorizontal: 24, backgroundColor: '#FFFFFF', borderRadius: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 12, elevation: 2 },
+  signInTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
   signInSubtitle: { fontSize: 14, color: '#6B7280', marginTop: 8, lineHeight: 20 },
   signInInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 14, marginTop: 16 },
   signInInput: { flex: 1, paddingVertical: 12, fontSize: 15, color: '#1C1917' },
@@ -2971,7 +3020,7 @@ const styles = StyleSheet.create({
 
   accountFooter: { textAlign: 'center', fontSize: 12, color: '#C4C0BA', marginTop: 28, marginBottom: 8 },
 
-  primaryBtn: { backgroundColor: '#EAB320', height: 58, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
+  primaryBtn: { backgroundColor: '#F4B740', height: 58, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
   primaryBtnText: { color: 'white', fontSize: 15, fontWeight: '700' },
   secondaryBtn: { paddingVertical: 12, alignItems: 'center' },
   secondaryBtnText: { color: '#1C1917', fontSize: 14, fontWeight: '600' },

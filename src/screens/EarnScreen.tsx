@@ -6,7 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { useRewards, MEMBERSHIP_FEE, REFERRAL_CODE, getReferralLink } from '../context/RewardsContext';
+import { useRewards, REFERRAL_CODE, getReferralLink } from '../context/RewardsContext';
 import { useCart } from '../context/CartContext';
 import { useAuth } from '../context/AuthContext';
 
@@ -18,13 +18,10 @@ const DELIVERED_PRODUCTS = [
 export default function EarnScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { balance, totalEarned, clicks, referralOrders, history, membershipProgress, shoppingCredit, trackClick } = useRewards();
+  const { balance, totalEarned, clicks, referralOrders, history, shoppingCredit, trackClick } = useRewards();
   const { totalItems } = useCart();
   const { user } = useAuth();
   const [shareModal, setShareModal] = useState(false);
-
-  const pctToMembership = Math.round(membershipProgress * 100);
-  const leftToMembership = parseFloat(Math.max(0, MEMBERSHIP_FEE - balance).toFixed(2));
 
   const shareProduct = async (product: typeof DELIVERED_PRODUCTS[0]) => {
     try {
@@ -79,18 +76,7 @@ export default function EarnScreen() {
 
           {/* Progress */}
           <View style={styles.membershipSection}>
-            <View style={styles.membershipHeaderRow}>
-              <Text style={styles.membershipLabel}>Membership · ${MEMBERSHIP_FEE}/month</Text>
-              <Text style={styles.membershipPct}>{pctToMembership}%</Text>
-            </View>
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${pctToMembership}%` as any }]} />
-            </View>
-            <Text style={styles.progressHint}>
-              {shoppingCredit > 0
-                ? `+$${shoppingCredit.toFixed(2)} available for shopping`
-                : `Earn $${leftToMembership.toFixed(2)} more to fully cover your fee`}
-            </Text>
+            <Text style={styles.membershipLabel}>Rewards coming soon</Text>
           </View>
 
           <View style={styles.cardDivider} />

@@ -1,4 +1,6 @@
-warning: Could not read priors, will not do cross-module incremental builds: The operation couldn’t be completed. (SwiftDriver.ModuleDependencyGraph.ReadError error 14.), at /Users/heliu/Library/Developer/Xcode/DerivedData/XselfHome-fzvvoinocotmcfaldrfzdjosxqlv/Build/Intermediates.noindex/Pods.build/Debug-iphonesimulator/ExpoFont.build/Objects-normal/arm64/ExpoFont-primary.priors
-warning: Could not read priors, will not do cross-module incremental builds: The operation couldn’t be completed. (SwiftDriver.ModuleDependencyGraph.ReadError error 14.), at /Users/heliu/Library/Developer/Xcode/DerivedData/XselfHome-fzvvoinocotmcfaldrfzdjosxqlv/Build/Intermediates.noindex/Pods.build/Debug-iphonesimulator/Expo.build/Objects-normal/arm64/Expo-primary.priors
-warning: Could not read priors, will not do cross-module incremental builds: The operation couldn’t be completed. (SwiftDriver.ModuleDependencyGraph.ReadError error 14.), at /Users/heliu/Library/Developer/Xcode/DerivedData/XselfHome-fzvvoinocotmcfaldrfzdjosxqlv/Build/Intermediates.noindex/Pods.build/Debug-iphonesimulator/ExpoFileSystem.build/Objects-normal/arm64/ExpoFileSystem-primary.priors
-warning: Could not read priors, will not do cross-module incremental builds: The operation couldn’t be completed. (SwiftDriver.ModuleDependencyGraph.ReadError error 14.), at /Users/heliu/Library/Developer/Xcode/DerivedData/XselfHome-fzvvoinocotmcfaldrfzdjosxqlv/Build/Intermediates.noindex/XselfHome.build/Debug-iphonesimulator/XselfHome.build/Objects-normal/arm64/XselfHome-primary.priors
+2026-04-29 09:15:57.696 xcodebuild[665:7925817] Writing error result bundle to /var/folders/qq/crjm16k506d35jsk479zdxg00000gn/T/ResultBundle_2026-29-04_09-15-0057.xcresult
+xcodebuild: error: Timed out waiting for all destinations matching the provided destination specifier to become available
+
+
+	Available destinations for the "XselfHome" scheme:
+		{ platform:iOS, arch:arm64, id:00008110-001655590AC2401E, name:He’s iPhone, error:The developer disk image could not be mounted on this device. }

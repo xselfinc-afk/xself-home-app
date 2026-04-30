@@ -34,9 +34,9 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
           <Text style={styles.subtitle}>Your order has been received.</Text>
           <Text style={styles.orderNum}>Order #: {displayOrderNumber}</Text>
           {paymentIntentId ? (
-            <Text style={styles.demoNote} selectable>Payment ID: {paymentIntentId}</Text>
+            <Text style={styles.paymentInfoText} selectable>Payment ID: {paymentIntentId}</Text>
           ) : (
-            <Text style={styles.demoNote}>Payment confirmed</Text>
+            <Text style={styles.paymentInfoText}>Payment confirmed</Text>
           )}
           {total && <Text style={styles.totalLine}>Order total: <Text style={styles.totalAmt}>${formatPrice(total)}</Text></Text>}
         </View>
@@ -137,7 +137,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginBottom: 4 },
   orderNum: { fontSize: 12, color: '#9CA3AF', marginTop: 6, letterSpacing: 0.5 },
   totalLine: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
-  demoNote: { fontSize: 11, color: '#9CA3AF', marginTop: 3, fontStyle: 'italic' },
+  paymentInfoText: { fontSize: 11, color: '#9CA3AF', marginTop: 3, fontStyle: 'italic' },
   totalAmt: { fontSize: 12, fontWeight: '500', color: '#6B7280' },
 
   card: { backgroundColor: 'white', marginHorizontal: 16, borderRadius: 10, paddingHorizontal: 16, marginBottom: 12 },
