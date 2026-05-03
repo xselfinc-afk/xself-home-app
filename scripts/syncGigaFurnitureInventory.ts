@@ -405,12 +405,14 @@ async function run() {
   const context = await browser.newContext({ storageState: SESSION_FILE });
   const page = await context.newPage();
 
+  const runStartedAt = new Date().toISOString();
+
   // ── Stats ───────────────────────────────────────────────────────────────────
   let attempted    = 0;
   let succeeded    = 0;
   let failed       = 0;
   let rowsWritten  = 0;
-  const failedUrls: string[] = [];
+  const failedSkus: { productId: string; url: string; reason: string }[] = [];
 
   // ── Batch loop ──────────────────────────────────────────────────────────────
   for (let i = 0; i < batch.length; i++) {
@@ -460,7 +462,7 @@ async function run() {
         result.loginRequired = true;
         result.warnings.push('Session expired — re-run saveGigaSession.ts then restart batch');
         console.log(`  ✗ Session expired — aborting batch`);
-        failedUrls.push(product.product_url as string);
+        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'session_expired' });
         failed++;
         // Session expired: abort entire batch (all remaining would also fail)
         break;
@@ -474,7 +476,7 @@ async function run() {
       if (!clicked) {
         result.warnings.push('"Specified Warehouse" label not found on this page');
         console.log(`  ⚠ "Specified Warehouse" not found — skipping`);
-        failedUrls.push(product.product_url as string);
+        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'no_warehouse_radio' });
         failed++;
         if (PAGE_DELAY_MS > 0) await page.waitForTimeout(PAGE_DELAY_MS);
         continue;
@@ -504,7 +506,7 @@ async function run() {
       if (rows.length === 0) {
         result.warnings.push('No warehouse rows extracted — page may have different DOM structure');
         console.log(`  ⚠ No warehouse rows found`);
-        failedUrls.push(product.product_url as string);
+        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'no_rows_extracted' });
         failed++;
         if (PAGE_DELAY_MS > 0) await page.waitForTimeout(PAGE_DELAY_MS);
         continue;
@@ -529,12 +531,24 @@ async function run() {
         if (writeErr) {
           console.log(`  ✗ DB write failed: ${writeErr}`);
           result.warnings.push(`DB write failed: ${writeErr}`);
-          failedUrls.push(product.product_url as string);
+          failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: `db_write: ${writeErr}` });
           failed++;
         } else {
           console.log(`  ✓ Upserted ${written} inventory row(s)`);
           succeeded++;
           rowsWritten += written;
+
+          // Refresh aggregated inventory status on standardized_products immediately
+          // so sellable_products view reflects this product's real stock.
+          const { error: rpcErr } = await supabase.rpc(
+            'refresh_product_inventory_status',
+            { p_supplier_product_id: product.product_id as string },
+          );
+          if (rpcErr) {
+            console.log(`  ⚠ refresh_product_inventory_status failed (non-fatal): ${rpcErr.message}`);
+          } else {
+            console.log(`  ✓ inventory_status refreshed`);
+          }
         }
       }
 
@@ -542,7 +556,7 @@ async function run() {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`  ✗ Unexpected error: ${msg.slice(0, 120)}`);
       result.warnings.push(`Unexpected error: ${msg.slice(0, 120)}`);
-      failedUrls.push(product.product_url as string);
+      failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: `error: ${msg.slice(0, 80)}` });
       failed++;
     }
 
@@ -554,20 +568,25 @@ async function run() {
 
   await browser.close();
 
+  const runFinishedAt = new Date().toISOString();
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log('\n═══════════════════════════════════════════════════════════════════');
   console.log(' SYNC COMPLETE');
   console.log('═══════════════════════════════════════════════════════════════════');
+  console.log(` Run started          : ${runStartedAt}`);
+  console.log(` Run finished         : ${runFinishedAt}`);
   console.log(` Products attempted   : ${attempted}`);
   console.log(` Products succeeded   : ${succeeded}`);
   console.log(` Products failed      : ${failed}`);
   console.log(` Inventory rows ${DRY_RUN ? '(dry)' : 'written'}: ${rowsWritten}`);
   if (DRY_RUN) console.log(` [DRY_RUN mode — no DB writes performed]`);
 
-  if (failedUrls.length > 0) {
-    console.log('\n Failed product URLs:');
-    for (const url of failedUrls) {
-      console.log(`   ${url}`);
+  if (failedSkus.length > 0) {
+    console.log('\n Failed products:');
+    for (const f of failedSkus) {
+      console.log(`   ${f.productId}  reason=${f.reason}`);
+      console.log(`   ${f.url}`);
     }
   }
   console.log('═══════════════════════════════════════════════════════════════════\n');

@@ -43,16 +43,15 @@ export default function CollectionScreen({ route, navigation }: any) {
     async function loadDiscounted() {
       // Server-side: done products with price > 0 and original_price present
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
           'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, ' +
-          'normalization_status, created_at',
+          'normalization_status, created_at, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .gt('price', 0)
         .not('original_price', 'is', null);
 

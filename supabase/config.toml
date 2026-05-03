@@ -402,6 +402,12 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
 
+[functions.plan-fulfillment]
+verify_jwt = false
+
+[functions.validate-checkout-inventory]
+verify_jwt = false
+
 [functions.giga-warehouse-stock]
 verify_jwt = false
 
@@ -412,4 +418,8 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.stripe-webhook]
+verify_jwt = false
+
+# Phase 8: server-authoritative checkout — creates order + reservations + Stripe PI in one call
+[functions.create-checkout-order]
 verify_jwt = false

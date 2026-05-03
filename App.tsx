@@ -536,15 +536,14 @@ function HomeScreen({ navigation }) {
     let active = true;
     async function loadProducts() {
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
       console.log('[Home] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
@@ -1075,15 +1074,14 @@ function ProductDetailScreen({ route, navigation }) {
     let active = true;
     async function loadRealProducts() {
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
       if (error || !data || !active) return;
@@ -1716,15 +1714,14 @@ function SearchScreen({ navigation, route }) {
     let active = true;
     async function loadPool() {
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, sku_search, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
       if (error || !data || !active) return;
@@ -2022,15 +2019,14 @@ function CartScreen({ navigation }) {
     let active = true;
     async function loadRealProducts() {
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
       if (error || !data || !active) return;
@@ -2406,15 +2402,16 @@ function AccountScreen({ navigation }) {
           />
           <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
-            <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
+            <Text style={styles.memberCardBadge}>XSELF GOLD STATUS</Text>
           </View>
           <Text style={styles.memberCardName}>{user.displayName}</Text>
+          <Text style={{ fontSize: 11, color: '#9CA3AF', marginTop: 2 }}>Earned through rewards and referrals</Text>
           <View style={{ marginTop: 12 }}>
             <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
             <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
           </View>
           <TouchableOpacity onPress={() => navigation.navigate('Membership')} style={styles.memberCardCTA} activeOpacity={0.75}>
-            <Text style={styles.memberCardCTAText}>Manage Membership →</Text>
+            <Text style={styles.memberCardCTAText}>View Benefits →</Text>
           </TouchableOpacity>
         </View>
 
@@ -2490,8 +2487,9 @@ function MembershipScreen({ navigation }) {
           />
           <View style={styles.memberCardHighlight} />
           <View style={styles.memberCardHeader}>
-            <Text style={styles.memberCardBadge}>XSELF GOLD</Text>
+            <Text style={styles.memberCardBadge}>XSELF GOLD STATUS</Text>
           </View>
+          <Text style={{ fontSize: 11, color: '#9CA3AF', marginTop: 6 }}>Earned through rewards and referrals</Text>
           <View style={{ marginTop: 14 }}>
             <Text style={styles.memberCardBalanceLabel}>Rewards Balance</Text>
             <Text style={styles.memberCardBalance}>${balance.toFixed(2)}</Text>
@@ -2504,8 +2502,8 @@ function MembershipScreen({ navigation }) {
           <View style={[styles.menuItem, styles.menuItemBorder]}>
             <Ionicons name="shield-checkmark-outline" size={20} color="#CA8A04" />
             <View style={styles.menuTextWrap}>
-              <Text style={styles.menuText}>Xself Gold</Text>
-              <Text style={styles.menuSubText}>Membership coming soon</Text>
+              <Text style={styles.menuText}>Xself Gold Status</Text>
+              <Text style={styles.menuSubText}>Earned through rewards and referrals</Text>
             </View>
             <View style={{ backgroundColor: '#F3F4F6', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
               <Text style={{ fontSize: 10, fontWeight: '600', color: '#9CA3AF' }}>PREVIEW</Text>
@@ -2703,7 +2701,7 @@ export default function App() {
       <OrdersProvider>
       <ConversationProvider>
       <NavigationContainer>
-        <Stack.Navigator id="RootStack" initialRouteName="SignInEntry" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
+        <Stack.Navigator id="RootStack" initialRouteName="Main" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
           <Stack.Screen name="SignInEntry" component={SignInEntryScreen} />
           <Stack.Screen name="Main" component={TabNavigator} />
           <Stack.Screen name="ProductDetail" component={ProductDetailScreen} />

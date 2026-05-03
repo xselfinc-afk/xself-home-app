@@ -1,5 +1,9 @@
 import { supabase, supabaseConfigured } from '../lib/supabase';
-import type { SkuInventory } from './gigaInventoryService';
+
+type SkuInventory = {
+  sku: string;
+  warehouseStock: { warehouseCode: string; availableQty: number }[];
+};
 
 // Cache entries fresher than this are considered valid
 const CACHE_TTL_MINUTES = 60;

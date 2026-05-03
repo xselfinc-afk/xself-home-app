@@ -25,12 +25,6 @@ type AuthCtx = {
    * Creates and persists the authenticated session on success.
    */
   verifyOtp: (email: string, token: string) => Promise<{ error: string | null }>;
-  /**
-   * Apple Sign In — kept as a secondary path.
-   * Wire to supabase.auth.signInWithIdToken() once expo-apple-authentication
-   * and Apple entitlements are configured for your bundle ID.
-   */
-  signInWithApple: () => void;
   continueAsGuest: () => void;
   signOut: () => Promise<void>;
   updateDisplayName: (name: string) => void;
@@ -50,10 +44,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // ── Session restore + live auth state + magic link handler ────────────────
   useEffect(() => {
-    // Restore persisted session on cold start
+    // Restore persisted session on cold start; default to guest when no session exists
     supabase.auth.getSession().then(({ data: { session: s } }) => {
-      if (s) applySession(s);
-    });
+      if (s) { applySession(s); } else { setIsGuest(true); }
+    }).catch(() => { setIsGuest(true); });
 
     // Keep in sync with Supabase session lifecycle (token refresh, sign-out)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
@@ -132,21 +126,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error: null };
   };
 
-  // ── Apple Sign In ──────────────────────────────────────────────────────────
-  // Simulation only — replace the body with the block below once
-  // expo-apple-authentication is installed and Apple entitlements are set:
-  //
-  //   const credential = await AppleAuthentication.signInAsync({ ... });
-  //   const { error } = await supabase.auth.signInWithIdToken({
-  //     provider: 'apple',
-  //     token: credential.identityToken!,
-  //   });
-  const signInWithApple = () => {
-    const fakeEmail = 'user@privaterelay.appleid.com';
-    setUser({ id: 'apple-sim-user', email: fakeEmail, displayName: 'Apple User', source: 'apple' });
-    setIsGuest(false);
-  };
-
   const continueAsGuest = () => {
     setUser(null);
     setIsGuest(true);
@@ -160,11 +139,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
-    setIsGuest(false);
+    setIsGuest(true);
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, isGuest, sendOtp, verifyOtp, signInWithApple, continueAsGuest, signOut, updateDisplayName }}>
+    <AuthContext.Provider value={{ user, session, isGuest, sendOtp, verifyOtp, continueAsGuest, signOut, updateDisplayName }}>
       {children}
     </AuthContext.Provider>
   );

@@ -189,6 +189,7 @@ export type StandardizedRow = {
   new_arrival_added_at?: string | null;
   product_family_key: string;
   normalization_status: string;
+  total_available_qty?: number | null;
 };
 
 /**
@@ -232,7 +233,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
           color: r.color,
           size: '',
           price: customerPrice,
-          stock: 999,
+          stock: r.total_available_qty ?? 0,
           images,
           enabled: true,
         },
@@ -253,7 +254,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
       : 0,
     rating: 4.6,
     reviewCount: 24,
-    stock: 999,
+    stock: r.total_available_qty ?? 0,
     image: images[0],
     thumbnail: images[0],
     coverImage: images[0],

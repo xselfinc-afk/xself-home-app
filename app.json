@@ -16,7 +16,7 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.xself.home"
     },
     "android": {
@@ -46,7 +46,9 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": ["merchant.com.xself.home"],
+          "merchantIdentifier": [
+            "merchant.com.xself.home"
+          ],
           "enableGooglePay": false
         }
       ]

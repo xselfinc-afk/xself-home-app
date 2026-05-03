@@ -205,11 +205,18 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
     // Optimistic local update first
     applyLocalOptimistic(order);
 
+    // Guest users have no auth session — Supabase RLS rejects null user_id inserts.
+    // Keep the order in local state only; guests cannot retrieve past orders from the DB anyway.
+    if (!user) {
+      console.log('[Orders] Guest order kept locally; skipping Supabase write');
+      return;
+    }
+
     if (!supabaseConfigured) return;
 
     const { error } = await supabase
       .from('orders')
-      .upsert(orderToRow(order, user?.id ?? null), { onConflict: 'order_id', ignoreDuplicates: true });
+      .upsert(orderToRow(order, user.id), { onConflict: 'order_id', ignoreDuplicates: true });
 
     if (error) {
       // Roll back the optimistic update
@@ -230,6 +237,9 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
       payment_status: 'paid',
       stripe_payment_intent_id: paymentIntentId,
     });
+
+    // Guest orders have no DB row to update — optimistic local update is the terminal action.
+    if (!user) return;
 
     if (!supabaseConfigured) return;
 

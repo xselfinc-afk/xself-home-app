@@ -9,8 +9,7 @@ import { useRewards } from '../context/RewardsContext';
 import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
-import { fetchSkuWarehouseStock } from '../services/gigaInventoryService';
-import { planFulfillment, FulfillmentPlan, SHIPPING_FEE } from '../services/fulfillmentPlanner';
+import { SHIPPING_FEE, type FulfillmentPlan, type FulfillmentGroup } from '../types/fulfillment';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -53,7 +52,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { cart, reserveExpiry, clearCart } = useCart();
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest } = useAuth();
-  const { addOrder, createPendingOrder, confirmOrder, cancelOrder } = useOrders();
+  const { addOrder } = useOrders();
   const { confirmPayment, confirmPlatformPayPayment } = useStripe();
   const insets = useSafeAreaInsets();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
@@ -185,10 +184,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrSaveError, setAddrSaveError] = useState<string | null>(null);
   const [fulfillRetryKey, setFulfillRetryKey] = useState(0);
-  // Set to the Stripe paymentIntentId when payment succeeds but order confirmation fails.
-  // Triggers the inline recovery message — cart is NOT cleared in this state.
-  const [recoveryRef, setRecoveryRef] = useState<string | null>(null);
-  const [recoveryRetrying, setRecoveryRetrying] = useState(false);
 
   // Load addresses from Supabase when the authenticated user is known
   useEffect(() => {
@@ -202,7 +197,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
       .catch(() => {/* network error — addresses stay empty */});
   }, [user?.id]);
 
-  // Stable key to detect cart content changes (SKU or quantity)
+// Stable key to detect cart content changes (SKU or quantity)
   const orderItemsKey = orderItems.map(i => `${i.sku}:${i.qty}`).join(',');
 
   // Fulfillment planning — reruns on address change OR cart contents change
@@ -224,62 +219,66 @@ export default function CheckoutScreen({ route, navigation }: any) {
     setDeliveryErrorKind(null);
     setIsInventoryStale(false);
 
-    // productId = supplier_product_id = GIGA native SKU (what GIGA expects)
-    // item.sku = sku_custom ("XH-...") = Xself display SKU — GIGA does not know this
-    const gigaSkus = orderItems.map(item => item.productId || item.sku);
-    console.log('[Checkout] SKU mapping for inventory:',
-      orderItems.map(i => `skuCustom=${i.sku} gigaSku=${i.productId || i.sku}`).join(' | '));
-    console.log('[Checkout] Sending to GIGA:', gigaSkus);
+    // Call plan-fulfillment edge function — geocoding, warehouse ranking, and inventory
+    // validation all happen server-side.
+    const planItems = orderItems.map(i => ({ sku: i.sku, productId: i.productId, qty: i.qty }));
+    const planAddress = {
+      line1: selectedAddress.address_line_1,
+      city: selectedAddress.city,
+      state: selectedAddress.state,
+      zip: selectedAddress.zip,
+      country: selectedAddress.country ?? 'US',
+    };
 
-    fetchSkuWarehouseStock(gigaSkus)
-      .then(result => {
-        if (cancelled) return;
-        if (result.stale) {
-          setIsInventoryStale(true);
-          return undefined;
-        }
-        console.log('[Checkout] Inventory fetched, planning fulfillment...');
-        return planFulfillment(
-          orderItems.map(item => ({
-            sku: item.sku,
-            productId: item.productId,
-            name: item.name,
-            price: item.price,
-            img: item.img,
-            qty: item.qty,
-          })),
-          addressString,
-          result.inventory,
-        );
-      })
-      .catch(err => {
-        if (cancelled) return undefined;
-        const msg = (err as Error).message ?? '';
-        console.log('[Checkout] Inventory fetch failed — blocking checkout:', msg);
-        setDeliveryErrorKind('inventory_failed');
-        return undefined;
-      })
-      .then(plan => {
-        if (cancelled || !plan) return;
-        console.log(
-          `[Checkout] Fulfillment plan: ${plan.groups.length} group(s), totalShipping=$${plan.totalShipping}, fallback=${plan.isFallback}`,
-        );
-        plan.groups.forEach((g, i) => {
-          console.log(
-            `[Checkout]  Group ${i + 1}: ${g.warehouse.code} ${g.distanceMiles.toFixed(1)}mi — ${g.isPickup ? 'PICKUP' : 'SHIP $' + g.shipping} — ${g.items.length} item(s)`,
-          );
+    (async () => {
+      try {
+        console.log('[Checkout] Calling plan-fulfillment edge function');
+        const { data, error } = await supabase.functions.invoke('plan-fulfillment', {
+          body: { items: planItems, address: planAddress },
         });
-        setFulfillmentPlan(plan);
-      })
-      .catch(err => {
+
         if (cancelled) return;
-        console.log('[Checkout] Fulfillment fallback also failed:', (err as Error).message);
+        if (error) throw new Error(error.message);
+
+        if (!data?.valid || !data?.selectedWarehouse) {
+          const status: string = data?.fulfillmentStatus ?? 'unknown';
+          console.warn(`[Checkout] plan-fulfillment: valid=false status=${status} reason=${data?.reason ?? ''}`);
+          if (status === 'stale_inventory' || status === 'no_inventory' || status === 'insufficient_qty') {
+            setIsInventoryStale(true);
+          } else {
+            setDeliveryErrorKind('geocode_failed');
+          }
+          setFulfillmentPlan(null);
+          return;
+        }
+
+        const group: FulfillmentGroup = {
+          warehouse: data.selectedWarehouse,
+          distanceMiles: data.distanceMiles,
+          isPickup: data.usePickup,
+          shipping: data.shipping,
+          items: orderItems.map(i => ({ sku: i.sku, name: i.name, qty: i.qty, price: i.price, img: i.img })),
+          estimatedDelivery: data.estimatedDelivery,
+          pickupWindow: data.pickupWindow ?? undefined,
+        };
+        const plan: FulfillmentPlan = {
+          groups: [group],
+          totalShipping: data.shipping,
+          isSingleWarehouse: true,
+          isFallback: false,
+        };
+
+        console.log(`[Checkout] Fulfillment plan: warehouse=${data.selectedWarehouse.code} dist=${data.distanceMiles.toFixed(1)}mi pickup=${data.usePickup} ship=$${data.shipping} freshness=${data.inventoryFreshness}`);
+        setFulfillmentPlan(plan);
+      } catch (err) {
+        if (cancelled) return;
+        console.log('[Checkout] plan-fulfillment failed:', (err as Error).message);
         setDeliveryErrorKind('geocode_failed');
         setFulfillmentPlan(null);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setDeliveryLoading(false);
-      });
+      }
+    })();
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -296,7 +295,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     addrLine1.trim() && addrCity.trim() && addrStateVal.trim() && addrZip.length === 5;
 
   type PaymentMethod = 'apple_pay' | 'card' | 'affirm';
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('apple_pay');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
   const [reviewExpanded, setReviewExpanded] = useState(false);
   // Tracks inline CardField completeness — null until user interacts
   const [cardDetails, setCardDetails] = useState<{ complete: boolean } | null>(null);
@@ -388,100 +387,51 @@ export default function CheckoutScreen({ route, navigation }: any) {
     );
   }
 
-  // ── Build a pending order snapshot (called BEFORE payment) ─────────────
-  function buildPendingOrderPayload() {
-    const skuWarehouseMap = new Map<string, string>();
-    activePlan!.groups.forEach(g => {
-      g.items.forEach(item => skuWarehouseMap.set(item.sku, g.warehouse.code));
+  // ── Phase 8: create order + reservation + PaymentIntent in one server call ─
+  async function callCreateCheckoutOrder(paymentMethodSelected: string): Promise<{
+    orderId: string;
+    orderNumber: string;
+    clientSecret: string;
+    guestToken: string | null;
+    paymentIntentId: string;
+  } | null> {
+    const items = orderItems.map(i => ({
+      sku: i.sku,
+      productId: i.productId,
+      qty: i.qty,
+      title: i.name,
+      unitPriceCents: Math.round(i.price * 100),
+    }));
+    const address = selectedAddress ? {
+      line1: selectedAddress.address_line_1,
+      city: selectedAddress.city,
+      state: selectedAddress.state,
+      zip: selectedAddress.zip,
+      country: selectedAddress.country ?? 'US',
+    } : undefined;
+    const { data, error } = await supabase.functions.invoke('create-checkout-order', {
+      body: {
+        items,
+        customer: { email: user?.email ?? '' },
+        address,
+        fulfillmentMethod: fulfillmentChoice ?? 'delivery',
+        userId: user?.id ?? null,
+        paymentMethodSelected,
+      },
     });
+    if (error || !data?.clientSecret) {
+      console.log('[Checkout] create-checkout-order failed:', error?.message ?? 'no clientSecret');
+      return null;
+    }
+    orderId.current = data.orderId;
+    orderNumber.current = data.orderNumber;
     return {
-      orderId: orderId.current,
-      orderNumber: orderNumber.current,
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      total,
-      status: 'pending' as const,
-      payment_status: 'pending' as const,
-      items: orderItems.map(item => ({
-        ...item,
-        warehouseCode: skuWarehouseMap.get(item.sku),
-      })),
-      address: selectedAddress ? {
-        firstName: selectedAddress.first_name,
-        lastName: selectedAddress.last_name,
-        line1: selectedAddress.address_line_1,
-        line2: selectedAddress.address_line_2 ?? undefined,
-        city: selectedAddress.city,
-        state: selectedAddress.state,
-        zip: selectedAddress.zip,
-        country: selectedAddress.country ?? 'US',
-      } : undefined,
-      fulfillmentGroups: activePlan!.groups.map(g => ({
-        warehouseCode: g.warehouse.code,
-        warehouseLabel: g.warehouse.label,
-        warehouseAddress: g.warehouse.address,
-        distanceMiles: g.distanceMiles,
-        isPickup: g.isPickup,
-        shippingFee: g.shipping,
-        pickupWindow: g.pickupWindow,
-        items: g.items.map(item => ({ sku: item.sku, name: item.name, qty: item.qty })),
-      })),
-      financials: { subtotal, shippingTotal: shipping, tax, total },
+      orderId: data.orderId,
+      orderNumber: data.orderNumber,
+      clientSecret: data.clientSecret,
+      guestToken: data.guestToken ?? null,
+      paymentIntentId: data.paymentIntentId,
     };
-  }
-
-  // ── Finalize order after payment is confirmed (Phase 3) ──────────────────
-  // Returns true on success (navigates away). Returns false on failure
-  // (sets recoveryRef — cart is intentionally NOT cleared).
-  async function finishOrder(paymentIntentId: string): Promise<boolean> {
-    if (debugEnabled(DEBUG_FLAGS.forceOrderSaveFailure)) {
-      setRecoveryRef(paymentIntentId);
-      return false;
-    }
-    if (appliedCredit > 0) {
-      recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
-    }
-    orderItems.forEach(item => {
-      if (item.productId) incrementProductCounter(item.productId, 'order_count');
-    });
-    try {
-      await confirmOrder(orderId.current, paymentIntentId);
-      if (!isBuyNow) clearCart();
-      navigation.navigate('OrderSuccess', {
-        total,
-        orderId: orderId.current,
-        orderNumber: orderNumber.current,
-        checkoutSessionId: checkoutSessionId.current,
-        userEmail: user?.email ?? '',
-        paymentIntentId,
-      });
-      return true;
-    } catch {
-      setRecoveryRef(paymentIntentId);
-      return false;
-    }
-  }
-
-  // ── Retry order confirmation without re-triggering Stripe ────────────────
-  async function handleRecoveryRetry() {
-    if (!recoveryRef || recoveryRetrying) return;
-    setRecoveryRetrying(true);
-    try {
-      await confirmOrder(orderId.current, recoveryRef);
-      if (!isBuyNow) clearCart();
-      setRecoveryRef(null);
-      navigation.navigate('OrderSuccess', {
-        total,
-        orderId: orderId.current,
-        orderNumber: orderNumber.current,
-        checkoutSessionId: checkoutSessionId.current,
-        userEmail: user?.email ?? '',
-        paymentIntentId: recoveryRef,
-      });
-    } catch {
-      // Keep showing the banner — user can try again later
-    } finally {
-      setRecoveryRetrying(false);
-    }
   }
 
   // ── Affirm payment handler ────────────────────────────────────────────────
@@ -500,92 +450,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
       return;
     }
 
-    // Inventory recheck
-    try {
-      const skus = orderItems.map(item => item.productId || item.sku);
-      const stockResult = await fetchSkuWarehouseStock(skus);
-      if (stockResult.stale) {
-        setAffirmError('Inventory data is temporarily outdated. Please try again in a few minutes.');
-        setAffirmLoading(false);
-        return;
-      }
-      const addrParts = [
-        selectedAddress.address_line_1,
-        selectedAddress.address_line_2,
-        selectedAddress.city,
-        `${selectedAddress.state} ${selectedAddress.zip}`,
-        selectedAddress.country,
-      ].filter(Boolean);
-      const freshPlan = await planFulfillment(
-        orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
-        addrParts.join(', '),
-        stockResult.inventory,
-      );
-      if (planFingerprint(freshPlan) !== planFingerprint(fulfillmentPlan)) {
-        setFulfillmentPlan(freshPlan);
-        setAffirmError('Your delivery details changed. Please review and try again.');
-        setAffirmLoading(false);
-        return;
-      }
-    } catch {
-      setAffirmError('Could not verify current inventory. Please try again.');
-      setAffirmLoading(false);
-      return;
-    }
-
-    // Phase 1: create pending order BEFORE Stripe call.
-    try {
-      await createPendingOrder(buildPendingOrderPayload());
-    } catch {
+    const result = await callCreateCheckoutOrder('affirm');
+    if (!result) {
       setAffirmError('Unable to prepare your order. Please try again.');
       setAffirmLoading(false);
       return;
     }
 
-    // Create PaymentIntent (Affirm)
-    const amountCents = Math.round(total * 100);
-    const piMetadata: Record<string, string> = {
-      payment_method_selected: 'affirm',
-      fulfillment_choice: fulfillmentChoice ?? 'delivery',
-      sku_list: orderItems.map(i => i.sku).join(','),
-      checkout_session_id: checkoutSessionId.current,
-      user_email: user?.email ?? '',
-    };
-    if (selectedAddress) {
-      piMetadata.address_city = selectedAddress.city;
-      piMetadata.address_state = selectedAddress.state;
-    }
-    const { data: piData, error: piError } = await supabase.functions.invoke(
-      'create-payment-intent',
-      {
-        body: {
-          amount: amountCents,
-          orderId: orderId.current,
-          customerEmail: user?.email,
-          metadata: piMetadata,
-          shippingAddress: {
-            name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
-            line1: selectedAddress.address_line_1,
-            line2: selectedAddress.address_line_2 ?? undefined,
-            city: selectedAddress.city,
-            state: selectedAddress.state,
-            zip: selectedAddress.zip,
-            country: selectedAddress.country ?? 'US',
-          },
-        },
-      },
-    );
-
-    console.log('[Affirm] PaymentIntent response:', JSON.stringify(piData, null, 2));
-    if (piError || !piData?.clientSecret) {
-      console.log('[Affirm] PaymentIntent creation failed:', piError?.message);
-      await cancelOrder(orderId.current);
-      setAffirmError('Affirm could not be started. Please try again or choose another payment method.');
-      setAffirmLoading(false);
-      return;
-    }
-
-    const { clientSecret, paymentIntentId } = piData as { clientSecret: string; paymentIntentId: string };
+    const { clientSecret, paymentIntentId } = result;
 
     console.log('[Affirm] confirmPayment params:', {
       clientSecretExists: !!clientSecret,
@@ -620,7 +492,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
     console.log('[Affirm] paymentIntent:', JSON.stringify(confirmedPI, null, 2));
 
     if (confirmError) {
-      await cancelOrder(orderId.current);
       if ((confirmError as any).code === 'Canceled') {
         setAffirmLoading(false);
         return;
@@ -635,9 +506,22 @@ export default function CheckoutScreen({ route, navigation }: any) {
       return;
     }
 
-    // Payment authorized — finalize order (Phase 3)
-    const ok = await finishOrder(paymentIntentId);
-    if (!ok) setAffirmLoading(false);
+    // Payment authorized — webhook will finalize; navigate to OrderSuccess
+    if (appliedCredit > 0) {
+      recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
+    }
+    orderItems.forEach(item => {
+      if (item.productId) incrementProductCounter(item.productId, 'order_count');
+    });
+    if (!isBuyNow) clearCart();
+    navigation.navigate('OrderSuccess', {
+      total,
+      orderId: orderId.current,
+      orderNumber: orderNumber.current,
+      checkoutSessionId: checkoutSessionId.current,
+      userEmail: user?.email ?? '',
+      paymentIntentId,
+    });
   }
 
   const anyDebugActive = __DEV__ && (
@@ -856,7 +740,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         )}
 
         {/* Affirm inline info block */}
-        {paymentMethod === 'affirm' && !recoveryRef && (
+        {paymentMethod === 'affirm' && (
           <View style={styles.section}>
             <View style={styles.affirmCard}>
               <Text style={styles.affirmTitle}>Affirm</Text>
@@ -1010,30 +894,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               </TouchableOpacity>
             </View>
           )}
-          {recoveryRef && (
-            <View style={styles.recoveryBanner}>
-              <Ionicons name="warning-outline" size={16} color="#92660A" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.recoveryTitle}>Payment received — order not confirmed</Text>
-                <Text style={styles.recoveryBody}>
-                  Your payment was processed but the order record could not be saved.
-                  Please contact support with reference:
-                </Text>
-                <Text style={styles.recoveryRef} selectable>{recoveryRef}</Text>
-                <TouchableOpacity
-                  onPress={handleRecoveryRetry}
-                  disabled={recoveryRetrying}
-                  style={{ marginTop: 8, alignSelf: 'flex-start', opacity: recoveryRetrying ? 0.6 : 1 }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#92660A' }}>
-                    {recoveryRetrying ? 'Saving order…' : 'Try Again'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-          {paymentMethod !== 'affirm' && !recoveryRef && (<><TouchableOpacity
+          {paymentMethod !== 'affirm' && (<><TouchableOpacity
             style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale) && { opacity: 0.6 }]}
             disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale}
             onPress={async () => {
@@ -1047,163 +908,28 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 return;
               }
 
-              // Final inventory recheck before submission
               setRecheckError(null);
-              setRechecking(true);
-              try {
-                const skus = orderItems.map(item => item.productId || item.sku);
-                const stockResult = await fetchSkuWarehouseStock(skus);
-                if (stockResult.stale) {
-                  setRecheckError('Inventory data is temporarily outdated. Please try again in a few minutes.');
-                  setRechecking(false);
-                  return;
-                }
-                const addrParts = [
-                  selectedAddress.address_line_1,
-                  selectedAddress.address_line_2,
-                  selectedAddress.city,
-                  `${selectedAddress.state} ${selectedAddress.zip}`,
-                  selectedAddress.country,
-                ].filter(Boolean);
-                const freshPlan = await planFulfillment(
-                  orderItems.map(item => ({ sku: item.sku, productId: item.productId, name: item.name, price: item.price, img: item.img, qty: item.qty })),
-                  addrParts.join(', '),
-                  stockResult.inventory,
-                );
-                const prevFp = planFingerprint(fulfillmentPlan);
-                const freshFp = planFingerprint(freshPlan);
-                console.log(`[Checkout] Recheck fingerprint — prev: ${prevFp}`);
-                console.log(`[Checkout] Recheck fingerprint — fresh: ${freshFp}`);
-                const changed = freshFp !== prevFp;
-                if (changed) {
-                  // Build a concise human-readable description of what changed
-                  const reasons: string[] = [];
-
-                  if (freshPlan.groups.length !== fulfillmentPlan.groups.length) {
-                    reasons.push(`shipment count changed (${fulfillmentPlan.groups.length} → ${freshPlan.groups.length})`);
-                  }
-                  if (freshPlan.totalShipping !== fulfillmentPlan.totalShipping) {
-                    reasons.push(`shipping fee changed ($${fulfillmentPlan.totalShipping} → $${freshPlan.totalShipping})`);
-                  }
-
-                  // SKU-level: detect warehouse reassignment and pickup↔shipping flips
-                  const oldSkuMap = new Map<string, { code: string; isPickup: boolean }>();
-                  for (const g of fulfillmentPlan.groups) {
-                    for (const item of g.items) oldSkuMap.set(item.sku, { code: g.warehouse.code, isPickup: g.isPickup });
-                  }
-                  let warehouseReassigned = false;
-                  let pickupFlipped = false;
-                  for (const g of freshPlan.groups) {
-                    for (const item of g.items) {
-                      const prev = oldSkuMap.get(item.sku);
-                      if (!prev) continue;
-                      if (prev.code !== g.warehouse.code) warehouseReassigned = true;
-                      if (prev.isPickup !== g.isPickup) pickupFlipped = true;
-                    }
-                  }
-                  if (warehouseReassigned) reasons.push('warehouse assignment changed');
-                  if (pickupFlipped) {
-                    const hadPickup = fulfillmentPlan.groups.some(g => g.isPickup);
-                    const hasPickup = freshPlan.groups.some(g => g.isPickup);
-                    if (hadPickup && !hasPickup) reasons.push('pickup no longer available — shipping now required');
-                    else if (!hadPickup && hasPickup) reasons.push('pickup now available at a nearby warehouse');
-                    else reasons.push('pickup/shipping status changed');
-                  }
-
-                  const summary = reasons.length > 0 ? reasons.join('; ') : 'delivery details updated';
-                  setFulfillmentPlan(freshPlan);
-                  setRecheckError(`Delivery changed: ${summary}. Please review before placing your order.`);
-                  setRechecking(false);
-                  return;
-                }
-              } catch (err) {
-                console.log('[Checkout] Recheck failed:', (err as Error).message);
-                setRecheckError('Could not verify current inventory. Please try again.');
-                setRechecking(false);
-                return;
-              }
-              setRechecking(false);
               setPlacing(true);
 
-              // ── Route by payment method ───────────────────────────────────────
-              // Phase 1: create pending order BEFORE any Stripe call.
-              try {
-                await createPendingOrder(buildPendingOrderPayload());
-              } catch {
+              if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
+                setRecheckError('Payment failed. Please try again.');
+                setPlacing(false);
+                return;
+              }
+
+              const result = await callCreateCheckoutOrder(paymentMethod);
+              if (!result) {
                 setRecheckError('Unable to prepare your order. Please try again.');
                 setPlacing(false);
                 return;
               }
 
-              if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
-                await cancelOrder(orderId.current);
-                setRecheckError('Payment failed. Please try again.');
-                setPlacing(false);
-                return;
-              }
+              const { clientSecret, paymentIntentId } = result;
+
               const _stripeKeyMode = (process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').startsWith('pk_live') ? 'LIVE' : 'test';
               if (_stripeKeyMode === 'test') { console.warn('[Payment] Stripe is in test mode — set pk_live key before App Store submission'); }
               console.log('[Payment] selected method:', paymentMethod);
               console.log('[Payment] Stripe publishable key mode:', _stripeKeyMode);
-
-              // ── Create PaymentIntent (Apple Pay + Card) ──────────────────────
-              const amountCents = Math.round(total * 100);
-              console.log('[Payment] amount:', amountCents, 'cents | calling create-payment-intent');
-              const piMetadata: Record<string, string> = {
-                payment_method_selected: paymentMethod,
-                fulfillment_choice: fulfillmentChoice ?? 'delivery',
-                sku_list: orderItems.map(i => i.sku).join(','),
-                checkout_session_id: checkoutSessionId.current,
-                user_email: user?.email ?? '',
-              };
-              if (selectedAddress) {
-                piMetadata.address_city = selectedAddress.city;
-                piMetadata.address_state = selectedAddress.state;
-              }
-              const { data: piData, error: piError } = await supabase.functions.invoke(
-                'create-payment-intent',
-                {
-                  body: {
-                    amount: amountCents,
-                    orderId: orderId.current,
-                    customerEmail: user?.email,
-                    metadata: piMetadata,
-                    shippingAddress: selectedAddress ? {
-                      name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
-                      line1: selectedAddress.address_line_1,
-                      line2: selectedAddress.address_line_2 ?? undefined,
-                      city: selectedAddress.city,
-                      state: selectedAddress.state,
-                      zip: selectedAddress.zip,
-                      country: selectedAddress.country ?? 'US',
-                    } : undefined,
-                  },
-                },
-              );
-
-              console.log('[Payment] create-payment-intent result — clientSecret:', !!piData?.clientSecret, '| error:', piError?.message ?? null);
-              if (piError || !piData?.clientSecret) {
-                // Extract the actual error body from FunctionsHttpError when available.
-                let paymentErrMsg = piError?.message ?? 'Unable to initialize payment. Please try again.';
-                try {
-                  const httpErr = piError as any;
-                  if (httpErr?.context?.response) {
-                    const body = await httpErr.context.response.clone().json();
-                    if (body?.error) {
-                      paymentErrMsg = body.error;
-                      console.log('[Payment] edge fn error body:', body.error);
-                    }
-                  }
-                } catch {
-                  // fall through to generic message
-                }
-                await cancelOrder(orderId.current);
-                setRecheckError(paymentErrMsg);
-                setPlacing(false);
-                return;
-              }
-
-              const { clientSecret, paymentIntentId } = piData as { clientSecret: string; paymentIntentId: string };
 
               // ── Apple Pay: Platform Pay flow ──────────────────────────────────
               if (paymentMethod === 'apple_pay') {
@@ -1234,7 +960,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 });
                 console.log('[Payment] confirmPlatformPayPayment result:', applePayError?.message ?? 'ok', '| code:', (applePayError as any)?.code ?? null);
                 if (applePayError) {
-                  await cancelOrder(orderId.current);
                   if ((applePayError as any).code === 'Canceled') {
                     setPlacing(false);
                     return;
@@ -1265,16 +990,28 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 });
                 console.log('[CardPayment] confirm result:', confirmError?.message ?? 'ok');
                 if (confirmError) {
-                  await cancelOrder(orderId.current);
                   setRecheckError(confirmError.message ?? 'Payment failed. Please try again.');
                   setPlacing(false);
                   return;
                 }
               }
 
-              // 4. Payment succeeded — finalize order (Phase 3)
-              const ok = await finishOrder(paymentIntentId);
-              if (!ok) setPlacing(false);
+              // Payment succeeded — webhook will finalize; navigate to OrderSuccess
+              if (appliedCredit > 0) {
+                recordCreditSpend(orderId.current, checkoutSessionId.current, appliedCredit);
+              }
+              orderItems.forEach(item => {
+                if (item.productId) incrementProductCounter(item.productId, 'order_count');
+              });
+              if (!isBuyNow) clearCart();
+              navigation.navigate('OrderSuccess', {
+                total,
+                orderId: orderId.current,
+                orderNumber: orderNumber.current,
+                checkoutSessionId: checkoutSessionId.current,
+                userEmail: user?.email ?? '',
+                paymentIntentId,
+              });
             }}
           >
             <Text style={styles.placeOrderText}>
@@ -1570,10 +1307,7 @@ const styles = StyleSheet.create({
   addrSaveError: { marginTop: 8, fontSize: 13, color: '#B45309', textAlign: 'center' },
   debugBadge: { backgroundColor: '#92660A', paddingVertical: 4, paddingHorizontal: 12, alignSelf: 'center', borderRadius: 4, marginVertical: 4 },
   debugBadgeText: { color: '#FFFBEB', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-  recoveryBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: '#FFFBEB', borderRadius: 8, padding: 14, marginTop: 8, borderWidth: 1, borderColor: '#FDE68A' },
-  recoveryTitle: { fontSize: 14, fontWeight: '600', color: '#92660A', marginBottom: 4 },
-  recoveryBody: { fontSize: 13, color: '#92660A', lineHeight: 18 },
-  recoveryRef: { fontSize: 12, fontWeight: '700', color: '#1C1917', marginTop: 6, fontVariant: ['tabular-nums'] },
+
   summaryCalculating: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic' as const },
   fulfillRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#D1CFC9', alignItems: 'center', justifyContent: 'center' },

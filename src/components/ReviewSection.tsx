@@ -76,9 +76,7 @@ function computeSummary(reviews: ReviewRow[]) {
     });
   });
 
-  const allGenerated = reviews.every(r => r.is_generated) || reviews.length < 5;
-
-  return { avg, breakdown, recPct, highlights, customerPhotos, total, allGenerated };
+  return { avg, breakdown, recPct, highlights, customerPhotos, total };
 }
 
 // ─── Star renderer ────────────────────────────────────────────────────────────
@@ -119,34 +117,11 @@ function sortReviews(reviews: ReviewRow[], sort: SortOption): ReviewRow[] {
   });
 }
 
-// ─── Generated review cap ────────────────────────────────────────────────────
-//
-// Controls how many generated reviews are exposed based on real review count:
-//   0–2 real  → all generated visible
-//   3–4 real  → max 2 generated appended after real reviews
-//   5+  real  → generated hidden entirely
+// ─── Safe display name for generated reviews ─────────────────────────────────
+// Returns "Customer" for seeded reviews so no realistic identity is shown.
 
-function applyGeneratedCap(sorted: ReviewRow[], realCount: number): ReviewRow[] {
-  if (realCount < 3) {
-    // 0–2 real reviews: show generated, max 5
-    let seen = 0;
-    return sorted.filter(r => {
-      if (!r.is_generated) return true;
-      seen++;
-      return seen <= 5;
-    });
-  }
-  if (realCount < 5) {
-    // 3–4 real reviews: max 2 generated
-    let seen = 0;
-    return sorted.filter(r => {
-      if (!r.is_generated) return true;
-      seen++;
-      return seen <= 2;
-    });
-  }
-  // 5+ real reviews: hide all generated
-  return sorted.filter(r => !r.is_generated);
+function safeDisplayName(review: ReviewRow): string {
+  return review.is_generated ? 'Customer' : review.reviewer_name;
 }
 
 // ─── ReviewSection ────────────────────────────────────────────────────────────
@@ -205,19 +180,26 @@ export default function ReviewSection({ product }: { product: any }) {
     return () => { active = false; };
   }, [product.id, refreshKey]);
 
-  const summary = useMemo(() => computeSummary(reviews), [reviews]);
-  const realCount = useMemo(() => reviews.filter(r => !r.is_generated).length, [reviews]);
-  const generatedCount = useMemo(() => reviews.filter(r => r.is_generated).length, [reviews]);
-  const sorted = useMemo(() => sortReviews(reviews, sort), [reviews, sort]);
-  const capped = useMemo(() => applyGeneratedCap(sorted, realCount), [sorted, realCount]);
-  const visibleReviews = showAllReviews ? capped : capped.slice(0, 2);
+  // Hard switch: show ONLY real reviews when any exist; ONLY generated when none do.
+  const realReviews = useMemo(() => reviews.filter(r => !r.is_generated), [reviews]);
+  const generatedReviews = useMemo(() => reviews.filter(r => r.is_generated).slice(0, 5), [reviews]);
+  const realCount = realReviews.length;
+  const generatedCount = generatedReviews.length;
+  const showingGenerated = realCount === 0;
+  const displayedReviews = useMemo(
+    () => (realCount === 0 ? generatedReviews : realReviews),
+    [realReviews, generatedReviews, realCount],
+  );
+  const summary = useMemo(() => computeSummary(displayedReviews), [displayedReviews]);
+  const sorted = useMemo(() => sortReviews(displayedReviews, sort), [displayedReviews, sort]);
+  const visibleReviews = showAllReviews ? sorted : sorted.slice(0, 2);
 
   useEffect(() => {
     if (loading) return;
     console.log('[Review] real count:', realCount);
     console.log('[Review] generated count:', generatedCount);
-    console.log('[Review] final visible count:', capped.length);
-  }, [loading, realCount, generatedCount, capped.length]);
+    console.log('[Review] final visible count:', sorted.length);
+  }, [loading, realCount, generatedCount, sorted.length]);
   const maxBarCount = useMemo(() => Math.max(...(summary?.breakdown.map(b => b.count) ?? [1]), 1), [summary]);
 
   // Animate distribution bars when summary loads/changes
@@ -447,7 +429,9 @@ export default function ReviewSection({ product }: { product: any }) {
             <View style={styles.summaryLeft}>
               <Text style={styles.bigRating}>{summary.avg.toFixed(1)}</Text>
               <Stars value={summary.avg} size={18} />
-              <Text style={styles.totalReviews}>out of 5 · {summary.total} reviews</Text>
+              <Text style={styles.totalReviews}>
+                {showingGenerated ? 'Based on sample reviews' : `out of 5 · ${summary.total} reviews`}
+              </Text>
             </View>
             <View style={styles.summaryRight}>
               {summary.breakdown.map(({ star, count }, i) => (
@@ -464,8 +448,8 @@ export default function ReviewSection({ product }: { product: any }) {
             </View>
           </View>
 
-          {/* Recommendation — hidden when all reviews are seeded/generated */}
-          {!summary.allGenerated && (
+          {/* Recommendation — only shown for real reviews */}
+          {!showingGenerated && (
             <View style={styles.recRow}>
               <Ionicons name="checkmark-circle" size={15} color={colors.amber} />
               <Text style={styles.recText}>Based on customer feedback</Text>
@@ -514,6 +498,13 @@ export default function ReviewSection({ product }: { product: any }) {
         </TouchableOpacity>
       </View>
 
+      {/* Disclosure — only shown when displaying sample reviews */}
+      {showingGenerated && (
+        <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>
+          Some reviews are examples to help illustrate product experience.
+        </Text>
+      )}
+
       {/* Reviews list */}
       {visibleReviews.map((review, idx) => {
         const rowId = review.id ?? `${review.supplier_product_id}-${idx}`;
@@ -527,10 +518,10 @@ export default function ReviewSection({ product }: { product: any }) {
             <View style={styles.reviewHeader}>
               <View style={styles.reviewerInfo}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarLetter}>{review.reviewer_name[0]}</Text>
+                  <Text style={styles.avatarLetter}>{safeDisplayName(review)[0]}</Text>
                 </View>
                 <View>
-                  <Text style={styles.reviewerName}>{review.reviewer_name}</Text>
+                  <Text style={styles.reviewerName}>{safeDisplayName(review)}</Text>
                   <Text style={styles.reviewDate}>
                     {reviewDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </Text>
@@ -538,7 +529,7 @@ export default function ReviewSection({ product }: { product: any }) {
               </View>
               {review.is_generated ? (
                 <View style={styles.sourceBadgeGenerated}>
-                  <Text style={styles.sourceBadgeGeneratedText}>Early Review</Text>
+                  <Text style={styles.sourceBadgeGeneratedText}>Sample Review</Text>
                 </View>
               ) : review.verified_purchase ? (
                 <View style={styles.sourceBadgeVerified}>
@@ -585,17 +576,19 @@ export default function ReviewSection({ product }: { product: any }) {
       })}
 
       {/* Show all reviews */}
-      {capped.length > 2 && (
+      {sorted.length > 2 && (
         <TouchableOpacity style={styles.showMoreBtn} onPress={() => setShowAllReviews(v => !v)}>
           <Text style={styles.showMoreText}>
-            {showAllReviews ? 'Show Less' : `Show All Reviews (${capped.length})`}
+            {showAllReviews ? 'Show Less' : `Show All Reviews (${sorted.length})`}
           </Text>
           <Ionicons name={showAllReviews ? 'chevron-up' : 'chevron-down'} size={14} color={colors.amber} />
         </TouchableOpacity>
       )}
 
-      {/* Trust signal */}
-      <Text style={styles.trustSignal}>Reviews are from verified customers and early feedback</Text>
+      {/* Trust signal — only shown for real reviews */}
+      {!showingGenerated && (
+        <Text style={styles.trustSignal}>Reviews are from verified customers</Text>
+      )}
 
       {/* Write-review modal */}
       {writeReviewModal}

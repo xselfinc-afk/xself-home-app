@@ -1,3 +1,12 @@
+/**
+ * @deprecated Phase 8 — use `create-checkout-order` instead.
+ * create-checkout-order creates the order record, inventory reservations, and
+ * Stripe PaymentIntent in a single atomic call and is the authoritative entry
+ * point for all new checkout sessions.
+ *
+ * This function is kept for backward compatibility while CheckoutScreen is
+ * still wired to the pre-Phase-8 flow. Remove after CheckoutScreen integration.
+ */
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 
 // Strip any non-printable or non-ASCII bytes that would make the Authorization

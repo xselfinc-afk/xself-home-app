@@ -85,15 +85,14 @@ export default function DiscoverScreen({ navigation, route }: any) {
 
     async function loadProducts() {
       const { data, error } = await supabase
-        .from('standardized_products')
+        .from('sellable_products')
         .select(
           'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
           'key_features_json, specifications_json, sku_custom, sku_search, ' +
           'category_code, scene_code, color, color_options_json, ' +
           'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival',
+          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, total_available_qty',
         )
-        .eq('normalization_status', 'done')
         .order('created_at', { ascending: false });
 
       console.log('[Discover] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);

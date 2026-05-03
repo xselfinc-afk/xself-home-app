@@ -1,0 +1,92 @@
+name: Sync GIGA Inventory
+
+on:
+  # Daily at 06:00 UTC (10pm PST / 11pm PDT)
+  schedule:
+    - cron: '0 6 * * *'
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      inventory_limit:
+        description: 'Max products to scrape (leave empty for all)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (1 = no DB writes)'
+        required: false
+        default: '0'
+
+jobs:
+  sync:
+    name: Scrape warehouse inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Write GIGA session file
+        # GIGA_SESSION_B64 = base64-encoded contents of scripts/.giga-session.json
+        # Generate with: base64 -i scripts/.giga-session.json | pbcopy
+        # Store in GitHub repo Settings → Secrets → Actions → GIGA_SESSION_B64
+        run: |
+          echo "${{ secrets.GIGA_SESSION_B64 }}" | base64 --decode > scripts/.giga-session.json
+          echo "Session file written ($(wc -c < scripts/.giga-session.json) bytes)"
+
+      - name: Run inventory sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GIGA_SESSION_FILE: scripts/.giga-session.json
+          INVENTORY_LIMIT: ${{ github.event.inputs.inventory_limit }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          PAGE_DELAY_MS: '1500'
+        run: npx tsx scripts/syncGigaFurnitureInventory.ts
+
+      - name: Verify inventory rows written
+        if: ${{ github.event.inputs.dry_run != '1' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          node --input-type=module << 'EOF'
+          import { createClient } from '@supabase/supabase-js';
+
+          const supabase = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_SERVICE_ROLE_KEY,
+            { auth: { persistSession: false } }
+          );
+
+          const { count: totalRows } = await supabase
+            .from('inventory_cache')
+            .select('*', { count: 'exact', head: true })
+            .eq('source_type', 'website_scrape')
+            .eq('sync_status', 'ok');
+
+          const { count: inStockProducts } = await supabase
+            .from('standardized_products')
+            .select('*', { count: 'exact', head: true })
+            .eq('inventory_status', 'in_stock');
+
+          console.log(`inventory_cache rows (website_scrape): ${totalRows ?? 0}`);
+          console.log(`standardized_products in_stock       : ${inStockProducts ?? 0}`);
+
+          if ((totalRows ?? 0) === 0) {
+            console.error('ERROR: No inventory rows found after sync');
+            process.exit(1);
+          }
+          EOF

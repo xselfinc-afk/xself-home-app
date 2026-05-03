@@ -1,6 +1,0 @@
-2026-04-29 09:15:57.696 xcodebuild[665:7925817] Writing error result bundle to /var/folders/qq/crjm16k506d35jsk479zdxg00000gn/T/ResultBundle_2026-29-04_09-15-0057.xcresult
-xcodebuild: error: Timed out waiting for all destinations matching the provided destination specifier to become available
-
-
-	Available destinations for the "XselfHome" scheme:
-		{ platform:iOS, arch:arm64, id:00008110-001655590AC2401E, name:He’s iPhone, error:The developer disk image could not be mounted on this device. }
