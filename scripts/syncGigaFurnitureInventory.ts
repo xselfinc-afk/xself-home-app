@@ -408,10 +408,11 @@ async function run() {
   const runStartedAt = new Date().toISOString();
 
   // ── Stats ───────────────────────────────────────────────────────────────────
-  let attempted    = 0;
-  let succeeded    = 0;
-  let failed       = 0;
-  let rowsWritten  = 0;
+  let attempted     = 0;
+  let succeeded     = 0;
+  let failed        = 0;
+  let rowsWritten   = 0;
+  let sessionExpired = false;
   const failedSkus: { productId: string; url: string; reason: string }[] = [];
 
   // ── Batch loop ──────────────────────────────────────────────────────────────
@@ -464,6 +465,7 @@ async function run() {
         console.log(`  ✗ Session expired — aborting batch`);
         failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'session_expired' });
         failed++;
+        sessionExpired = true;
         // Session expired: abort entire batch (all remaining would also fail)
         break;
       }
@@ -590,6 +592,14 @@ async function run() {
     }
   }
   console.log('═══════════════════════════════════════════════════════════════════\n');
+
+  // Exit non-zero so GitHub Actions marks the run as failed and sends a
+  // failure notification email. Never expose secrets in this message.
+  if (sessionExpired) {
+    console.error('[FurnitureInventory] FAILED: GIGA session expired. No inventory was overwritten.');
+    console.error('[FurnitureInventory] ACTION REQUIRED: Re-run saveGigaSession.ts, update GIGA_SESSION_B64 secret, then re-trigger the workflow.');
+    process.exit(1);
+  }
 }
 
 run().catch(err => {

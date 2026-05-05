@@ -1,9 +1,10 @@
 name: Sync GIGA Inventory
 
 on:
-  # Daily at 06:00 UTC (10pm PST / 11pm PDT)
+  # Daily at 06:00 UTC (10pm PST / 11pm PDT) and 18:00 UTC (10am PST / 11am PDT)
   schedule:
     - cron: '0 6 * * *'
+    - cron: '0 18 * * *'
   # Manual trigger from GitHub Actions UI
   workflow_dispatch:
     inputs:

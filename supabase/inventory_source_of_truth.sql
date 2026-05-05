@@ -196,10 +196,12 @@ BEGIN
     SET
       inventory_status    = 'stale',
       has_valid_inventory = false,
-      published           = false,
+      -- published is intentionally NOT set to false here.
+      -- Products stay visible even when inventory is stale.
+      -- Checkout enforces its own 24h freshness gate via validate-checkout-inventory.
       updated_at          = now()
     WHERE inventory_status        = 'in_stock'
-      AND inventory_last_synced_at < now() - interval '24 hours'
+      AND inventory_last_synced_at < now() - interval '7 days'
     RETURNING 1
   )
   SELECT COUNT(*) INTO v_count FROM updated;
@@ -208,18 +210,31 @@ END;
 $$;
 
 -- ── 5. sellable_products view ─────────────────────────────────────────────────
--- Strict filter: normalized + published (in_stock) + fresh inventory.
--- Drop-in replacement for app queries against standardized_products.
--- The app is not switched to this view until Phase 2.
+-- Resilient filter: normalized + published (in_stock) + data-quality guards.
+-- Hard freshness gate removed (2026-05-04): a single missed sync no longer
+-- blanks the app. Core visibility is still governed by published + in_stock,
+-- which are materialized by refresh_product_inventory_status() and
+-- sweep_stale_inventory(). inventory_freshness is a soft computed column for
+-- UI badges and monitoring use — it is NOT a visibility gate.
 
 CREATE OR REPLACE VIEW public.sellable_products AS
-SELECT sp.*
+SELECT
+  sp.*,
+  CASE
+    WHEN sp.inventory_last_synced_at IS NULL                          THEN 'missing'
+    WHEN sp.inventory_last_synced_at > (now() - interval '24 hours') THEN 'fresh'
+    WHEN sp.inventory_last_synced_at > (now() - interval '7 days')   THEN 'stale'
+    ELSE 'expired'
+  END AS inventory_freshness
 FROM public.standardized_products sp
-WHERE sp.normalization_status     = 'done'
-  AND sp.published                = true
-  AND sp.inventory_status         = 'in_stock'
-  AND sp.total_available_qty      > 0
-  AND sp.inventory_last_synced_at > (now() - interval '24 hours');
+WHERE sp.normalization_status = 'done'
+  AND sp.published            = true
+  AND sp.inventory_status     = 'in_stock'
+  AND sp.total_available_qty  > 0
+  AND sp.product_title        IS NOT NULL
+  AND sp.primary_image        IS NOT NULL
+  AND sp.primary_image        != ''
+  AND sp.price                > 0;
 
 GRANT SELECT ON public.sellable_products TO anon, authenticated;
 
