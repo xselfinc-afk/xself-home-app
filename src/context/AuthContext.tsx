@@ -27,6 +27,12 @@ type AuthCtx = {
   verifyOtp: (email: string, token: string) => Promise<{ error: string | null }>;
   continueAsGuest: () => void;
   signOut: () => Promise<void>;
+  /**
+   * Permanently delete the signed-in user's account via the delete-account
+   * edge function, then sign out and return to guest state. Resolves with
+   * `{ error }` — null on success, message string on failure.
+   */
+  deleteAccount: () => Promise<{ error: string | null }>;
   updateDisplayName: (name: string) => void;
 };
 
@@ -142,8 +148,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsGuest(true);
   };
 
+  const deleteAccount = async (): Promise<{ error: string | null }> => {
+    if (!session) return { error: 'You must be signed in to delete your account.' };
+    console.log('[Auth] Deleting account', session.user.id);
+    const { data, error } = await supabase.functions.invoke('delete-account', { body: {} });
+    if (error) {
+      console.log('[Auth] deleteAccount error:', error.message);
+      return { error: error.message };
+    }
+    if (data && (data as { error?: string }).error) {
+      const msg = (data as { message?: string; error: string }).message ?? (data as { error: string }).error;
+      console.log('[Auth] deleteAccount server error:', msg);
+      return { error: msg };
+    }
+    await supabase.auth.signOut();
+    setUser(null);
+    setSession(null);
+    setIsGuest(true);
+    return { error: null };
+  };
+
   return (
-    <AuthContext.Provider value={{ user, session, isGuest, sendOtp, verifyOtp, continueAsGuest, signOut, updateDisplayName }}>
+    <AuthContext.Provider value={{ user, session, isGuest, sendOtp, verifyOtp, continueAsGuest, signOut, deleteAccount, updateDisplayName }}>
       {children}
     </AuthContext.Provider>
   );

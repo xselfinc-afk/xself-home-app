@@ -2314,8 +2314,21 @@ function CartScreen({ navigation }) {
 }
 
 function AccountScreen({ navigation }) {
-  const { user, isGuest, signOut } = useAuth();
+  const { user, isGuest, signOut, deleteAccount } = useAuth();
   const { balance } = useRewards();
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const handleDeleteAccount = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    const { error } = await deleteAccount();
+    setDeleteBusy(false);
+    setDeleteModalVisible(false);
+    if (error) {
+      Alert.alert('Could not delete account', error);
+    }
+  };
 
   const accountItems = [
     { icon: 'chatbubble-outline', title: 'Messages', route: 'Inbox', requiresAuth: true },
@@ -2349,7 +2362,11 @@ function AccountScreen({ navigation }) {
   }
 
   const footer = (
-    <Text style={styles.accountFooter}>Terms · Privacy</Text>
+    <Text style={styles.accountFooter}>
+      <Text style={styles.accountFooterLink} onPress={() => Linking.openURL('https://pouncing-quotation-0f0.notion.site/Terms-of-Service-358e0472a4e28030bb0ce6258d50a1c9?source=copy_link')}>Terms</Text>
+      <Text> · </Text>
+      <Text style={styles.accountFooterLink} onPress={() => Linking.openURL('https://pouncing-quotation-0f0.notion.site/Privacy-Policy-351e0472a4e2805aa8f1dbd6a6555bf2?source=copy_link')}>Privacy</Text>
+    </Text>
   );
 
   // Guest / signed-out state
@@ -2446,8 +2463,53 @@ function AccountScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
+        <TouchableOpacity
+          style={styles.deleteAccountLink}
+          onPress={() => setDeleteModalVisible(true)}
+          activeOpacity={0.6}
+          hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
+        >
+          <Text style={styles.deleteAccountLinkText}>Delete Account</Text>
+        </TouchableOpacity>
+
         {footer}
       </ScrollView>
+
+      <Modal
+        visible={deleteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!deleteBusy) setDeleteModalVisible(false); }}
+      >
+        <View style={styles.deleteAccountBackdrop}>
+          <View style={styles.deleteAccountCard}>
+            <Text style={styles.deleteAccountTitle}>Delete your account?</Text>
+            <Text style={styles.deleteAccountBody}>
+              This permanently removes your saved addresses and signs you out. Past orders are anonymized but kept for fulfillment and accounting. This cannot be undone.
+            </Text>
+            <View style={styles.deleteAccountActions}>
+              <TouchableOpacity
+                style={styles.deleteAccountCancel}
+                onPress={() => setDeleteModalVisible(false)}
+                disabled={deleteBusy}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.deleteAccountCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.deleteAccountConfirm, deleteBusy && { opacity: 0.6 }]}
+                onPress={handleDeleteAccount}
+                disabled={deleteBusy}
+                activeOpacity={0.85}
+              >
+                {deleteBusy
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.deleteAccountConfirmText}>Delete</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2894,6 +2956,17 @@ const styles = StyleSheet.create({
   menuText: { fontSize: 15, color: '#1C1917' },
   menuSubText: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
   earnMoreHint: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+  deleteAccountLink: { alignSelf: 'center', marginTop: 24, paddingVertical: 6 },
+  deleteAccountLinkText: { fontSize: 13, fontWeight: '500' as const, color: '#C46B6B', letterSpacing: 0.1 },
+  deleteAccountBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
+  deleteAccountCard: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 18, paddingVertical: 22, paddingHorizontal: 22 },
+  deleteAccountTitle: { fontSize: 17, fontWeight: '600' as const, color: '#1C1917', marginBottom: 10 },
+  deleteAccountBody: { fontSize: 13, color: '#4B5563', lineHeight: 19 },
+  deleteAccountActions: { flexDirection: 'row', marginTop: 22, gap: 10 },
+  deleteAccountCancel: { flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center', backgroundColor: '#F3F1EB' },
+  deleteAccountCancelText: { fontSize: 15, fontWeight: '600' as const, color: '#1C1917' },
+  deleteAccountConfirm: { flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center', backgroundColor: '#E05252' },
+  deleteAccountConfirmText: { fontSize: 15, fontWeight: '600' as const, color: '#FFFFFF' },
   floatTabBar: { position: 'absolute', left: 32, right: 32, height: 76, borderRadius: 38, flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.82)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 18, elevation: 4 },
   floatTabItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   floatTabContent: { alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4 },
@@ -3016,7 +3089,8 @@ const styles = StyleSheet.create({
   guestSub: { fontSize: 14, color: '#6B7280', textAlign: 'center', lineHeight: 20, marginBottom: 4 },
   guestNote: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginTop: 12 },
 
-  accountFooter: { textAlign: 'center', fontSize: 12, color: '#C4C0BA', marginTop: 28, marginBottom: 8 },
+  accountFooter: { textAlign: 'center', fontSize: 12, color: '#C4C0BA', marginTop: 14, marginBottom: 8 },
+  accountFooterLink: { color: '#8E8A82' },
 
   primaryBtn: { backgroundColor: '#F4B740', height: 58, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
   primaryBtnText: { color: 'white', fontSize: 15, fontWeight: '700' },
