@@ -17,6 +17,7 @@
     "expo": "^54.0.33",
     "expo-blur": "~15.0.8",
     "expo-haptics": "~15.0.8",
+    "expo-image": "~3.0.11",
     "expo-image-picker": "~17.0.10",
     "expo-linear-gradient": "~15.0.8",
     "expo-secure-store": "~15.0.8",
@@ -33,7 +34,9 @@
     "@types/react": "~19.1.10",
     "@urql/core": "^6.0.1",
     "babel-plugin-transform-remove-console": "^6.9.4",
+    "blurhash": "^2.0.5",
     "playwright": "^1.59.1",
+    "sharp": "^0.34.5",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   }

@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useRef, useState } from 'react';
-import { Animated, Dimensions, Easing, Image, StyleSheet, View } from 'react-native';
+import { Animated, Dimensions, Easing, StyleSheet, View } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 
 interface CartAnimContextValue {
   triggerAnimation: (startX: number, startY: number, imgUrl?: string) => void;
@@ -177,7 +179,7 @@ export function CartAnimProvider({ children }: { children: React.ReactNode }) {
             ]}
           >
             {dotPos.imgUrl ? (
-              <Image source={{ uri: dotPos.imgUrl }} style={styles.dotImage} resizeMode="cover" />
+              <Image source={{ uri: variantUrl(dotPos.imgUrl, { width: 320 }) }} style={styles.dotImage} contentFit="cover" cachePolicy="memory-disk" />
             ) : null}
           </Animated.View>
         )}

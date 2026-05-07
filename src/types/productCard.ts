@@ -34,4 +34,7 @@ export type ProductCardModel = {
     images: string[];
     enabled: boolean;
   }>;
+  /** Phase 2b — blurhash placeholder for the primary image */
+  primaryImageBlurhash?: string;
+  primaryImageAspect?: number;
 };

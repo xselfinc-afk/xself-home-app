@@ -7,7 +7,9 @@
 import SupplierProductsScreen from './src/screens/SupplierProductsScreen';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { View, Text, ScrollView, TouchableOpacity, Image, TextInput, FlatList, StyleSheet, SafeAreaView, StatusBar, Share, Alert, Dimensions, Animated, ActivityIndicator, KeyboardAvoidingView, Platform, Modal, Linking, LayoutAnimation, UIManager } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, FlatList, StyleSheet, SafeAreaView, StatusBar, Share, Alert, Dimensions, Animated, ActivityIndicator, KeyboardAvoidingView, Platform, Modal, Linking, LayoutAnimation, UIManager } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl, originalUrl } from './src/utils/imageVariant';
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
@@ -330,9 +332,11 @@ function SignInEntryScreen({ navigation }) {
     <View style={{ flex: 1 }}>
       {/* Full-screen background image */}
       <Image
-        source={{ uri: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1200' }}
+        source={{ uri: variantUrl('https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1200', { width: 1200 }) }}
         style={StyleSheet.absoluteFillObject}
-        resizeMode="cover"
+        contentFit="cover"
+        cachePolicy="memory-disk"
+        transition={150}
       />
       {/* Teal overlay — 50% opacity so image stays visible */}
       <View style={[StyleSheet.absoluteFillObject, { backgroundColor: '#0F766E', opacity: 0.48 }]} />
@@ -347,7 +351,7 @@ function SignInEntryScreen({ navigation }) {
         >
           {/* Logo above card */}
           <View style={styles.signInLogoWrap}>
-            <Image source={require('./assets/splash-clean.png')} style={styles.signInLogo} resizeMode="contain" />
+            <Image source={require('./assets/splash-clean.png')} style={styles.signInLogo} contentFit="contain" />
           </View>
 
           <View style={styles.signInCard}>
@@ -847,9 +851,11 @@ function HomeScreen({ navigation }) {
                       <View style={{ width: circleSize, height: circleSize, borderRadius: radius, overflow: 'hidden', backgroundColor: bg, borderWidth: 2, borderColor: '#E5E3DC' }}>
                         {imageUri ? (
                           <Image
-                            source={{ uri: imageUri }}
+                            source={{ uri: variantUrl(imageUri, { width: 360, fit: 'contain' }) }}
                             style={{ width: circleSize, height: circleSize }}
-                            resizeMode="contain"
+                            contentFit="contain"
+                            cachePolicy="memory-disk"
+                            transition={150}
                           />
                         ) : (
                           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -935,7 +941,7 @@ function VariantPicker({
               onPress={() => !v.disabled && onSelect(v.label)}
               activeOpacity={v.disabled ? 1 : 0.8}
             >
-              <Image source={{ uri: v.uri }} style={[styles.imageVariantThumb, v.disabled ? { opacity: 0.3 } : undefined]} resizeMode="cover" />
+              <Image source={{ uri: variantUrl(v.uri, { width: 160 }) }} style={[styles.imageVariantThumb, v.disabled ? { opacity: 0.3 } : undefined]} contentFit="cover" cachePolicy="memory-disk" transition={150} />
             </TouchableOpacity>
           );
         })}
@@ -1317,9 +1323,11 @@ function ProductDetailScreen({ route, navigation }) {
                   onPress={() => Linking.openURL(item.url).catch(() => {})}
                 >
                   <Image
-                    source={{ uri: item.thumbnail ?? '' }}
+                    source={{ uri: variantUrl(item.thumbnail ?? '', { width: 1200 }) }}
                     style={{ width: screenWidth, aspectRatio: 4 / 5 }}
-                    resizeMode="cover"
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={150}
                   />
                   <View style={styles.videoPlayOverlay}>
                     <View style={styles.videoPlayBtn}>
@@ -1330,9 +1338,13 @@ function ProductDetailScreen({ route, navigation }) {
               ) : (
                 <Image
                   key={i}
-                  source={{ uri: item.url }}
+                  source={{ uri: variantUrl(item.url, { width: 1200 }) }}
                   style={{ width: screenWidth, aspectRatio: 4 / 5 }}
-                  resizeMode="cover"
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={150}
+                  placeholder={i === 0 && product?.primaryImageBlurhash ? { blurhash: product.primaryImageBlurhash } : undefined}
+                  placeholderContentFit="cover"
                 />
               )
             )}
@@ -1553,7 +1565,7 @@ function ProductDetailScreen({ route, navigation }) {
                 }}
               >
                 <Animated.View style={{ transform: [{ scale: fbtMainScale }] }}>
-                  <Image source={{ uri: product.images[0] }} style={styles.fbtImg} />
+                  <Image source={{ uri: variantUrl(product.images[0], { width: 320 }) }} style={styles.fbtImg} cachePolicy="memory-disk" transition={150} />
                 </Animated.View>
               </TouchableOpacity>
               {fbt.map((p, i) => (
@@ -1574,7 +1586,7 @@ function ProductDetailScreen({ route, navigation }) {
                     }}
                   >
                     <Animated.View style={{ transform: [{ scale: fbtScales[i] }] }}>
-                      <Image source={{ uri: p.images[0] }} style={styles.fbtImg} />
+                      <Image source={{ uri: variantUrl(p.images[0], { width: 320 }) }} style={styles.fbtImg} cachePolicy="memory-disk" transition={150} />
                     </Animated.View>
                   </TouchableOpacity>
                 </React.Fragment>
@@ -1858,7 +1870,7 @@ function SearchScreen({ navigation, route }) {
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 0 }}
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.productCard} onPress={() => navigation.navigate('ProductDetail', { product: item })}>
-            <Image source={{ uri: item.images[0] }} style={styles.productImage} resizeMode="cover" />
+            <Image source={{ uri: variantUrl(item.images[0], { width: 720 }) }} style={styles.productImage} contentFit="cover" cachePolicy="memory-disk" transition={150} />
             {item.originalPrice && (
               <View style={styles.saleBadge}>
                 <Text style={styles.saleText}>SALE</Text>
@@ -1889,7 +1901,7 @@ function SplashOverlay({ opacity }: { opacity: Animated.Value }) {
       <Image
         source={require('./assets/splash-clean.png')}
         style={{ width: 160, height: 160, transform: [{ translateY: -40 }] }}
-        resizeMode="contain"
+        contentFit="contain"
       />
     </Animated.View>
   );
@@ -2160,7 +2172,7 @@ function CartScreen({ navigation }) {
             key={item.sku}
             style={[styles.cartItem, { opacity: removeAnims.current[item.sku] ?? 1 }]}
           >
-            <Image source={{ uri: item.img }} style={styles.cartImage} resizeMode="cover" />
+            <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.cartImage} contentFit="cover" cachePolicy="memory-disk" transition={150} />
             <View style={styles.cartInfo}>
               <Text style={styles.cartName} numberOfLines={2}>{item.name}</Text>
               {(item.color || item.size) && (
@@ -2258,7 +2270,7 @@ function CartScreen({ navigation }) {
             <Text style={styles.savedSectionTitle}>Saved for later ({savedItems.length})</Text>
             {savedItems.map(item => (
               <View key={item.sku} style={styles.savedItem}>
-                <Image source={{ uri: item.img }} style={styles.savedItemImg} />
+                <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.savedItemImg} cachePolicy="memory-disk" transition={150} />
                 <View style={styles.savedItemInfo}>
                   <Text style={styles.savedItemName} numberOfLines={2}>{item.name}</Text>
                   <Text style={styles.savedItemPrice}>${formatPrice(item.price)}</Text>
@@ -2289,7 +2301,7 @@ function CartScreen({ navigation }) {
               {recommended.map(p => (
                 <TouchableOpacity key={p.id} style={styles.cartRecommendCard} onPress={() => navigation.navigate('ProductDetail', { product: p })}>
                   {p.images[0]
-                    ? <Image source={{ uri: p.images[0] }} style={styles.cartRecommendImg} />
+                    ? <Image source={{ uri: variantUrl(p.images[0], { width: 320 }) }} style={styles.cartRecommendImg} cachePolicy="memory-disk" transition={150} />
                     : <View style={[styles.cartRecommendImg, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F4F6' }]}>
                         <Ionicons name="image-outline" size={24} color="#D1D5DB" />
                       </View>}

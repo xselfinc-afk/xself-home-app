@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Image, TouchableOpacity, ScrollView, StyleSheet, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -796,7 +798,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     key={item.sku}
                     style={[styles.orderItem, idx === orderItems.length - 1 && { borderBottomWidth: 0 }]}
                   >
-                    <Image source={{ uri: item.img }} style={styles.orderImg} />
+                    <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.orderImg} cachePolicy="memory-disk" transition={150} />
                     <View style={styles.orderInfo}>
                       <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                       <Text style={styles.itemVariants}>

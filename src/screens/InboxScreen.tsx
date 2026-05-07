@@ -1,5 +1,7 @@
 import React from 'react';
-import { View, Text, FlatList, TouchableOpacity, Image, StyleSheet } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversations, Conversation } from '../context/ConversationContext';
@@ -33,7 +35,7 @@ export default function InboxScreen({ navigation }: any) {
         },
       })}
     >
-      <Image source={{ uri: conv.productImg }} style={styles.thumb} />
+      <Image source={{ uri: variantUrl(conv.productImg, { width: 320 }) }} style={styles.thumb} cachePolicy="memory-disk" transition={150} />
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.productName} numberOfLines={1}>{conv.productName}</Text>

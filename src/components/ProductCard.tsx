@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet, Animated, Easing, NativeSyntheticEvent, ImageLoadEventData } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl, originalUrl } from '../utils/imageVariant';
 import {
   STANDARD_CARD_RATIO,
   RatioBucket,
@@ -57,6 +59,7 @@ export default function ProductCard({
   const cartBtnRef = useRef<View>(null);
   const lastHapticAt = useRef(0);
   const [imgError, setImgError] = useState(false);
+  const [proxyFailed, setProxyFailed] = useState(false);
   const viewTracked = useRef(false);
 
   // Track card impression (view_count) once per mount
@@ -73,9 +76,9 @@ export default function ProductCard({
     return url && flexibleRatio ? getBucketForUrl(url) : null;
   });
 
-  const handleImageLoad = (e: NativeSyntheticEvent<ImageLoadEventData>) => {
+  const handleImageLoad = (e: { source: { width: number; height: number } }) => {
     if (!flexibleRatio) return;
-    const { width, height } = e.nativeEvent.source;
+    const { width, height } = e.source;
     if (width > 0 && height > 0) {
       const ratio = width / height;
       const url = product.images[0];
@@ -163,10 +166,21 @@ export default function ProductCard({
         {imgError
           ? <View style={[styles.image, { aspectRatio: activeContainerRatio }]} />
           : <Image
-              source={{ uri: product.images[0] }}
+              source={{
+                uri: proxyFailed
+                  ? originalUrl(product.images[0])
+                  : variantUrl(product.images[0], { width: flexibleRatio ? 1200 : 720 }),
+              }}
               style={[styles.image, { aspectRatio: activeContainerRatio }]}
-              resizeMode={activeResizeMode}
-              onError={() => setImgError(true)}
+              contentFit={activeResizeMode}
+              cachePolicy="memory-disk"
+              transition={150}
+              placeholder={product.primaryImageBlurhash ? { blurhash: product.primaryImageBlurhash } : undefined}
+              placeholderContentFit={activeResizeMode}
+              onError={() => {
+                if (!proxyFailed) setProxyFailed(true);
+                else setImgError(true);
+              }}
               onLoad={handleImageLoad}
             />
         }

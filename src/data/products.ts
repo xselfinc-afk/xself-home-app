@@ -76,6 +76,12 @@ export interface Product {
   features?: string[];
   specs?: { group?: string; label: string; value: string }[];
   media?: MediaItem[];
+  /** Phase 2b — blurhash placeholder for primary_image; consumed by expo-image */
+  primaryImageBlurhash?: string;
+  primaryImageW?: number;
+  primaryImageH?: number;
+  /** width / height of the primary image; populated by backfill */
+  primaryImageAspect?: number;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

@@ -190,6 +190,11 @@ export type StandardizedRow = {
   product_family_key: string;
   normalization_status: string;
   total_available_qty?: number | null;
+  // Phase 2b image metadata
+  primary_image_blurhash?: string | null;
+  primary_image_w?: number | null;
+  primary_image_h?: number | null;
+  primary_image_aspect?: number | null;
 };
 
 /**
@@ -274,6 +279,10 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     tags: r.material ? { material: [r.material] } : undefined,
     variants,
     sales: 0,
+    primaryImageBlurhash: r.primary_image_blurhash ?? undefined,
+    primaryImageW: r.primary_image_w ?? undefined,
+    primaryImageH: r.primary_image_h ?? undefined,
+    primaryImageAspect: r.primary_image_aspect != null ? Number(r.primary_image_aspect) : undefined,
   };
 
   // Enrich with structured category path and full tag set.

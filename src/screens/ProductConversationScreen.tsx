@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, TextInput, Image,
+  View, Text, FlatList, TouchableOpacity, TextInput,
   StyleSheet, KeyboardAvoidingView, Platform,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversations, Message } from '../context/ConversationContext';
@@ -144,7 +146,7 @@ export default function ProductConversationScreen({ route, navigation }: any) {
       <View style={styles.ctxCard}>
         <View style={styles.ctxRow}>
           {params.primaryImage ? (
-            <Image source={{ uri: params.primaryImage }} style={styles.ctxImg} />
+            <Image source={{ uri: variantUrl(params.primaryImage, { width: 320 }) }} style={styles.ctxImg} cachePolicy="memory-disk" transition={150} />
           ) : (
             <View style={[styles.ctxImg, { backgroundColor: '#ECEAE2' }]} />
           )}

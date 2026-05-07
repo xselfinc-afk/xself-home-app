@@ -1,8 +1,10 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, Image,
+  View, Text, FlatList, TouchableOpacity,
   StyleSheet, Modal, TextInput, Share, Alert, ScrollView,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -247,7 +249,7 @@ export default function OrdersScreen({ navigation }: any) {
           const hasReviewed = reviewed.has(reviewKey);
           return (
             <View key={item.sku} style={styles.item}>
-              <Image source={{ uri: item.img }} style={styles.itemImg} />
+              <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.itemImg} cachePolicy="memory-disk" transition={150} />
               <View style={styles.itemInfo}>
                 <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                 {(item.color || item.size) && (
@@ -308,7 +310,7 @@ export default function OrdersScreen({ navigation }: any) {
               <>
                 <Text style={styles.sheetTitle}>Write a Review</Text>
                 <View style={styles.reviewProductRow}>
-                  <Image source={{ uri: reviewTarget.itemImg }} style={styles.reviewProductImg} />
+                  <Image source={{ uri: variantUrl(reviewTarget.itemImg, { width: 320 }) }} style={styles.reviewProductImg} cachePolicy="memory-disk" transition={150} />
                   <Text style={styles.reviewProductName} numberOfLines={2}>{reviewTarget.itemName}</Text>
                 </View>
                 <View style={styles.starsRow}>
@@ -321,7 +323,7 @@ export default function OrdersScreen({ navigation }: any) {
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow} contentContainerStyle={{ gap: 8 }}>
                   {reviewImages.map((uri, i) => (
                     <View key={i} style={styles.photoThumb}>
-                      <Image source={{ uri }} style={styles.photoImg} />
+                      <Image source={{ uri }} style={styles.photoImg} transition={150} />
                       <TouchableOpacity style={styles.photoDelete} onPress={() => setReviewImages(prev => prev.filter((_, idx) => idx !== i))}>
                         <Ionicons name="close-circle" size={18} color="#6B7280" />
                       </TouchableOpacity>
@@ -363,7 +365,7 @@ export default function OrdersScreen({ navigation }: any) {
             </View>
             {shareTarget?.name ? (
               <View style={styles.shareProductRow}>
-                <Image source={{ uri: shareTarget.img }} style={styles.shareProductImg} />
+                <Image source={{ uri: variantUrl(shareTarget.img, { width: 400 }) }} style={styles.shareProductImg} cachePolicy="memory-disk" transition={150} />
                 <Text style={styles.shareProductName}>{shareTarget.name}</Text>
               </View>
             ) : null}

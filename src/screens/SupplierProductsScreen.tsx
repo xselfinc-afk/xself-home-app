@@ -5,11 +5,12 @@ import {
   StyleSheet,
   SafeAreaView,
   FlatList,
-  Image,
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { supabase } from '../lib/supabase';
 
 type SupplierProduct = {
@@ -67,7 +68,7 @@ export default function SupplierProductsScreen() {
     return (
       <TouchableOpacity activeOpacity={0.9} style={styles.card}>
         {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.image} resizeMode="cover" />
+          <Image source={{ uri: variantUrl(imageUrl, { width: 720 }) }} style={styles.image} contentFit="cover" cachePolicy="memory-disk" transition={150} />
         ) : (
           <View style={[styles.image, styles.imagePlaceholder]}>
             <Text style={styles.imagePlaceholderText}>No Image</Text>

@@ -15,12 +15,13 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Image,
   StyleSheet,
   Dimensions,
   Animated,
   Pressable,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { LinearGradient } from 'expo-linear-gradient';
 
 export type HeroVariant = 'TEXT_LEFT' | 'CENTER_STACK' | 'CARD_OVERLAY';
@@ -153,9 +154,11 @@ function TextLeftLayout({ title, subtitle, ctaText, image, imagePosition = 'righ
       {/* Optional soft blurred background layer */}
       {image && useSoftBlur && (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={[StyleSheet.absoluteFillObject, { opacity: 0.35 }]}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
           blurRadius={14}
         />
       )}
@@ -163,9 +166,11 @@ function TextLeftLayout({ title, subtitle, ctaText, image, imagePosition = 'righ
       {/* Full-bleed image behind the overlay */}
       {image && (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={StyleSheet.absoluteFillObject}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
         />
       )}
 
@@ -206,17 +211,21 @@ function CenterStackLayout({ title, subtitle, ctaText, image, useSoftBlur = fals
     <>
       {image && useSoftBlur && (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={[StyleSheet.absoluteFillObject, { opacity: 0.30 }]}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
           blurRadius={14}
         />
       )}
       {image && (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={StyleSheet.absoluteFillObject}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
         />
       )}
       <LinearGradient
@@ -251,17 +260,21 @@ function CardOverlayLayout({ title, subtitle, ctaText, image, useSoftBlur = fals
     <>
       {image && useSoftBlur && (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={[StyleSheet.absoluteFillObject, { opacity: 0.30 }]}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
           blurRadius={14}
         />
       )}
       {image ? (
         <Image
-          source={{ uri: image }}
+          source={{ uri: variantUrl(image, { width: 1200 }) }}
           style={StyleSheet.absoluteFillObject}
-          resizeMode="cover"
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={150}
         />
       ) : (
         <LinearGradient

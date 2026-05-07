@@ -328,6 +328,10 @@ export default function DiscoverScreen({ navigation, route }: any) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.feed}
         onScrollBeginDrag={() => setOpenCardId(null)}
+        removeClippedSubviews
+        windowSize={5}
+        initialNumToRender={9}
+        maxToRenderPerBatch={6}
         renderItem={({ item }) => (
           <View style={styles.gridItem}>
             <DiscoverCard

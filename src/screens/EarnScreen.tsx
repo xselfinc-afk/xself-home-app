@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import {
-  View, Text, Image, ScrollView, TouchableOpacity,
+  View, Text, ScrollView, TouchableOpacity,
   StyleSheet, Share, Alert, Modal,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -131,7 +133,7 @@ export default function EarnScreen() {
           <View style={styles.shareListCard}>
             {DELIVERED_PRODUCTS.map((product, idx) => (
               <View key={product.id} style={[styles.shareCard, idx < DELIVERED_PRODUCTS.length - 1 && styles.shareCardBorder]}>
-                <Image source={{ uri: product.images[0] }} style={styles.shareImg} />
+                <Image source={{ uri: variantUrl(product.images[0], { width: 720 }) }} style={styles.shareImg} cachePolicy="memory-disk" transition={150} />
                 <View style={styles.shareInfo}>
                   <Text style={styles.shareName} numberOfLines={2}>{product.name}</Text>
                   <Text style={styles.commissionText}>Earn ${product.commission} per referral</Text>
@@ -220,7 +222,7 @@ export default function EarnScreen() {
 
             {DELIVERED_PRODUCTS.map(product => (
               <View key={product.id} style={[styles.shareCard, { marginTop: 8 }]}>
-                <Image source={{ uri: product.images[0] }} style={styles.shareImg} />
+                <Image source={{ uri: variantUrl(product.images[0], { width: 720 }) }} style={styles.shareImg} cachePolicy="memory-disk" transition={150} />
                 <View style={styles.shareInfo}>
                   <Text style={styles.shareName} numberOfLines={1}>{product.name}</Text>
                   <Text style={styles.commissionText}>Earn ${product.commission} per purchase</Text>

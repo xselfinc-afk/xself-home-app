@@ -4,7 +4,6 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
-  Image,
   Modal,
   StyleSheet,
   ActivityIndicator,
@@ -14,6 +13,8 @@ import {
   Platform,
   Animated,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius } from '../theme';
 import { supabase } from '../lib/supabase';
@@ -480,7 +481,7 @@ export default function ReviewSection({ product }: { product: any }) {
               >
                 {summary.customerPhotos.map((uri, i) => (
                   <TouchableOpacity key={i} onPress={() => setLightboxUri(uri)} activeOpacity={0.85}>
-                    <Image source={{ uri }} style={styles.photoThumb} />
+                    <Image source={{ uri: variantUrl(uri, { width: 400 }) }} style={styles.photoThumb} cachePolicy="memory-disk" transition={150} />
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -562,7 +563,7 @@ export default function ReviewSection({ product }: { product: any }) {
               >
                 {photos.map((uri: string, pi: number) => (
                   <TouchableOpacity key={pi} onPress={() => setLightboxUri(uri)} activeOpacity={0.85}>
-                    <Image source={{ uri }} style={styles.reviewPhoto} />
+                    <Image source={{ uri: variantUrl(uri, { width: 400 }) }} style={styles.reviewPhoto} cachePolicy="memory-disk" transition={150} />
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -633,9 +634,11 @@ export default function ReviewSection({ product }: { product: any }) {
         >
           {lightboxUri && (
             <Image
-              source={{ uri: lightboxUri }}
+              source={{ uri: variantUrl(lightboxUri, { width: 1200, fit: 'contain' }) }}
               style={styles.lightboxImage}
-              resizeMode="contain"
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              transition={150}
             />
           )}
           <TouchableOpacity style={styles.lightboxClose} onPress={() => setLightboxUri(null)}>

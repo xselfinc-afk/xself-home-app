@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Image, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { products, formatPrice } from '../data/products';
@@ -110,7 +112,7 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
               style={styles.suggestCard}
               onPress={() => navigation.navigate('ProductDetail', { product: p })}
             >
-              <Image source={{ uri: p.images[0] }} style={styles.suggestImg} />
+              <Image source={{ uri: variantUrl(p.images[0], { width: 320 }) }} style={styles.suggestImg} cachePolicy="memory-disk" transition={150} />
               <Text style={styles.suggestName} numberOfLines={2}>{p.name}</Text>
               <Text style={styles.suggestPrice}>${formatPrice(p.price)}</Text>
             </TouchableOpacity>

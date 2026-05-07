@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, TextInput, Image,
+  View, Text, FlatList, TouchableOpacity, TextInput,
   StyleSheet, KeyboardAvoidingView, Platform, Modal, ActivityIndicator,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversations, Message } from '../context/ConversationContext';
@@ -91,7 +93,7 @@ export default function ChatScreen({ route, navigation }: any) {
           onPress={() => navigation.navigate('ProductDetail', { product })}
           activeOpacity={0.85}
         >
-          <Image source={{ uri: product.images?.[0] ?? product.img }} style={styles.productThumb} />
+          <Image source={{ uri: variantUrl(product.images?.[0] ?? product.img, { width: 320 }) }} style={styles.productThumb} cachePolicy="memory-disk" transition={150} />
           <View style={styles.productMeta}>
             <Text style={styles.productTitle} numberOfLines={1}>{product.name}</Text>
             <Text style={styles.productPrice}>${formatPrice(product.price)}</Text>

@@ -16,11 +16,12 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Image,
   StyleSheet,
   Animated,
   Easing,
 } from 'react-native';
+import { Image } from 'expo-image';
+import { variantUrl, originalUrl } from '../utils/imageVariant';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -46,6 +47,7 @@ export default function DiscoverCard({ product, isOverlayOpen, onCardPress }: Pr
   const cartBtnRef = useRef<View>(null);
   const lastHapticAt = useRef(0);
   const [added, setAdded] = useState(false);
+  const [proxyFailed, setProxyFailed] = useState(false);
   const addedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Card press scale — matches ProductCard
@@ -120,7 +122,16 @@ export default function DiscoverCard({ product, isOverlayOpen, onCardPress }: Pr
         style={styles.imageWrap}
       >
         {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.image} resizeMode="cover" />
+          <Image
+            source={{ uri: proxyFailed ? originalUrl(imageUrl) : variantUrl(imageUrl, { width: 720 }) }}
+            style={styles.image}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={150}
+            placeholder={product.primaryImageBlurhash ? { blurhash: product.primaryImageBlurhash } : undefined}
+            placeholderContentFit="cover"
+            onError={() => { if (!proxyFailed) setProxyFailed(true); }}
+          />
         ) : (
           <View style={styles.emptyImage} />
         )}
