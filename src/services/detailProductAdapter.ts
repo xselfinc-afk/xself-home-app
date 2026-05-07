@@ -5,6 +5,7 @@ import { cleanTitle, toShortTitle, buildDescription, buildBulletPoints, removeSp
 import { collectImages } from './imageSelector';
 export { collectImages };
 import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
+import { sourceUrl } from '../utils/imageSource';
 
 // ── Debug counter (remove after Phase 3 verification) ────────────────────────
 let _debugCount = 0;
@@ -195,6 +196,9 @@ export type StandardizedRow = {
   primary_image_w?: number | null;
   primary_image_h?: number | null;
   primary_image_aspect?: number | null;
+  // Phase 3 image mirror
+  primary_image_mirror_path?: string | null;
+  primary_image_mirror_status?: string | null;
 };
 
 /**
@@ -206,7 +210,11 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
   const dedupedGallery = gallery.filter(
     (url): url is string => typeof url === 'string' && url.length > 0 && url !== r.primary_image,
   );
-  const images = r.primary_image ? [r.primary_image, ...dedupedGallery] : dedupedGallery;
+  // Resolve primary slot through the mirror gate. Gallery rows are unaffected
+  // (Phase 3 mirrors only the primary image). Original `r.primary_image` is
+  // never mutated in the DB — it is the upstream source-of-truth.
+  const resolvedPrimary = sourceUrl(r.primary_image, r.primary_image_mirror_path) ?? r.primary_image;
+  const images = resolvedPrimary ? [resolvedPrimary, ...dedupedGallery] : dedupedGallery;
   const media: MediaItem[] = images.map(url => ({ type: 'image' as const, url }));
 
   // specifications_json is { SKU: "...", Color: "...", ... } — convert to label/value array
@@ -283,6 +291,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     primaryImageW: r.primary_image_w ?? undefined,
     primaryImageH: r.primary_image_h ?? undefined,
     primaryImageAspect: r.primary_image_aspect != null ? Number(r.primary_image_aspect) : undefined,
+    primaryImageMirrorPath: r.primary_image_mirror_path ?? undefined,
   };
 
   // Enrich with structured category path and full tag set.

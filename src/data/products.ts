@@ -82,6 +82,8 @@ export interface Product {
   primaryImageH?: number;
   /** width / height of the primary image; populated by backfill */
   primaryImageAspect?: number;
+  /** Phase 3 — Supabase Storage path when the primary image has been mirrored */
+  primaryImageMirrorPath?: string;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
