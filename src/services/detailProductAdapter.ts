@@ -155,6 +155,31 @@ export function adaptSupplierRow(r: SupplierRow): Product {
 // ── Standardized product adapter ──────────────────────────────────────────────
 
 /**
+ * Column list for masonry/grid screens (Home, Discover, etc.).
+ *
+ * Excludes heavy detail-only JSON blobs (`gallery_images_json`,
+ * `key_features_json`), long text (`short_description`), and detail-only
+ * specs (`weight`, `dimensions`, `scene_code`, `has_multiple_colors`,
+ * `show_color_selector`, `color_options_json`). At ~172 rows this trims the
+ * payload by roughly 60–70 %.
+ *
+ * `specifications_json` is intentionally retained — `adaptStandardizedRow`
+ * derives `Product.category` from `specsJson['Category']` when available,
+ * which feeds Discover's level-1 category filter via `inferCategoryPath`.
+ *
+ * Product Detail re-fetches the full row via `loadProductFamily()` when
+ * tapped, so missing detail fields never surface to the user.
+ */
+export const LIST_SELECT =
+  'id, supplier_product_id, product_title, product_title_display, optimized_title, ' +
+  'specifications_json, sku_custom, sku_search, ' +
+  'category_code, color, material, ' +
+  'primary_image, primary_image_blurhash, primary_image_w, primary_image_h, primary_image_aspect, primary_image_mirror_path, ' +
+  'product_family_key, price, selling_price, original_price, normalization_status, created_at, ' +
+  'category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty';
+
+
+/**
  * Shape returned by Supabase when querying standardized_products.
  * Mirrors the columns defined in supabase/standardized_products.sql.
  */

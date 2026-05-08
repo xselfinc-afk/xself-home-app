@@ -79,18 +79,13 @@ export default function ProductCard({
   const handleImageLoad = (e: { source: { width: number; height: number } }) => {
     if (!flexibleRatio) return;
     const { width, height } = e.source;
-    if (width > 0 && height > 0) {
-      const ratio = width / height;
-      const url = product.images[0];
-      cacheRatio(url, ratio);
-      const newBucket = classifyRatio(ratio);
-      if (__DEV__) {
-        console.log(
-          `[ProductCard] ${product.id} ratio=${ratio.toFixed(2)} bucket=${newBucket} | ${product.name?.slice(0, 35)}`,
-        );
-      }
-      setBucket(newBucket);
-    }
+    if (width <= 0 || height <= 0) return;
+    const newBucket = classifyRatio(width / height);
+    // Avoid redundant setState when expo-image fires onLoad on cell recycle
+    // — this otherwise triggers an extra re-render per visible card on scroll.
+    if (newBucket === bucket) return;
+    cacheRatio(product.images[0], width / height);
+    setBucket(newBucket);
   };
 
   // Image display properties — dynamic only in flexible mode

@@ -22,7 +22,7 @@ import { PRODUCT_CATEGORIES, normalizeForSkuMatch, matchesSearch } from '../data
 import { supabase } from '../lib/supabase';
 import { fetchCaAvailableProductIds } from '../services/inventoryCacheService';
 import { CategoryPillRow } from '../components/CategoryPillRow';
-import { adaptStandardizedRow } from '../services/detailProductAdapter';
+import { adaptStandardizedRow, LIST_SELECT } from '../services/detailProductAdapter';
 import type { Product } from '../data/products';
 import DiscoverCard from '../components/DiscoverCard';
 import SearchPillBar from '../components/SearchPillBar';
@@ -43,7 +43,14 @@ const PRICE_RANGE_ORDER = ['Under $100', '$100 – $299', '$300 – $599', '$600
 export default function DiscoverScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  // Debounce: typing updates searchInput synchronously for visual feedback,
+  // and the heavy filter pass runs 150 ms later off the keystroke critical path.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   const [selectedLevel1, setSelectedLevel1] = useState('All');
 
   // Apply category filter when navigated from Home category circles
@@ -86,13 +93,7 @@ export default function DiscoverScreen({ navigation, route }: any) {
     async function loadProducts() {
       const { data, error } = await supabase
         .from('sellable_products')
-        .select(
-          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
-          'key_features_json, specifications_json, sku_custom, sku_search, ' +
-          'category_code, scene_code, color, color_options_json, ' +
-          'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, total_available_qty',
-        )
+        .select(LIST_SELECT)
         .order('created_at', { ascending: false });
 
       console.log('[Discover] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
@@ -222,67 +223,81 @@ export default function DiscoverScreen({ navigation, route }: any) {
     }
   };
 
-  let filtered = products.filter(p => {
-    if (!search) return true;
-    return matchesSearch(p, search);
-  });
-
-  if (selectedLevel1 !== 'All') {
-    filtered = filtered.filter(p => {
-      if (p.categoryPath?.level1) return p.categoryPath.level1 === selectedLevel1;
-      // Fallback for products without a structured categoryPath
-      return p.categoryLabel === selectedLevel1 || p.category === selectedLevel1;
+  const filtered = useMemo(() => {
+    let f = products.filter(p => {
+      if (!search) return true;
+      return matchesSearch(p, search);
     });
-  }
 
-  if (selectedPriceRanges.length > 0) {
-    filtered = filtered.filter(p =>
-      selectedPriceRanges.some(r => p.tags?.price_range?.includes(r)),
-    );
-  }
-  if (selectedMaterials.length > 0) {
-    filtered = filtered.filter(p =>
-      selectedMaterials.some(m => p.tags?.material?.includes(m)),
-    );
-  }
-  if (selectedColors.length > 0) {
-    filtered = filtered.filter(p =>
-      selectedColors.some(c => p.tags?.color?.includes(c)),
-    );
-  }
-  if (selectedStyles.length > 0) {
-    filtered = filtered.filter(p =>
-      selectedStyles.some(s => p.tags?.style?.includes(s)),
-    );
-  }
-
-  if (__DEV__) {
-    const qNorm = normalizeForSkuMatch(search);
-    console.log('[Search] raw query:', JSON.stringify(search));
-    console.log('[Search] normalized query:', JSON.stringify(qNorm));
-    console.log('[Search] sku partial match enabled:', qNorm.length >= 2);
-    console.log('[Search] result count:', filtered.length);
-    console.log('[Discover] render — products:', products.length, '| filtered:', filtered.length);
-  }
-
-  if (sortBy === 'Price: Low to High') {
-    filtered = [...filtered].sort((a, b) => a.price - b.price);
-  } else if (sortBy === 'Price: High to Low') {
-    filtered = [...filtered].sort((a, b) => b.price - a.price);
-  } else if (sortBy === 'Newest') {
-    filtered = [...filtered];
-  } else if (sortBy === 'Best Selling') {
-    filtered = [...filtered].sort((a, b) => b.sales - a.sales);
-  } else {
-    // Recommended: CA-pickup-available products first; ties keep existing order
-    if (caAvailableIds.size > 0) {
-      filtered = [...filtered].sort((a, b) => {
-        const aCA = caAvailableIds.has(a.id) ? 0 : 1;
-        const bCA = caAvailableIds.has(b.id) ? 0 : 1;
-        return aCA - bCA;
+    if (selectedLevel1 !== 'All') {
+      f = f.filter(p => {
+        if (p.categoryPath?.level1) return p.categoryPath.level1 === selectedLevel1;
+        // Fallback for products without a structured categoryPath
+        return p.categoryLabel === selectedLevel1 || p.category === selectedLevel1;
       });
     }
-  }
+
+    if (selectedPriceRanges.length > 0) {
+      f = f.filter(p =>
+        selectedPriceRanges.some(r => p.tags?.price_range?.includes(r)),
+      );
+    }
+    if (selectedMaterials.length > 0) {
+      f = f.filter(p =>
+        selectedMaterials.some(m => p.tags?.material?.includes(m)),
+      );
+    }
+    if (selectedColors.length > 0) {
+      f = f.filter(p =>
+        selectedColors.some(c => p.tags?.color?.includes(c)),
+      );
+    }
+    if (selectedStyles.length > 0) {
+      f = f.filter(p =>
+        selectedStyles.some(s => p.tags?.style?.includes(s)),
+      );
+    }
+
+    if (__DEV__) {
+      const qNorm = normalizeForSkuMatch(search);
+      console.log('[Search] raw query:', JSON.stringify(search));
+      console.log('[Search] normalized query:', JSON.stringify(qNorm));
+      console.log('[Search] sku partial match enabled:', qNorm.length >= 2);
+      console.log('[Search] result count:', f.length);
+      console.log('[Discover] filtered recomputed — products:', products.length, '| filtered:', f.length);
+    }
+
+    if (sortBy === 'Price: Low to High') {
+      f = [...f].sort((a, b) => a.price - b.price);
+    } else if (sortBy === 'Price: High to Low') {
+      f = [...f].sort((a, b) => b.price - a.price);
+    } else if (sortBy === 'Newest') {
+      f = [...f];
+    } else if (sortBy === 'Best Selling') {
+      f = [...f].sort((a, b) => b.sales - a.sales);
+    } else {
+      // Recommended: CA-pickup-available products first; ties keep existing order
+      if (caAvailableIds.size > 0) {
+        f = [...f].sort((a, b) => {
+          const aCA = caAvailableIds.has(a.id) ? 0 : 1;
+          const bCA = caAvailableIds.has(b.id) ? 0 : 1;
+          return aCA - bCA;
+        });
+      }
+    }
+
+    return f;
+  }, [
+    products,
+    search,
+    selectedLevel1,
+    selectedPriceRanges,
+    selectedMaterials,
+    selectedColors,
+    selectedStyles,
+    sortBy,
+    caAvailableIds,
+  ]);
 
   return (
     <View style={styles.container}>
@@ -308,8 +323,8 @@ export default function DiscoverScreen({ navigation, route }: any) {
           <TextInput
             style={styles.searchInput}
             placeholder='Try "Cabinet"...'
-            value={search}
-            onChangeText={setSearch}
+            value={searchInput}
+            onChangeText={setSearchInput}
             placeholderTextColor="#9CA3AF"
           />
         </SearchPillBar>

@@ -23,6 +23,7 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
 import { loadProductFamily } from './src/services/productFamilyService';
+import { LIST_SELECT } from './src/services/detailProductAdapter';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
 import { HeroBanner } from './src/components/HeroBanner';
 import { selectHeroImage } from './src/utils/heroImageSelector';
@@ -541,13 +542,7 @@ function HomeScreen({ navigation }) {
     async function loadProducts() {
       const { data, error } = await supabase
         .from('sellable_products')
-        .select(
-          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
-          'key_features_json, specifications_json, sku_custom, ' +
-          'category_code, scene_code, color, color_options_json, ' +
-          'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
-        )
+        .select(LIST_SELECT)
         .order('created_at', { ascending: false });
 
       console.log('[Home] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
@@ -818,6 +813,10 @@ function HomeScreen({ navigation }) {
         keyExtractor={(item) => item.id.toString()}
         numColumns={2}
         contentContainerStyle={styles.productsGrid}
+        removeClippedSubviews
+        windowSize={5}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
         onEndReached={() => setDisplayCount(c => Math.min(c + 20, rankedProducts.length))}
         onEndReachedThreshold={0.5}
         ListEmptyComponent={() => (
