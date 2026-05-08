@@ -22,6 +22,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { variantUrl, originalUrl } from '../utils/imageVariant';
+import { clampAspect } from '../utils/aspectClamp';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -112,6 +113,10 @@ export default function DiscoverCard({ product, isOverlayOpen, onCardPress }: Pr
 
   const price = product.price != null ? `$${Math.round(product.price)}` : '';
 
+  // Tile adapts per-image: clamp to a Pinterest-friendly range so 3-col
+  // masonry never goes too tall or too wide; cover then never crops.
+  const tileAspect = clampAspect(product.primaryImageAspect, 3 / 4, 1, 4 / 5);
+
   return (
     <Animated.View style={[styles.card, { transform: [{ scale: cardScale }] }]}>
       <TouchableOpacity
@@ -119,7 +124,7 @@ export default function DiscoverCard({ product, isOverlayOpen, onCardPress }: Pr
         onPress={onCardPress}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
-        style={styles.imageWrap}
+        style={[styles.imageWrap, { aspectRatio: tileAspect }]}
       >
         {imageUrl ? (
           <Image

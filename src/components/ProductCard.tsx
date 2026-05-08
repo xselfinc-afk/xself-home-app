@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing } from 'react-native';
 import { Image } from 'expo-image';
 import { variantUrl, originalUrl } from '../utils/imageVariant';
+import { clampAspect } from '../utils/aspectClamp';
 import {
   STANDARD_CARD_RATIO,
   RatioBucket,
@@ -88,9 +89,18 @@ export default function ProductCard({
     setBucket(newBucket);
   };
 
-  // Image display properties — dynamic only in flexible mode
-  const activeContainerRatio = flexibleRatio && bucket ? bucketContainerRatio(bucket) : STANDARD_CARD_RATIO;
-  const activeResizeMode = flexibleRatio && bucket ? bucketResizeMode(bucket) : 'cover';
+  // Container aspect: in flexibleRatio mode (Home main grid) the tile adapts
+  // to each image's intrinsic ratio so cover never crops the subject; clamp
+  // keeps very tall / very wide outliers from blowing up tile height. In
+  // carousel mode keep the fixed 4:5 frame for row alignment.
+  const flexibleAspect = clampAspect(
+    product.primaryImageAspect ?? (bucket ? bucketContainerRatio(bucket) : undefined),
+    2 / 3,
+    1,
+    STANDARD_CARD_RATIO,
+  );
+  const activeContainerRatio = flexibleRatio ? flexibleAspect : STANDARD_CARD_RATIO;
+  const activeResizeMode = 'cover' as const;
 
   const handlePressIn = () =>
     Animated.spring(cardScale, { toValue: 0.97, useNativeDriver: true, speed: 100, bounciness: 0 }).start();
@@ -171,7 +181,7 @@ export default function ProductCard({
               cachePolicy="memory-disk"
               transition={150}
               placeholder={product.primaryImageBlurhash ? { blurhash: product.primaryImageBlurhash } : undefined}
-              placeholderContentFit={activeResizeMode}
+              placeholderContentFit="cover"
               onError={() => {
                 if (!proxyFailed) setProxyFailed(true);
                 else setImgError(true);
