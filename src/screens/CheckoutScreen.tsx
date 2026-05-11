@@ -293,8 +293,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [addrCity, setAddrCity] = useState('');
   const [addrStateVal, setAddrStateVal] = useState('');
   const [addrZip, setAddrZip] = useState('');
+  // Validation is lenient at the gate (every required field non-empty) so the
+  // button never silently greys out when a reviewer or user types a short ZIP.
+  // Real ZIP / address validation runs server-side at submit (plan-fulfillment
+  // + Stripe geocode), which surfaces a specific error if the address fails.
   const addrFormValid = addrFirstName.trim() && addrLastName.trim() && addrPhone.trim() &&
-    addrLine1.trim() && addrCity.trim() && addrStateVal.trim() && addrZip.length === 5;
+    addrLine1.trim() && addrCity.trim() && addrStateVal.trim() && addrZip.trim();
 
   type PaymentMethod = 'apple_pay' | 'card' | 'affirm';
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
