@@ -26,6 +26,29 @@ const POLL_INTERVAL_MS = 8000;
 // Xself yellow — matches Product Detail Buy Now / Add to Cart (App.tsx:3125-3128).
 const XSELF_YELLOW = '#EAB320';
 
+// Outgoing user messages carry a UI-only delivery status. Server-fetched
+// messages from Crisp have status === undefined (no indicator rendered).
+type LocalSupportMessage = SupportMessage & {
+  status?: 'sending' | 'sent' | 'failed';
+};
+
+// Fixed brand avatar for every incoming Concierge message. Renders the
+// Xself app icon (symbol-only mark on its native teal field) clipped to a
+// circle with a thin Xself Gold ring.
+const CONCIERGE_MARK = require('../../assets/icon.png');
+function ConciergeAvatar() {
+  return (
+    <View style={styles.conciergeAvatar}>
+      <Image
+        source={CONCIERGE_MARK}
+        style={styles.conciergeAvatarLogo}
+        contentFit="cover"
+        cachePolicy="memory-disk"
+      />
+    </View>
+  );
+}
+
 export default function SupportScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -47,7 +70,7 @@ export default function SupportScreen({ navigation, route }: any) {
   const maxQty        = Math.max(1, variantStock);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<SupportMessage[]>([]);
+  const [messages, setMessages] = useState<LocalSupportMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [bootError, setBootError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -64,7 +87,7 @@ export default function SupportScreen({ navigation, route }: any) {
     setQty((q) => Math.max(1, Math.min(q, maxQty)));
   }, [maxQty]);
 
-  const listRef = useRef<FlatList<SupportMessage>>(null);
+  const listRef = useRef<FlatList<LocalSupportMessage>>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFingerprintRef = useRef<number>(0);
   const cancelledRef = useRef(false);
@@ -101,7 +124,7 @@ export default function SupportScreen({ navigation, route }: any) {
       const fresh = await getSupportMessages(sid);
       if (cancelledRef.current) return;
       setMessages((prev) => {
-        const map = new Map<number, SupportMessage>();
+        const map = new Map<number, LocalSupportMessage>();
         for (const m of prev) map.set(m.id, m);
         for (const m of fresh) map.set(m.id, m);
         const merged = Array.from(map.values()).sort((a, b) => a.id - b.id);
@@ -173,41 +196,66 @@ export default function SupportScreen({ navigation, route }: any) {
     return () => clearTimeout(id);
   }, [messages.length]);
 
-  // ── Send ──────────────────────────────────────────────────────────────────
+  // ── Send pipeline ────────────────────────────────────────────────────────
+  // Customer's bubble shows ONLY what they typed. Product context lives in
+  // Crisp meta (side panel only), never injected into the message body.
+  // The local-only `status` field drives the per-bubble delivery indicator.
+  const sendPipeline = useCallback(async (msg: LocalSupportMessage) => {
+    if (!sessionId) return;
+    try {
+      const fingerprint = await sendSupportMessage(sessionId, msg.content, {
+        nickname: user?.email ?? undefined,
+        email:    user?.email ?? undefined,
+      });
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === msg.id
+            ? { ...m, id: fingerprint ?? m.id, status: 'sent' }
+            : m,
+        ),
+      );
+      // Pull any operator replies; dedup-by-id collapses the now-fingerprinted
+      // optimistic bubble onto its server twin.
+      refresh(sessionId);
+    } catch (err) {
+      if (__DEV__) console.warn('[SupportScreen] send failed:', err instanceof Error ? err.message : err);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, status: 'failed' } : m)),
+      );
+    }
+  }, [sessionId, user?.email, refresh]);
+
   const onSend = async () => {
     const text = draft.trim();
     if (!text || !sessionId || sending) return;
     setSending(true);
     setSendError(null);
 
-    // Customer's bubble shows ONLY what they typed. Product context lives in
-    // Crisp meta (side panel only), never injected into the message body.
-    const contentToSend = text;
-
     const optimisticId = -Date.now();
-    const optimistic: SupportMessage = {
+    const optimistic: LocalSupportMessage = {
       id: optimisticId,
       from: 'user',
-      content: contentToSend,
+      content: text,
       ts: Math.floor(Date.now() / 1000),
       nickname: null,
+      status: 'sending',
     };
     setMessages((prev) => [...prev, optimistic]);
     setDraft('');
 
     try {
-      await sendSupportMessage(sessionId, contentToSend, {
-        nickname: user?.email ?? undefined,
-        email:    user?.email ?? undefined,
-      });
-      refresh(sessionId);
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Message could not be sent.');
-      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-      setDraft(text);
+      await sendPipeline(optimistic);
     } finally {
       setSending(false);
     }
+  };
+
+  const onRetry = async (msg: LocalSupportMessage) => {
+    if (!sessionId || msg.status !== 'failed') return;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, status: 'sending' } : m)),
+    );
+    await sendPipeline({ ...msg, status: 'sending' });
   };
 
   // ── Commerce actions ─────────────────────────────────────────────────────
@@ -246,17 +294,55 @@ export default function SupportScreen({ navigation, route }: any) {
     [booting, bootError, messages.length],
   );
 
-  const renderItem = ({ item }: { item: SupportMessage }) => {
+  const renderItem = ({ item, index }: { item: LocalSupportMessage; index: number }) => {
     const isUser = item.from === 'user';
+    const isFailed = item.status === 'failed';
+    const Wrapper: any = isFailed ? TouchableOpacity : View;
+    // Show the avatar only on the last operator message in a consecutive
+    // support-message group; earlier bubbles keep the same left-side spacer
+    // so message widths and alignment stay constant.
+    const next = messages[index + 1];
+    const showAvatar = !isUser && (!next || next.from === 'user');
     return (
       <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
-        <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAgent]}>
-          {!isUser && item.nickname ? (
-            <Text style={styles.bubbleAgentName}>{item.nickname}</Text>
+        {!isUser
+          ? (showAvatar ? <ConciergeAvatar /> : <View style={styles.conciergeSpacer} />)
+          : null}
+        <View style={[styles.bubbleColumn, isUser ? styles.bubbleColumnUser : styles.bubbleColumnAgent]}>
+          <Wrapper
+            activeOpacity={isFailed ? 0.7 : 1}
+            onPress={isFailed ? () => onRetry(item) : undefined}
+            accessibilityRole={isFailed ? 'button' : undefined}
+            accessibilityLabel={isFailed ? 'Tap to retry sending' : undefined}
+          >
+            <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAgent]}>
+              {!isUser ? (
+                <Text style={styles.bubbleAgentName}>Xself Concierge</Text>
+              ) : null}
+              <Text style={isUser ? styles.bubbleTextUser : styles.bubbleTextAgent}>
+                {item.content}
+              </Text>
+            </View>
+          </Wrapper>
+          {isUser && item.status ? (
+            <View style={styles.statusRow}>
+              {item.status === 'sending' && (
+                <>
+                  <Ionicons name="time-outline" size={11} color="#9CA3AF" />
+                  <Text style={styles.statusText}>Sending…</Text>
+                </>
+              )}
+              {item.status === 'sent' && (
+                <>
+                  <Ionicons name="checkmark" size={12} color="#9CA3AF" />
+                  <Text style={styles.statusText}>Sent</Text>
+                </>
+              )}
+              {item.status === 'failed' && (
+                <Text style={styles.statusFailed}>Failed. Tap to retry.</Text>
+              )}
+            </View>
           ) : null}
-          <Text style={isUser ? styles.bubbleTextUser : styles.bubbleTextAgent}>
-            {item.content}
-          </Text>
         </View>
       </View>
     );
@@ -629,15 +715,44 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 16, fontWeight: '600', color: '#1C1917' },
   emptyBody:  { fontSize: 12, color: '#6B7280', marginTop: 4, textAlign: 'center', lineHeight: 17 },
 
-  row: { marginVertical: 4, flexDirection: 'row' },
+  row: { marginVertical: 4, flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   rowLeft:  { justifyContent: 'flex-start' },
   rowRight: { justifyContent: 'flex-end' },
 
-  bubble: {
+  // Fixed Xself Concierge avatar — circle 36px, thin Xself Gold border, Xself
+  // app-icon symbol mark filling the circle (its native teal field is the
+  // visible interior; cream backgroundColor is intentionally omitted).
+  // Inner image is sized slightly larger than the circle so the symbol mark
+  // scales up and visible teal padding shrinks — the X never touches the ring.
+  conciergeAvatar: {
+    width: 36, height: 36, borderRadius: 18,
+    borderWidth: 1, borderColor: XSELF_YELLOW,
+    overflow: 'hidden',
+  },
+  conciergeAvatarLogo: { width: 39, height: 39, opacity: 0.93 },
+  // Same width as the avatar — keeps bubble alignment stable for earlier
+  // messages in a consecutive support-message group when the avatar is hidden.
+  conciergeSpacer: { width: 36 },
+
+  bubbleColumn: {
     maxWidth: '78%',
+  },
+  bubbleColumnUser: { alignItems: 'flex-end' },
+  bubbleColumnAgent: { alignItems: 'flex-start' },
+
+  bubble: {
     paddingHorizontal: 14, paddingVertical: 10,
     borderRadius: 18,
   },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 3,
+    marginRight: 2,
+  },
+  statusText:   { fontSize: 10, color: '#9CA3AF', fontWeight: '500' },
+  statusFailed: { fontSize: 10, color: '#DC2626', fontWeight: '500' },
   bubbleUser: {
     backgroundColor: '#E8E1D4',
     borderBottomRightRadius: 6,
