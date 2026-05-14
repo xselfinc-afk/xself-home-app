@@ -29,13 +29,18 @@ import { HeroBanner } from './src/components/HeroBanner';
 import { selectHeroImage } from './src/utils/heroImageSelector';
 import { loadHomeSectionTitles, HomeSectionTitles } from './src/services/homeContentService';
 import { CartProvider, useCart, CartItem } from './src/context/CartContext';
+import { defaultCartItem } from './src/utils/cartItem';
 import { CartAnimProvider, useCartAnimation } from './src/context/CartAnimationContext';
 import { RewardsProvider, useRewards, getReferralLink } from './src/context/RewardsContext';
 import { RecommendationProvider, useRecommendations, diversify } from './src/context/RecommendationContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { OrdersProvider } from './src/context/OrdersContext';
 import { ConversationProvider, useConversations } from './src/context/ConversationContext';
+import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
+import { readHomeCache, writeHomeCache } from './src/services/homeCache';
+import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
 import InboxScreen from './src/screens/InboxScreen';
+import SupportScreen from './src/screens/SupportScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProductConversationScreen from './src/screens/ProductConversationScreen';
 import { supabase, supabaseConfigured } from './src/lib/supabase';
@@ -525,6 +530,11 @@ function HomeScreen({ navigation }) {
     bestSellers: 'Loved By Our Customers',
     allProducts: 'Explore All Products',
   });
+  // Tracks the load lifecycle so the empty-state ("No products available
+  // yet") only renders after a *successful* fetch returned zero rows — never
+  // during initial loading and never when the network failed.
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [hasCache, setHasCache] = useState(false);
   const renderStartRef = useRef(Date.now());
   const heroSeenRef = useRef<{ productIds: string[]; categories: string[] }>({
     productIds: [],
@@ -534,25 +544,14 @@ function HomeScreen({ navigation }) {
   const { scoreProduct, trackClick } = useRecommendations();
 
   useEffect(() => {
-    loadHomeSectionTitles().then(setSectionTitles);
+    loadHomeSectionTitles().then(setSectionTitles).catch(() => {/* keep defaults */});
   }, []);
 
   useEffect(() => {
     let active = true;
-    async function loadProducts() {
-      const { data, error } = await supabase
-        .from('sellable_products')
-        .select(LIST_SELECT)
-        .order('created_at', { ascending: false });
 
-      console.log('[Home] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
-      if (error || !data || !active) return;
-      if (__DEV__ && data[0]) {
-        const r0 = data[0] as any;
-        console.log('[Home] first raw row titles:', { optimized_title: r0.optimized_title, product_title_display: r0.product_title_display, product_title: r0.product_title });
-      }
-
-      const mapped: Product[] = (data as any[]).flatMap((r: any) => {
+    function mapRows(rows: unknown[]): Product[] {
+      const mapped: Product[] = (rows as any[]).flatMap((r: any) => {
         try { return [adaptStandardizedRow(r)]; }
         catch (e) {
           if (__DEV__) console.warn('[Home] adaptStandardizedRow failed for row', (r as any)?.supplier_product_id, e);
@@ -561,7 +560,7 @@ function HomeScreen({ navigation }) {
       });
 
       const familySeen = new Map<string, { id: string; hasImage: boolean }>();
-      (data as any[]).forEach((r: any) => {
+      (rows as any[]).forEach((r: any) => {
         const key: string = r.product_family_key || r.supplier_product_id;
         const hasImage = !!r.primary_image;
         const existing = familySeen.get(key);
@@ -570,13 +569,69 @@ function HomeScreen({ navigation }) {
         }
       });
       const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      const deduped = mapped.filter(p => representativeIds.has(p.id));
+      return mapped.filter(p => representativeIds.has(p.id));
+    }
+
+    async function bootstrap() {
+      // 1. Cache-first paint — hydrates Home instantly on returning launches
+      //    so the user never sees the empty layout while Supabase loads.
+      try {
+        const cache = await readHomeCache();
+        if (!active) return;
+        if (cache && cache.rows.length > 0) {
+          const cached = mapRows(cache.rows);
+          if (cached.length > 0) {
+            setAllProducts(cached);
+            setHasCache(true);
+            setLoadState('ready');
+            markHomeReady();
+            console.log('[Home] hydrated from cache —', cached.length, 'products,', `${(Date.now() - cache.timestamp) / 1000 | 0}s old`);
+          }
+        }
+      } catch (err) {
+        if (__DEV__) console.warn('[Home] cache hydrate failed:', err instanceof Error ? err.message : err);
+      }
+
+      // 2. Always refresh from Supabase silently in the background.
+      const { data, error } = await supabase
+        .from('sellable_products')
+        .select(LIST_SELECT)
+        .order('created_at', { ascending: false });
+
+      if (!active) return;
+      console.log('[Home] query done — error:', error?.message ?? null, '| rows:', data?.length ?? 0);
+
+      if (error || !data) {
+        // Cache exists → keep showing it. No cache → expose error state so
+        // the polished retry UI renders (instead of the raw empty layout).
+        if (allProducts.length === 0) {
+          setLoadState('error');
+        }
+        markHomeReady();
+        return;
+      }
+
+      if (__DEV__ && data[0]) {
+        const r0 = data[0] as any;
+        console.log('[Home] first raw row titles:', { optimized_title: r0.optimized_title, product_title_display: r0.product_title_display, product_title: r0.product_title });
+      }
+
+      const deduped = mapRows(data);
       console.log('[Home] total mapped products:', deduped.length);
       if (__DEV__ && deduped[0]) console.log('[Home] first mapped product name:', deduped[0].name);
-      if (active) setAllProducts(deduped);
+
+      if (active) {
+        setAllProducts(deduped);
+        setLoadState('ready');
+        markHomeReady();
+        // Persist for next launch only on success.
+        writeHomeCache(data as unknown[]).catch(() => {/* non-fatal */});
+      }
     }
-    loadProducts();
+
+    bootstrap();
     return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const withImages = useMemo(
@@ -819,11 +874,36 @@ function HomeScreen({ navigation }) {
         maxToRenderPerBatch={6}
         onEndReached={() => setDisplayCount(c => Math.min(c + 20, rankedProducts.length))}
         onEndReachedThreshold={0.5}
-        ListEmptyComponent={() => (
-          <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-            <Text style={{ fontSize: 14, color: '#9CA3AF' }}>No products available yet</Text>
-          </View>
-        )}
+        ListEmptyComponent={() => {
+          // Loading — show nothing (splash is still covering us).
+          if (loadState === 'loading') return null;
+          // Network/server error with no cache → polished retry state.
+          if (loadState === 'error' && !hasCache) {
+            return (
+              <View style={{ alignItems: 'center', paddingVertical: 60, paddingHorizontal: 28 }}>
+                <Ionicons name="cloud-offline-outline" size={28} color="#9CA3AF" />
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#1C1917', marginTop: 10 }}>
+                  We couldn't load products
+                </Text>
+                <Text style={{ fontSize: 12, color: '#6B7280', marginTop: 4, textAlign: 'center', lineHeight: 17 }}>
+                  Check your connection and try again.
+                </Text>
+                <TouchableOpacity
+                  style={{ marginTop: 16, backgroundColor: '#CA8A04', paddingVertical: 10, paddingHorizontal: 22, borderRadius: 22 }}
+                  onPress={() => { setLoadState('loading'); setAllProducts((p) => p); /* trigger refetch via remount */ navigation.replace?.('Main'); }}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>Try again</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          }
+          // Ready + truly zero rows from the server.
+          return (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <Text style={{ fontSize: 14, color: '#9CA3AF' }}>No products available yet</Text>
+            </View>
+          );
+        }}
         ListFooterComponent={() => (
           <>
             {/* Shop by Category — bottom discovery module */}
@@ -878,29 +958,8 @@ function HomeScreen({ navigation }) {
 }
 
 
-function defaultCartItem(product: any): Omit<CartItem, 'qty'> {
-  const firstVariant = product.variants?.find((v: ProductVariant) => v.enabled && v.stock > 0);
-  if (firstVariant) {
-    return {
-      sku: firstVariant.sku,
-      productId: product.id,
-      name: product.name,
-      price: firstVariant.price,
-      img: firstVariant.images[0] ?? product.images[0],
-      color: firstVariant.color,
-      size: firstVariant.size,
-    };
-  }
-  return {
-    sku: `product-${product.id}`,
-    productId: product.id,
-    name: product.name,
-    price: product.price,
-    img: product.images[0],
-    color: '',
-    size: '',
-  };
-}
+// defaultCartItem moved to src/utils/cartItem.ts (imported above) to avoid
+// the SupportScreen ↔ App.tsx circular import.
 
 function VariantPicker({
   title,
@@ -1691,15 +1750,14 @@ function ProductDetailScreen({ route, navigation }) {
             Animated.spring(msgFabScale, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 5 }).start()
           }
           onPress={() => {
-            if (!user) { navigation.navigate('SignInEntry'); return; }
-            navigation.navigate('ProductConversation', {
-              productId: product.id,
-              productFamilyKey: product.product_family_key,
-              productName: product.name,
-              price: displayPrice,
-              primaryImage: product.images[0] ?? '',
-              selectedColor,
-              sku: selectedVariant?.sku ?? product.variants?.[0]?.sku ?? '',
+            // Forwards full product + chosen variant + qty so SupportScreen
+            // can render the same commerce surface (image, SKU, price,
+            // availability) and reuse the existing Buy Now / Add to Cart
+            // flow without duplicating logic.
+            navigation.navigate('Support', {
+              product,
+              selectedVariant: selectedVariant ?? null,
+              qty,
             });
           }}
         >
@@ -2342,8 +2400,11 @@ function AccountScreen({ navigation }) {
   };
 
   const accountItems = [
-    { icon: 'chatbubble-outline', title: 'Messages', route: 'Inbox', requiresAuth: true },
+    // 'Messages' (Inbox → ConversationContext) hidden in Phase 1 of the
+    // chat-entry-points consolidation. Route still registered in AccountStack
+    // for safety; reachable only by direct code navigation.
     { icon: 'cube-outline', title: 'Orders & Purchases', route: 'Orders', requiresAuth: true },
+    { icon: 'help-buoy-outline', title: 'Contact Support', subtitle: 'Chat with Xself Concierge', route: 'Support' },
     { icon: 'share-social-outline', title: 'Start Sharing', subtitle: 'Earn $5–$20 per referral', route: 'Earn', requiresAuth: true, secondary: true },
   ];
 
@@ -2644,6 +2705,7 @@ function AccountTabStack() {
       <AccountStack.Screen name="Membership" component={MembershipScreen} />
       <AccountStack.Screen name="Earn" component={EarnScreen} />
       <AccountStack.Screen name="Inbox" component={InboxScreen} />
+      <AccountStack.Screen name="Support" component={SupportScreen} />
       <AccountStack.Screen name="SignInEntry" component={SignInEntryScreen} />
     </AccountStack.Navigator>
   );
@@ -2672,7 +2734,7 @@ function CustomTabBar({ state, navigation }: any) {
     { name: 'Account', icon: 'person-outline' },
   ] as const;
 
-  if (['Checkout', 'OrderSuccess', 'ProductDetail', 'Collection', 'Chat'].includes(rootRouteName ?? '')) return null;
+  if (['Checkout', 'OrderSuccess', 'ProductDetail', 'Collection', 'Chat', 'Support'].includes(rootRouteName ?? '')) return null;
 
   return (
     <View style={[styles.floatTabBar, { bottom: insets.bottom + 8 }]}>
@@ -2745,18 +2807,62 @@ export default function App() {
   const [showSplash, setShowSplash] = useState(true);
   const splashOpacity = useRef(new Animated.Value(0)).current;
 
+  // Initialise Crisp Chat once at app start. Safe to call on every mount —
+  // configure() is idempotent inside the native SDK.
   useEffect(() => {
-    const run = async () => {
+    const crispId = process.env.EXPO_PUBLIC_CRISP_WEBSITE_ID;
+    if (crispId) {
+      try {
+        CrispChatSDK.configure(crispId);
+      } catch (err) {
+        console.warn('[Crisp] configure failed:', err instanceof Error ? err.message : err);
+      }
+    } else {
+      console.warn('[Crisp] EXPO_PUBLIC_CRISP_WEBSITE_ID not set — chat disabled');
+    }
+  }, []);
+
+  useEffect(() => {
+    // Gate the splash-hide on HomeScreen having paintable data (cache or
+    // fresh Supabase payload). Caps the wait at MAX_SPLASH_MS so a fully
+    // offline + uncached cold start still reaches the polished retry state.
+    const MAX_SPLASH_MS = 3000;
+    let cancelled = false;
+
+    const proceed = async () => {
+      if (cancelled) return;
       await SplashScreen.hideAsync();
-      // Fade in the React splash overlay
       Animated.timing(splashOpacity, { toValue: 1, duration: 350, useNativeDriver: true }).start();
-      // After brief hold, fade out and unmount
       setTimeout(() => {
         Animated.timing(splashOpacity, { toValue: 0, duration: 400, useNativeDriver: true })
           .start(() => setShowSplash(false));
       }, 900);
     };
-    run();
+
+    if (isHomeReady()) {
+      proceed();
+      return () => { cancelled = true; };
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (cancelled) return;
+      console.warn('[boot] Home data did not arrive within ' + MAX_SPLASH_MS + 'ms — releasing splash anyway');
+      markHomeReady(); // unblock anything else waiting on the gate
+      proceed();
+      timeout = null;
+    }, MAX_SPLASH_MS);
+
+    const unsubscribe = onHomeReady(() => {
+      if (cancelled) return;
+      if (timeout) { clearTimeout(timeout); timeout = null; }
+      proceed();
+    });
+
+    return () => {
+      cancelled = true;
+      if (timeout) clearTimeout(timeout);
+      unsubscribe();
+    };
   }, []);
 
   return (
@@ -2783,6 +2889,7 @@ export default function App() {
           <Stack.Screen name="OrderSuccess" component={OrderSuccessScreen} />
           <Stack.Screen name="Chat" component={ChatScreen} />
           <Stack.Screen name="ProductConversation" component={ProductConversationScreen} />
+          <Stack.Screen name="Support" component={SupportScreen} />
         </Stack.Navigator>
       </NavigationContainer>
       </ConversationProvider>
