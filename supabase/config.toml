@@ -423,3 +423,14 @@ verify_jwt = false
 # Phase 8: server-authoritative checkout — creates order + reservations + Stripe PI in one call
 [functions.create-checkout-order]
 verify_jwt = false
+
+# Phase A: agent-only entry point for special-offer quotes. X-Agent-Token
+# (AGENT_ADMIN_TOKEN secret) is the auth boundary; platform JWT off because
+# agents are not Supabase auth users.
+[functions.agent-create-quote]
+verify_jwt = false
+
+# Phase A: customer-facing active-quote lookup. The function handler verifies
+# the user's Bearer JWT explicitly via supabase.auth.getUser before reading.
+[functions.get-active-quote]
+verify_jwt = false

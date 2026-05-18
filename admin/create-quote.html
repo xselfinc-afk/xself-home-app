@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xself Concierge — Create Special Offer</title>
+<style>
+  :root {
+    --canvas:   #F3F1EB;
+    --surface:  #FFFFFF;
+    --ink:      #1C1917;
+    --muted:    #6B7280;
+    --hairline: rgba(0, 0, 0, 0.08);
+    --gold:     #EAB320;
+    --danger:   #DC2626;
+    --success:  #059669;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    padding: 36px 16px 80px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--canvas);
+  }
+  .container { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.3px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    margin: 0 0 14px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 14px 0 6px;
+  }
+  label:first-child { margin-top: 0; }
+  input[type="text"], input[type="email"], input[type="number"], input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    font-size: 14px;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(234,179,32,0.18); }
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; min-width: 0; }
+  .helper { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  button.primary {
+    width: 100%;
+    padding: 14px 16px;
+    background: var(--gold);
+    color: #FFFFFF;
+    border: 0;
+    border-radius: 12px;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary:hover:not(:disabled) { opacity: 0.92; }
+  button.secondary {
+    width: 100%;
+    padding: 10px 14px;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    margin-top: 10px;
+  }
+  button.secondary:hover { background: rgba(0,0,0,0.03); }
+
+  /* Setup section uses <details> for collapsibility */
+  details summary {
+    cursor: pointer;
+    padding: 12px 0;
+    font-weight: 700;
+    color: var(--muted);
+    font-size: 12px;
+    list-style: none;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: '⚙ '; }
+  details[open] summary::before { content: '⌄ '; }
+
+  /* Search results */
+  .search-results {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    max-height: 280px;
+    overflow-y: auto;
+    margin-top: 8px;
+  }
+  .search-results[hidden] { display: none; }
+  .search-result {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .search-result:last-child { border-bottom: 0; }
+  .search-result:hover { background: rgba(234,179,32,0.06); }
+  .search-result-title { font-size: 13px; font-weight: 600; }
+  .search-result-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* Status panels */
+  .alert {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .alert[hidden] { display: none; }
+  .alert-error { background: #FEE2E2; color: var(--danger); }
+  .alert-success { background: #ECFDF5; color: var(--ink); border: 1px solid rgba(5,150,105,0.2); }
+  .alert-success h3 { margin: 0 0 8px; font-size: 14px; color: var(--success); }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 12px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  code { font-family: ui-monospace, "SF Mono", Consolas, monospace; background: var(--canvas); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .footnote { margin-top: 12px; font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Xself Concierge — Create Special Offer</h1>
+  <p class="sub">Internal agent tool. Quotes are server-validated: never below $50 and never less than 50% of list price.</p>
+
+  <details id="setupDetails">
+    <summary>Setup (one-time per browser)</summary>
+    <div class="card" style="margin-top: 4px;">
+      <label for="supabaseUrl">Supabase Project URL</label>
+      <input id="supabaseUrl" type="text" placeholder="https://&lt;project&gt;.supabase.co" autocomplete="off" />
+      <div class="helper">Supabase dashboard → Settings → API.</div>
+
+      <label for="anonKey">Publishable / Anon API Key</label>
+      <input id="anonKey" type="text" placeholder="sb_publishable_..." autocomplete="off" />
+      <div class="helper">Used only for product search (read-only).</div>
+
+      <label for="agentToken">Agent Admin Token</label>
+      <input id="agentToken" type="password" placeholder="AGENT_ADMIN_TOKEN" autocomplete="off" />
+      <div class="helper">Shared secret. Saved to <code>localStorage</code> on this browser only.</div>
+
+      <label for="agentName">Your Agent Name</label>
+      <input id="agentName" type="text" placeholder="e.g. Helen" autocomplete="off" />
+      <div class="helper">Stored alongside the quote in <code>support_quotes.created_by_agent</code> for audit.</div>
+
+      <button class="secondary" type="button" id="saveSetupBtn">Save setup</button>
+    </div>
+  </details>
+
+  <div class="card">
+    <p class="eyebrow">Product</p>
+    <label for="productSearch">Search by SKU or product title</label>
+    <input id="productSearch" type="text" placeholder="e.g. modern oak tv stand, XH-TVS-..." autocomplete="off" />
+    <div id="searchResults" class="search-results" hidden></div>
+
+    <div class="row" style="margin-top: 12px;">
+      <div>
+        <label for="productId">Product ID</label>
+        <input id="productId" type="text" placeholder="supplier_product_id" autocomplete="off" />
+      </div>
+      <div>
+        <label for="supplierSku">SKU</label>
+        <input id="supplierSku" type="text" placeholder="XH-..." autocomplete="off" />
+      </div>
+    </div>
+    <div id="productPriceLine" class="helper"></div>
+  </div>
+
+  <div class="card">
+    <p class="eyebrow">Customer</p>
+    <label for="customerEmail">Customer Email</label>
+    <input id="customerEmail" type="email" placeholder="customer@example.com" autocomplete="off" />
+    <div class="helper">Must match the email the customer is signed in with in the app.</div>
+  </div>
+
+  <div class="card">
+    <p class="eyebrow">Offer</p>
+    <div class="row">
+      <div>
+        <label for="quotedPrice">Quoted Price ($)</label>
+        <input id="quotedPrice" type="number" min="50" step="0.01" placeholder="199.00" />
+        <div class="helper">Dollars. $50 floor, 50% list maximum discount.</div>
+      </div>
+      <div>
+        <label for="expiresHours">Expires in (hours)</label>
+        <input id="expiresHours" type="number" min="1" max="720" value="168" />
+        <div class="helper">Default 168 (7 days). Maximum 720 (30 days).</div>
+      </div>
+    </div>
+
+    <label for="crispSessionId">Crisp Session ID <span style="color: var(--muted); font-weight: 500;">(optional)</span></label>
+    <input id="crispSessionId" type="text" placeholder="session_..." autocomplete="off" />
+    <div class="helper">If supplied, customer receives a system message in chat. The redeem token is never included in that message.</div>
+  </div>
+
+  <button class="primary" type="button" id="submitBtn">Create Special Offer</button>
+
+  <div id="errorBox"   class="alert alert-error"   hidden></div>
+  <div id="successBox" class="alert alert-success" hidden></div>
+
+  <p class="footnote">Once created, the customer will see the offer the next time they open Concierge for this product on a signed-in account that matches the email above. The redeem token stays on the server.</p>
+</div>
+
+<script>
+(() => {
+  // ── Storage (browser-local only) ────────────────────────────────────────
+  const STORAGE_KEY = 'xself_admin_special_offer_v1';
+  function loadSetup() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch { return {}; }
+  }
+  function saveSetup(v) { localStorage.setItem(STORAGE_KEY, JSON.stringify(v)); }
+
+  const SETUP_FIELDS = ['supabaseUrl', 'anonKey', 'agentToken', 'agentName'];
+  const $ = (id) => document.getElementById(id);
+
+  // ── Hydrate setup from localStorage ─────────────────────────────────────
+  (function hydrate() {
+    const setup = loadSetup();
+    let missingAny = false;
+    SETUP_FIELDS.forEach(k => {
+      if ($(k) && setup[k]) $(k).value = setup[k];
+      if (!setup[k]) missingAny = true;
+    });
+    if (missingAny) $('setupDetails').setAttribute('open', '');
+  })();
+
+  $('saveSetupBtn').addEventListener('click', () => {
+    const setup = {};
+    SETUP_FIELDS.forEach(k => { setup[k] = ($(k).value || '').trim(); });
+    saveSetup(setup);
+    $('saveSetupBtn').textContent = 'Saved ✓';
+    setTimeout(() => { $('saveSetupBtn').textContent = 'Save setup'; }, 1200);
+  });
+
+  // ── Product search (debounced) ──────────────────────────────────────────
+  let searchTimer = null;
+  const searchInput = $('productSearch');
+  const resultsBox  = $('searchResults');
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (q.length < 2) { resultsBox.hidden = true; resultsBox.innerHTML = ''; return; }
+    searchTimer = setTimeout(() => runSearch(q), 300);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!resultsBox.contains(e.target) && e.target !== searchInput) {
+      resultsBox.hidden = true;
+    }
+  });
+
+  async function runSearch(query) {
+    const { supabaseUrl, anonKey } = loadSetup();
+    if (!supabaseUrl || !anonKey) {
+      resultsBox.hidden = false;
+      resultsBox.innerHTML = '<div class="search-result">Open Setup and fill in Supabase URL + Publishable Key first.</div>';
+      return;
+    }
+    const escaped = encodeURIComponent(`*${query}*`);
+    const url = `${supabaseUrl}/rest/v1/sellable_products?` +
+      `or=(product_title.ilike.${escaped},sku_custom.ilike.${escaped})` +
+      `&select=supplier_product_id,sku_custom,product_title,selling_price,price` +
+      `&limit=10`;
+    try {
+      const res = await fetch(url, {
+        headers: { 'apikey': anonKey, 'Authorization': `Bearer ${anonKey}` },
+      });
+      const rows = await res.json();
+      if (!Array.isArray(rows)) {
+        resultsBox.hidden = false;
+        resultsBox.innerHTML = `<div class="search-result">Search failed: ${escapeHtml(rows.message || JSON.stringify(rows).slice(0, 200))}</div>`;
+        return;
+      }
+      if (rows.length === 0) {
+        resultsBox.hidden = false;
+        resultsBox.innerHTML = '<div class="search-result">No products found.</div>';
+        return;
+      }
+      resultsBox.innerHTML = rows.map(r => {
+        const price = r.selling_price ?? r.price ?? 0;
+        return `<div class="search-result"
+                     data-id="${escapeAttr(r.supplier_product_id ?? '')}"
+                     data-sku="${escapeAttr(r.sku_custom ?? '')}"
+                     data-price="${Number(price) || 0}">
+          <div class="search-result-title">${escapeHtml(r.product_title || '(no title)')}</div>
+          <div class="search-result-meta">${escapeHtml(r.sku_custom || '—')} · $${Number(price || 0).toFixed(2)} · ID ${escapeHtml(r.supplier_product_id || '—')}</div>
+        </div>`;
+      }).join('');
+      resultsBox.hidden = false;
+      resultsBox.querySelectorAll('.search-result').forEach(el => {
+        el.addEventListener('click', () => {
+          $('productId').value = el.dataset.id || '';
+          $('supplierSku').value = el.dataset.sku || '';
+          const p = parseFloat(el.dataset.price || '0');
+          $('productPriceLine').textContent = p > 0
+            ? `Listed at $${p.toFixed(2)} — minimum allowed quote $${Math.max(50, Math.ceil(p * 50) / 100).toFixed(2)}`
+            : '';
+          resultsBox.hidden = true;
+          searchInput.value = el.querySelector('.search-result-title').textContent;
+        });
+      });
+    } catch (err) {
+      resultsBox.hidden = false;
+      resultsBox.innerHTML = `<div class="search-result">Search error: ${escapeHtml(err.message || String(err))}</div>`;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
+
+  // ── Submit ──────────────────────────────────────────────────────────────
+  const submitBtn  = $('submitBtn');
+  const errorBox   = $('errorBox');
+  const successBox = $('successBox');
+
+  submitBtn.addEventListener('click', async () => {
+    errorBox.hidden = true;
+    successBox.hidden = true;
+    successBox.innerHTML = '';
+
+    const setup = loadSetup();
+    if (!setup.supabaseUrl || !setup.agentToken || !setup.agentName) {
+      return showError('Open Setup and fill in Supabase URL, Agent Admin Token, and Agent Name.');
+    }
+
+    const productId          = $('productId').value.trim();
+    const supplierSku        = $('supplierSku').value.trim();
+    const customerEmail      = $('customerEmail').value.trim();
+    const quotedPriceDollars = parseFloat($('quotedPrice').value);
+    const expiresHours       = parseInt($('expiresHours').value, 10);
+    const crispSessionId     = $('crispSessionId').value.trim();
+
+    if (!productId || !supplierSku || !customerEmail || !quotedPriceDollars || !expiresHours) {
+      return showError('All fields are required (except Crisp Session ID).');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      return showError('Customer email looks invalid.');
+    }
+    if (quotedPriceDollars < 50) {
+      return showError('Quoted price must be at least $50.');
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
+    const body = {
+      product_id:         productId,
+      supplier_sku:       supplierSku,
+      customer_email:     customerEmail,
+      quoted_price_cents: Math.round(quotedPriceDollars * 100),
+      agent_name:         setup.agentName,
+      expires_in_hours:   expiresHours,
+    };
+    if (crispSessionId) body.crisp_session_id = crispSessionId;
+
+    try {
+      const res = await fetch(`${setup.supabaseUrl}/functions/v1/agent-create-quote`, {
+        method: 'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'X-Agent-Token': setup.agentToken,
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        let msg = data.error || res.statusText || `HTTP ${res.status}`;
+        if (data.original_price_cents != null) {
+          msg += ` (list price $${(data.original_price_cents / 100).toFixed(2)})`;
+        }
+        if (data.minimum_allowed_cents != null) {
+          msg += ` — minimum allowed $${(data.minimum_allowed_cents / 100).toFixed(2)}`;
+        }
+        return showError(msg);
+      }
+
+      // Success summary. The redeem_token IS in the response but we
+      // intentionally do not render it here — defense-in-depth so that
+      // screen-shares or shoulder-surfing can't surface the token.
+      const expires    = new Date(data.expires_at).toLocaleString();
+      const listPrice  = `$${(data.original_price_cents / 100).toFixed(2)}`;
+      const quoted     = `$${quotedPriceDollars.toFixed(2)}`;
+      successBox.innerHTML = `
+        <h3>Special offer created ✓</h3>
+        <dl class="kv">
+          <dt>Quote ID</dt>     <dd><code>${escapeHtml(data.id)}</code></dd>
+          <dt>Quoted price</dt> <dd>${quoted} <span style="color: var(--muted);">(list ${listPrice})</span></dd>
+          <dt>Customer</dt>     <dd>${escapeHtml(customerEmail)}</dd>
+          <dt>Status</dt>       <dd>${escapeHtml(data.status)}</dd>
+          <dt>Expires</dt>      <dd>${escapeHtml(expires)}</dd>
+        </dl>
+        <p style="margin-top: 10px; font-size: 12px; color: var(--muted);">
+          The customer will see the offer the next time they open Concierge for this product.${
+            crispSessionId ? ' A system message has been posted to their Crisp conversation.' : ''
+          }
+        </p>
+      `;
+      successBox.hidden = false;
+
+      // Reset the price field for the next quote; keep everything else
+      // so the agent can spin a follow-up offer quickly.
+      $('quotedPrice').value = '';
+    } catch (err) {
+      showError(`Network error: ${err.message || String(err)}`);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Create Special Offer';
+    }
+  });
+
+  function showError(text) {
+    errorBox.textContent = text;
+    errorBox.hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

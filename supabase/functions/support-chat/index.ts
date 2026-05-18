@@ -280,6 +280,143 @@ async function setMeta(body: SetMetaBody): Promise<Response> {
   return jsonResponse({ ok: true });
 }
 
+// ── send_product_context ────────────────────────────────────────────────────
+// Posts a human-readable product summary into the Crisp conversation timeline
+// as an operator-side **private note** (stealth=true). Visible to agents in
+// their Crisp dashboard; not surfaced in the customer-facing chat. Used by
+// SupportScreen to tell the agent which product the customer is asking about,
+// without cluttering the customer's own chat thread.
+
+interface SendProductContextBody {
+  session_id: string;
+  content: string;
+  image_url?: string;
+  image_name?: string;
+  // Fields used to build a fully-resolved agent-only Create Special Offer
+  // Quicklink URL. We resolve server-side because Crisp Message Shortcut
+  // macros (`{{customer.email}}`, `{{conversation.data.product_id}}`, …) do
+  // not reliably substitute on the agent's mobile Crisp app and on free
+  // plans, leaving the admin tool to show "Product not detected".
+  customer_email?: string;
+  product_id?:     string;
+  sku?:            string;
+  title?:          string;
+}
+
+// Hosted mobile admin tool. The URL must match the Netlify production site.
+const ADMIN_QUOTE_URL = 'https://gorgeous-mermaid-80b26a.netlify.app/mobile-create-quote.html';
+
+function buildAdminQuoteUrl(p: {
+  session_id: string;
+  customer_email?: string;
+  product_id?: string;
+  sku?: string;
+  title?: string;
+}): string {
+  const params: string[] = [];
+  if (p.customer_email) params.push(`email=${encodeURIComponent(p.customer_email)}`);
+  if (p.session_id)     params.push(`conversation_id=${encodeURIComponent(p.session_id)}`);
+  if (p.product_id)     params.push(`product_id=${encodeURIComponent(p.product_id)}`);
+  if (p.sku)            params.push(`sku=${encodeURIComponent(p.sku)}`);
+  if (p.title)          params.push(`title=${encodeURIComponent(p.title)}`);
+  return params.length ? `${ADMIN_QUOTE_URL}?${params.join('&')}` : ADMIN_QUOTE_URL;
+}
+
+async function sendProductContext(body: SendProductContextBody): Promise<Response> {
+  if (!body.session_id || !body.content) {
+    return jsonResponse({ error: 'session_id and content are required' }, 400);
+  }
+  if (body.content.length > 4000) {
+    return jsonResponse({ error: 'Content exceeds 4000 characters' }, 400);
+  }
+
+  // 1. Optional image — sent as a Crisp file message so the agent sees an
+  //    inline product photo at the top of the context. Image failure is
+  //    NON-FATAL: we still proceed to post the text note even if Crisp
+  //    rejects the image (e.g. URL not reachable, oversized, etc.).
+  let imageError: { status: number; raw: string } | null = null;
+  if (body.image_url && /^https?:\/\//i.test(body.image_url)) {
+    const { status: imgStatus, raw: imgRaw } = await crispFetch(
+      `/website/${WEBSITE_ID}/conversation/${body.session_id}/message`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          type:    'file',
+          from:    'operator',
+          origin:  'chat',
+          stealth: true,
+          content: {
+            name: (body.image_name && body.image_name.slice(0, 80)) || 'product.jpg',
+            type: 'image/jpeg',
+            url:  body.image_url,
+          },
+        }),
+      },
+    );
+    if (imgStatus >= 400) {
+      imageError = { status: imgStatus, raw: imgRaw };
+      console.warn('[support-chat] send_product_context: image post failed:', imgStatus, imgRaw.slice(0, 240));
+    }
+  }
+
+  // 2. Text note — always sent. Carries the human-readable product details.
+  const { status, raw } = await crispFetch(
+    `/website/${WEBSITE_ID}/conversation/${body.session_id}/message`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        type:    'text',
+        from:    'operator',
+        origin:  'chat',
+        stealth: true,
+        content: body.content,
+      }),
+    },
+  );
+  if (status >= 400) {
+    console.error('[support-chat] send_product_context: text post failed:', status, raw.slice(0, 240));
+    return jsonResponse(crispErrorBody('send_product_context', status, raw), 502);
+  }
+
+  // 3. Agent-only "Create Special Offer" link — fully-resolved Quicklink URL
+  //    so the agent doesn't depend on fragile Crisp macros for substitution.
+  //    Non-fatal: if Crisp rejects the third post (rare), the image + text
+  //    notes still landed.
+  let offerLinkError: { status: number; raw: string } | null = null;
+  if (body.customer_email || body.product_id || body.sku) {
+    const offerUrl = buildAdminQuoteUrl({
+      session_id:     body.session_id,
+      customer_email: body.customer_email,
+      product_id:     body.product_id,
+      sku:            body.sku,
+      title:          body.title,
+    });
+    const { status: linkStatus, raw: linkRaw } = await crispFetch(
+      `/website/${WEBSITE_ID}/conversation/${body.session_id}/message`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          type:    'text',
+          from:    'operator',
+          origin:  'chat',
+          stealth: true,
+          content: `[Create Special Offer](${offerUrl})`,
+        }),
+      },
+    );
+    if (linkStatus >= 400) {
+      offerLinkError = { status: linkStatus, raw: linkRaw };
+      console.warn('[support-chat] send_product_context: offer link post failed:', linkStatus, linkRaw.slice(0, 240));
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    image_failed:      !!imageError,
+    offer_link_failed: !!offerLinkError,
+  });
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 serve(async (req: Request) => {
@@ -307,6 +444,8 @@ serve(async (req: Request) => {
         return await getMessages(body as unknown as GetMessagesBody);
       case 'set_meta':
         return await setMeta(body as unknown as SetMetaBody);
+      case 'send_product_context':
+        return await sendProductContext(body as unknown as SendProductContextBody);
       default:
         return jsonResponse({ error: `Unknown action: ${body.action}` }, 400);
     }

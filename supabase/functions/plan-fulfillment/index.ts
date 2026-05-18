@@ -226,7 +226,13 @@ serve(async (req: Request) => {
     }
 
     if (!inventoryRows || inventoryRows.length === 0) {
-      return invalidResponse('no_inventory', 'No fresh scraped inventory for these products');
+      // No fresh per-warehouse scraped data at all. Refusing the order here is
+      // the safe choice — a stale/missing inventory snapshot must NEVER be
+      // smoothed over by an aggregate-only fallback, because warehouse
+      // assignment then has nothing real to bind the reservation to (the bug
+      // that caused CAX1 to be picked for a product with stock only in CA8 /
+      // AT4 / NJ2). Caller surfaces inventory_unavailable to the user.
+      return invalidResponse('inventory_unavailable', 'No fresh per-warehouse inventory data available');
     }
 
     // productId → warehouseCode → qty
@@ -239,11 +245,12 @@ serve(async (req: Request) => {
       productWarehouseMap.get(pid)!.set(wh, qty);
     }
 
-    // Validate each item has sufficient total inventory somewhere
+    // Each item must have a fresh per-warehouse row AND sufficient aggregate
+    // stock somewhere. No standardized_products fallback — see comment above.
     for (const item of items) {
       const whMap = productWarehouseMap.get(item.productId);
       if (!whMap) {
-        return invalidResponse('no_inventory', 'One or more items are not currently available');
+        return invalidResponse('inventory_unavailable', 'One or more items have no fresh inventory data');
       }
       const totalAvailable = Array.from(whMap.values()).reduce((sum, q) => sum + q, 0);
       if (totalAvailable < item.qty) {

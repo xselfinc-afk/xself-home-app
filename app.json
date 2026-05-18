@@ -17,7 +17,10 @@
     ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.xself.home"
+      "bundleIdentifier": "com.xself.home",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -50,6 +53,12 @@
             "merchant.com.xself.home"
           ],
           "enableGooglePay": false
+        }
+      ],
+      [
+        "react-native-crisp-chat-sdk",
+        {
+          "websiteId": "37dc2a19-ef77-42c9-bd9a-7731033293bd"
         }
       ]
     ]

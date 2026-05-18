@@ -4,11 +4,20 @@ export interface CartItem {
   sku: string;
   productId: string;
   name: string;
+  /** Effective unit price. For quoted lines this is the quoted_price (server
+   *  re-validates and overrides at checkout — client price is advisory only). */
   price: number;
   img: string;
   qty: number;
   color: string;
   size: string;
+  /** Server-stored redeem token when this line is a Special Offer claim.
+   *  Forwarded to create-checkout-order so the server can re-validate the
+   *  quote, override `unit_price_cents`, and atomically claim the row.  */
+  quoteToken?: string;
+  /** List price at the time the offer was added — used by the cart UI to
+   *  render the strikethrough comparison. Never sent to the server. */
+  originalPrice?: number;
 }
 
 type CartAction =
@@ -20,6 +29,14 @@ type CartAction =
 function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
   switch (action.type) {
     case 'ADD_ITEM': {
+      // Quoted lines always REPLACE any prior same-sku row — the new quote
+      // token, quoted price, and original price are authoritative. Merging
+      // qty would keep the old non-quote price and break server-side quote
+      // validation (qty > quote.max_qty).
+      if (action.item.quoteToken) {
+        const filtered = state.filter(i => i.sku !== action.item.sku);
+        return [...filtered, { ...action.item, qty: action.qty }];
+      }
       const existing = state.find(i => i.sku === action.item.sku);
       if (existing) {
         return state.map(i =>

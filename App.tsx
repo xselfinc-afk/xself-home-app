@@ -19,6 +19,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
@@ -1071,18 +1072,42 @@ function SpecGroup({ title, rows, defaultOpen = false }: {
           <Ionicons name="chevron-down" size={15} color="#6B7280" />
         </Animated.View>
       </TouchableOpacity>
-      {open && rows.map((row, i) => (
-        <View key={row.label} style={[styles.specRow, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
-          <Text style={styles.specLabel}>{row.label}</Text>
-          <Text style={styles.specValue}>{formatSpecValue(row.label, row.value)}</Text>
-        </View>
-      ))}
+      {open && rows.map((row, i) => {
+        const formatted = formatSpecValue(row.label, row.value);
+        const isSku = row.label === 'SKU';
+        return (
+          <View key={row.label} style={[styles.specRow, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
+            <Text style={styles.specLabel}>{row.label}</Text>
+            {isSku ? (
+              <TouchableOpacity
+                onLongPress={async () => {
+                  await Clipboard.setStringAsync(formatted);
+                }}
+                activeOpacity={0.7}
+                style={{ flex: 1, marginLeft: 16 }}
+              >
+                <Text style={[styles.specValue, { marginLeft: 0, flex: 0 }]} selectable>
+                  {formatted}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.specValue} selectable>{formatted}</Text>
+            )}
+          </View>
+        );
+      })}
     </View>
   );
 }
 
 function ProductDetailScreen({ route, navigation }) {
-  const { product: initialProduct, product_family_key } = route.params;
+  const { product: initialProduct, product_family_key: routeFamilyKey } = route.params;
+  // Fall back to the product's own product_family_key when the navigator
+  // didn't pass one as a route param (Home/Saved/Cart pass `{ product }` only;
+  // Discover passes both). Without this, the family loader (which provides
+  // the full gallery_images_json) never fires from non-Discover entry points
+  // and the Product Detail carousel collapses to a single image.
+  const familyKey = routeFamilyKey ?? initialProduct?.product_family_key;
   const insets = useSafeAreaInsets();
 
   // product is state so the family loader can upgrade it to multi-variant
@@ -1184,14 +1209,14 @@ function ProductDetailScreen({ route, navigation }) {
 
   // Load full product family when navigated with a family key
   React.useEffect(() => {
-    if (!product_family_key) return;
-    loadProductFamily(product_family_key).then(fullProduct => {
+    if (!familyKey) return;
+    loadProductFamily(familyKey).then(fullProduct => {
       if (!fullProduct) return;
       setProduct(fullProduct);
       setActiveImage(0);
       carouselRef.current?.scrollTo({ x: 0, animated: false });
     });
-  }, [product_family_key]);
+  }, [familyKey]);
 
   // Derived: resolved SKU
   const selectedVariant: ProductVariant | null = hasVariants
@@ -1427,7 +1452,7 @@ function ProductDetailScreen({ route, navigation }) {
         {/* Product info */}
         <View style={styles.detailContent}>
           <View style={styles.detailNameRow}>
-            <Text style={[styles.detailName, { flex: 1 }]} numberOfLines={3}>{product.displayTitle ?? product.name}</Text>
+            <Text style={[styles.detailName, { flex: 1 }]} numberOfLines={3} selectable>{product.displayTitle ?? product.name}</Text>
             <TouchableOpacity onPress={handleShare} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="share-outline" size={18} color="#9CA3AF" />
             </TouchableOpacity>
@@ -1538,12 +1563,30 @@ function ProductDetailScreen({ route, navigation }) {
                   ].filter(Boolean) as { label: string; value: string }[];
                   return (
                     <View>
-                      {fallback.map((row, i) => (
-                        <View key={row.label} style={[styles.specRow, i === fallback.length - 1 && { borderBottomWidth: 0 }]}>
-                          <Text style={styles.specLabel}>{row.label}</Text>
-                          <Text style={styles.specValue}>{formatSpecValue(row.label, row.value)}</Text>
-                        </View>
-                      ))}
+                      {fallback.map((row, i) => {
+                        const formatted = formatSpecValue(row.label, row.value);
+                        const isSku = row.label === 'SKU';
+                        return (
+                          <View key={row.label} style={[styles.specRow, i === fallback.length - 1 && { borderBottomWidth: 0 }]}>
+                            <Text style={styles.specLabel}>{row.label}</Text>
+                            {isSku ? (
+                              <TouchableOpacity
+                                onLongPress={async () => {
+                                  await Clipboard.setStringAsync(formatted);
+                                }}
+                                activeOpacity={0.7}
+                                style={{ flex: 1, marginLeft: 16 }}
+                              >
+                                <Text style={[styles.specValue, { marginLeft: 0, flex: 0 }]} selectable>
+                                  {formatted}
+                                </Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <Text style={styles.specValue} selectable>{formatted}</Text>
+                            )}
+                          </View>
+                        );
+                      })}
                     </View>
                   );
                 })()

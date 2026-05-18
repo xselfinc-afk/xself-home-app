@@ -8,28 +8,26 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		21A1FBA43B9E4DA0AE2F3477 /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0092E99D0184024806E74CB /* noop-file.swift */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
-		73AFC40F34331092070E7FB5 /* libPods-XselfHome.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6E47FC216DD45D760EDA587F /* libPods-XselfHome.a */; };
+		8D0A3B99EC54DFF1B6BC918A /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D4EB176CFF94638C10FBE36 /* ExpoModulesProvider.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
-		E41717CC900B6689DF905BAE /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B2E50D6C1EA6B321BCCEC1A3 /* PrivacyInfo.xcprivacy */; };
-		EE34BCDF408F37FFB508E37D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFC7419E771181437E18A122 /* ExpoModulesProvider.swift */; };
+		E8792F7CD5098934E7098A4A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 7E971D60B158903020AB6A7A /* PrivacyInfo.xcprivacy */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
+		FBCAE4254A31A02A3B1AC3A0 /* libPods-XselfHome.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F52F1C53F482DA1E5263321 /* libPods-XselfHome.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0F195365C4909682874AABE6 /* Pods-XselfHome.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-XselfHome.debug.xcconfig"; path = "Target Support Files/Pods-XselfHome/Pods-XselfHome.debug.xcconfig"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* XselfHome.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XselfHome.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = XselfHome/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = XselfHome/Info.plist; sourceTree = "<group>"; };
-		6E47FC216DD45D760EDA587F /* libPods-XselfHome.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-XselfHome.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		8E13A4E453853E9A84C24130 /* Pods-XselfHome.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-XselfHome.release.xcconfig"; path = "Target Support Files/Pods-XselfHome/Pods-XselfHome.release.xcconfig"; sourceTree = "<group>"; };
+		1F52F1C53F482DA1E5263321 /* libPods-XselfHome.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-XselfHome.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		50A14DED67E33669B4398199 /* Pods-XselfHome.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-XselfHome.release.xcconfig"; path = "Target Support Files/Pods-XselfHome/Pods-XselfHome.release.xcconfig"; sourceTree = "<group>"; };
+		7E971D60B158903020AB6A7A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = XselfHome/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		9D4EB176CFF94638C10FBE36 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-XselfHome/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = XselfHome/SplashScreen.storyboard; sourceTree = "<group>"; };
-		B2E50D6C1EA6B321BCCEC1A3 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = XselfHome/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
-		D0092E99D0184024806E74CB /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "XselfHome/noop-file.swift"; sourceTree = "<group>"; };
+		BE7EAAE331146AF5444C896C /* Pods-XselfHome.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-XselfHome.debug.xcconfig"; path = "Target Support Files/Pods-XselfHome/Pods-XselfHome.debug.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
-		EFC7419E771181437E18A122 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-XselfHome/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = XselfHome/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* XselfHome-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "XselfHome-Bridging-Header.h"; path = "XselfHome/XselfHome-Bridging-Header.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -39,13 +37,21 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				73AFC40F34331092070E7FB5 /* libPods-XselfHome.a in Frameworks */,
+				FBCAE4254A31A02A3B1AC3A0 /* libPods-XselfHome.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		12D49E571433461488EC8A67 /* XselfHome */ = {
+			isa = PBXGroup;
+			children = (
+				9D4EB176CFF94638C10FBE36 /* ExpoModulesProvider.swift */,
+			);
+			name = XselfHome;
+			sourceTree = "<group>";
+		};
 		13B07FAE1A68108700A75B9A /* XselfHome */ = {
 			isa = PBXGroup;
 			children = (
@@ -55,37 +61,26 @@
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
-				D0092E99D0184024806E74CB /* noop-file.swift */,
-				B2E50D6C1EA6B321BCCEC1A3 /* PrivacyInfo.xcprivacy */,
+				7E971D60B158903020AB6A7A /* PrivacyInfo.xcprivacy */,
 			);
 			name = XselfHome;
 			sourceTree = "<group>";
 		};
-		262CAC19BFEED23B436EADEA /* Pods */ = {
+		19C900F32ABE95051AC7C666 /* ExpoModulesProviders */ = {
 			isa = PBXGroup;
 			children = (
-				0F195365C4909682874AABE6 /* Pods-XselfHome.debug.xcconfig */,
-				8E13A4E453853E9A84C24130 /* Pods-XselfHome.release.xcconfig */,
+				12D49E571433461488EC8A67 /* XselfHome */,
 			);
-			name = Pods;
-			path = Pods;
+			name = ExpoModulesProviders;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				6E47FC216DD45D760EDA587F /* libPods-XselfHome.a */,
+				1F52F1C53F482DA1E5263321 /* libPods-XselfHome.a */,
 			);
 			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		41EE4FFCB67C48A202C53A6F /* ExpoModulesProviders */ = {
-			isa = PBXGroup;
-			children = (
-				CD0E24BD22B023A56647F2AE /* XselfHome */,
-			);
-			name = ExpoModulesProviders;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -102,8 +97,8 @@
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
-				262CAC19BFEED23B436EADEA /* Pods */,
-				41EE4FFCB67C48A202C53A6F /* ExpoModulesProviders */,
+				890BD5F0F8D5E5DB6A414C67 /* Pods */,
+				19C900F32ABE95051AC7C666 /* ExpoModulesProviders */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -118,6 +113,16 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		890BD5F0F8D5E5DB6A414C67 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				BE7EAAE331146AF5444C896C /* Pods-XselfHome.debug.xcconfig */,
+				50A14DED67E33669B4398199 /* Pods-XselfHome.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
 		BB2F792B24A3F905000567C9 /* Supporting */ = {
 			isa = PBXGroup;
 			children = (
@@ -125,14 +130,6 @@
 			);
 			name = Supporting;
 			path = XselfHome/Supporting;
-			sourceTree = "<group>";
-		};
-		CD0E24BD22B023A56647F2AE /* XselfHome */ = {
-			isa = PBXGroup;
-			children = (
-				EFC7419E771181437E18A122 /* ExpoModulesProvider.swift */,
-			);
-			name = XselfHome;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -143,13 +140,13 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "XselfHome" */;
 			buildPhases = (
 				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
-				F6B991A9DF071219A5020295 /* [Expo] Configure project */,
+				F2EE8F639455BC2CDF6D9027 /* [Expo] Configure project */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
-				484AF937FD52911110075C94 /* [CP] Embed Pods Frameworks */,
+				674D14E4990619C3B5A39F7E /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -201,7 +198,7 @@
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
-				E41717CC900B6689DF905BAE /* PrivacyInfo.xcprivacy in Resources */,
+				E8792F7CD5098934E7098A4A /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,19 +244,21 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		484AF937FD52911110075C94 /* [CP] Embed Pods Frameworks */ = {
+		674D14E4990619C3B5A39F7E /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-XselfHome/Pods-XselfHome-frameworks.sh",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/Crisp/Crisp/Crisp.framework/Crisp",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/React-Core-prebuilt/React.framework/React",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ReactNativeDependencies/ReactNativeDependencies.framework/ReactNativeDependencies",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/Crisp.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
@@ -276,6 +275,7 @@
 			);
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-XselfHome/Pods-XselfHome-resources.sh",
+				"${PODS_CONFIGURATION_BUILD_DIR}/AsyncStorage/AsyncStorage_resources.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/EXConstants.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/ExpoConstants_privacy.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/ExpoFileSystem/ExpoFileSystem_privacy.bundle",
@@ -293,6 +293,7 @@
 			);
 			name = "[CP] Copy Pods Resources";
 			outputPaths = (
+				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AsyncStorage_resources.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXConstants.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoConstants_privacy.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoFileSystem_privacy.bundle",
@@ -313,7 +314,7 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-XselfHome/Pods-XselfHome-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		F6B991A9DF071219A5020295 /* [Expo] Configure project */ = {
+		F2EE8F639455BC2CDF6D9027 /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -324,7 +325,6 @@
 			inputPaths = (
 				"$(SRCROOT)/.xcode.env",
 				"$(SRCROOT)/.xcode.env.local",
-				"$(SRCROOT)/XselfHome/XselfHome.entitlements",
 				"$(SRCROOT)/Pods/Target Support Files/Pods-XselfHome/expo-configure-project.sh",
 			);
 			name = "[Expo] Configure project";
@@ -345,8 +345,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
-				21A1FBA43B9E4DA0AE2F3477 /* noop-file.swift in Sources */,
-				EE34BCDF408F37FFB508E37D /* ExpoModulesProvider.swift in Sources */,
+				8D0A3B99EC54DFF1B6BC918A /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -355,14 +354,13 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 0F195365C4909682874AABE6 /* Pods-XselfHome.debug.xcconfig */;
+			baseConfigurationReference = BE7EAAE331146AF5444C896C /* Pods-XselfHome.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = XselfHome/XselfHome.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = TNRSNH849T;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -375,7 +373,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -387,21 +385,19 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "XselfHome/XselfHome-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 8E13A4E453853E9A84C24130 /* Pods-XselfHome.release.xcconfig */;
+			baseConfigurationReference = 50A14DED67E33669B4398199 /* Pods-XselfHome.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = XselfHome/XselfHome.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = TNRSNH849T;
 				INFOPLIST_FILE = XselfHome/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -409,7 +405,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -420,7 +416,6 @@
 				PRODUCT_NAME = XselfHome;
 				SWIFT_OBJC_BRIDGING_HEADER = "XselfHome/XselfHome-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;

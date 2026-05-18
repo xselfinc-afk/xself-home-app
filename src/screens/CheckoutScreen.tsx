@@ -72,7 +72,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [reserveExpiry]);
-  const { mode, product, qty: buyQty, selectedVariant } = route?.params ?? {};
+  const { mode, product, qty: buyQty, selectedVariant, quoteToken } = route?.params ?? {};
 
 
   // ── Order items based on mode ──────────────────────────────────────────────
@@ -234,12 +234,26 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     (async () => {
       try {
-        console.log('[Checkout] Calling plan-fulfillment edge function');
+        console.log('[Checkout] Calling plan-fulfillment edge function', {
+          itemCount: planItems.length,
+          skus: planItems.map(i => i.sku),
+          productIds: planItems.map(i => i.productId),
+          payload: { items: planItems, address: planAddress },
+        });
         const { data, error } = await supabase.functions.invoke('plan-fulfillment', {
           body: { items: planItems, address: planAddress },
         });
 
         if (cancelled) return;
+        console.log('[Checkout] plan-fulfillment response', {
+          httpError: error?.message ?? null,
+          valid: data?.valid,
+          status: data?.fulfillmentStatus,
+          reason: data?.reason,
+          inventoryFreshness: data?.inventoryFreshness,
+          inventoryTimestamp: data?.inventoryTimestamp,
+          selectedWarehouse: data?.selectedWarehouse?.code,
+        });
         if (error) throw new Error(error.message);
 
         if (!data?.valid || !data?.selectedWarehouse) {
@@ -415,6 +429,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
       zip: selectedAddress.zip,
       country: selectedAddress.country ?? 'US',
     } : undefined;
+    // For cart-mode (no buy_now route param), if any cart line carries a
+    // Special Offer redeem token (added via SupportScreen → Add to Cart),
+    // forward it at the body root. The server will re-validate and override
+    // the matching line's price. Multi-quote carts are not yet supported —
+    // we pick the first quoted line and ignore the rest.
+    const cartQuoteToken = !isBuyNow
+      ? (cart.find(i => i.quoteToken)?.quoteToken ?? undefined)
+      : undefined;
+    const effectiveQuoteToken = quoteToken ?? cartQuoteToken;
+
     const { data, error } = await supabase.functions.invoke('create-checkout-order', {
       body: {
         items,
@@ -423,6 +447,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
         fulfillmentMethod: fulfillmentChoice ?? 'delivery',
         userId: user?.id ?? null,
         paymentMethodSelected,
+        // Optional: present only when SupportScreen forwarded a special-offer
+        // quote on Buy Now, OR when a cart line carries a quoteToken.
+        ...(effectiveQuoteToken ? { quoteToken: effectiveQuoteToken } : {}),
       },
     });
     if (error || !data?.clientSecret) {

@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#F3F1EB" />
+<title>Special Offer · Xself Concierge</title>
+<style>
+  :root {
+    --canvas:   #F3F1EB;
+    --surface:  #FFFFFF;
+    --ink:      #1C1917;
+    --muted:    #6B7280;
+    --hairline: rgba(0, 0, 0, 0.08);
+    --gold:     #EAB320;
+    --green:    #059669;
+    --warn:     #B45309;
+    --warn-bg:  rgba(180,83,9,0.08);
+    --danger:   #DC2626;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--canvas);
+    padding: max(28px, env(safe-area-inset-top)) 16px calc(120px + env(safe-area-inset-bottom));
+  }
+
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 16px; letter-spacing: -0.3px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .card.price-card {
+    border-color: rgba(234,179,32,0.45);
+    box-shadow: 0 2px 10px rgba(234,179,32,0.10);
+  }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    margin: 0 0 10px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 12px 0 6px;
+  }
+  label:first-child { margin-top: 0; }
+
+  input[type="text"], input[type="email"], input[type="number"], input[type="tel"], input[type="password"] {
+    width: 100%;
+    min-height: 50px;
+    padding: 12px 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    font-size: 16px;
+    line-height: 1.3;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: inherit;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  input.price-input {
+    font-size: 28px;
+    font-weight: 700;
+    min-height: 64px;
+    padding: 14px 16px;
+    letter-spacing: -0.5px;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px rgba(234,179,32,0.18);
+  }
+  .helper { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+
+  details summary {
+    cursor: pointer;
+    padding: 12px 0;
+    font-weight: 700;
+    color: var(--muted);
+    font-size: 12px;
+    list-style: none;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: '+ '; color: var(--ink); }
+  details[open] summary::before { content: '− '; color: var(--ink); }
+
+  /* Search */
+  .search-results {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    max-height: 50vh;
+    overflow-y: auto;
+    margin-top: 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .search-results[hidden] { display: none; }
+  .search-result {
+    padding: 14px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .search-result:last-child { border-bottom: 0; }
+  .search-result:active { background: rgba(234,179,32,0.08); }
+  .search-result-title { font-size: 14px; font-weight: 600; }
+  .search-result-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+  .compact-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .compact-title { font-size: 14px; font-weight: 600; min-width: 0; flex: 1; }
+  .compact-meta  { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .link-btn {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--hairline);
+    color: var(--ink);
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .link-btn:active { background: rgba(0,0,0,0.04); }
+
+  /* Inline error rows — small, muted, no big alert card */
+  .inline-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--warn);
+    background: var(--warn-bg);
+    border: 1px solid rgba(180,83,9,0.22);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .inline-error::before { content: '⚠'; flex-shrink: 0; }
+
+  /* Manual fallback link — text-link style */
+  .manual-link-row { text-align: center; margin: 8px 0; }
+  .manual-link {
+    display: inline-block;
+    padding: 10px 16px;
+    color: var(--muted);
+    text-decoration: underline;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .manual-link:active { color: var(--ink); }
+
+  /* Sticky submit dock */
+  .submit-dock {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(to bottom, rgba(243,241,235,0) 0%, var(--canvas) 60%);
+    z-index: 10;
+  }
+  button.primary {
+    width: 100%;
+    min-height: 56px;
+    background: var(--gold);
+    color: #FFFFFF;
+    border: 0;
+    border-radius: 14px;
+    font-weight: 700;
+    font-size: 16px;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+    -webkit-appearance: none;
+    appearance: none;
+    box-shadow: 0 4px 14px rgba(234,179,32,0.30);
+  }
+  button.primary:disabled { opacity: 0.55; box-shadow: none; }
+  button.primary:active:not(:disabled) { opacity: 0.92; transform: scale(0.985); }
+
+  /* Settings gear */
+  .settings-btn {
+    position: fixed;
+    top: max(16px, env(safe-area-inset-top));
+    right: 16px;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    font-size: 18px;
+    color: var(--ink);
+    cursor: pointer;
+    z-index: 5;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .settings-btn:active { background: rgba(0,0,0,0.04); }
+
+  /* Success / submit-error panels */
+  .alert {
+    margin: 12px 0;
+    padding: 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .alert[hidden] { display: none; }
+  .alert-error { background: #FEE2E2; color: var(--danger); }
+  .alert-success { background: #ECFDF5; color: var(--ink); border: 1px solid rgba(5,150,105,0.2); }
+  .alert-success h3 { margin: 0 0 8px; font-size: 15px; color: var(--green); }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  code { font-family: ui-monospace, "SF Mono", Consolas, monospace; background: var(--canvas); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+  /* ── State-driven visibility ─────────────────────────────────────────────
+     Body classes drive the whole UI:
+       .setup-complete  — hides setup card; shows main form + submit + ⚙
+       .has-product     — product_id + supplier_sku are populated
+       .has-email       — customer email is non-empty and valid
+       .manual-open     — agent tapped "Manual fallback" to reveal overrides
+  ─────────────────────────────────────────────────────────────────────────*/
+  body:not(.setup-complete) #mainForm    { display: none; }
+  body:not(.setup-complete) .submit-dock { display: none; }
+  body:not(.setup-complete) .settings-btn { display: none; }
+  body.setup-complete       #setupCard   { display: none; }
+
+  /* Hide all the conditional bits by default. */
+  #productMissingError,
+  #emailMissingError,
+  #manualLinkRow,
+  #manualSection { display: none; }
+
+  /* Errors only when state is bad AND manual fallback is not open. */
+  body:not(.has-product):not(.manual-open) #productMissingError { display: flex; }
+  body:not(.has-email):not(.manual-open)   #emailMissingError   { display: flex; }
+
+  /* Manual-fallback link shows whenever any error condition exists. */
+  body:not(.manual-open):not(.has-product) #manualLinkRow,
+  body:not(.manual-open):not(.has-email)   #manualLinkRow { display: block; }
+
+  /* Manual section visible only when explicitly opened. */
+  body.manual-open #manualSection { display: block; }
+  /* Product card inside manual section — pick which mode to show. */
+  body:not(.has-product) .product-locked-mode  { display: none; }
+  body.has-product       .product-fallback-mode { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Special Offer</h1>
+
+<button id="settingsBtn" class="settings-btn" type="button" aria-label="Settings">⚙</button>
+
+<!-- ── Setup card (shown only when setup is incomplete) ────────────────── -->
+<div id="setupCard" class="card">
+  <p class="eyebrow">Setup — one time on this device</p>
+  <label for="supabaseUrl">Supabase Project URL</label>
+  <input id="supabaseUrl" type="text" placeholder="https://&lt;project&gt;.supabase.co" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url" />
+
+  <label for="anonKey">Publishable Key</label>
+  <input id="anonKey" type="text" placeholder="sb_publishable_..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+  <div class="helper">Read-only key used for product search.</div>
+
+  <label for="agentToken">Agent Admin Token</label>
+  <input id="agentToken" type="password" placeholder="AGENT_ADMIN_TOKEN" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+  <div class="helper">Saved on this device only.</div>
+
+  <label for="agentName">Your Agent Name</label>
+  <input id="agentName" type="text" placeholder="e.g. Helen" autocomplete="off" autocapitalize="words" />
+
+  <button class="primary" type="button" id="saveSetupBtn" style="margin-top: 14px;">Save setup</button>
+</div>
+
+<!-- ── Main form ────────────────────────────────────────────────────────── -->
+<div id="mainForm">
+
+  <!-- Price card — the only thing visible by default in the happy path -->
+  <div class="card price-card">
+    <p class="eyebrow">Quoted price</p>
+    <input id="quotedPrice" class="price-input" type="number" min="50" step="0.01" placeholder="199.00" inputmode="decimal" enterkeyhint="done" />
+    <div class="helper">$50 floor. Must be ≥ 50% of list price.</div>
+  </div>
+
+  <!-- Errors (state-driven) -->
+  <div id="productMissingError" class="inline-error">
+    Product not detected. Open from a Crisp product conversation.
+  </div>
+  <div id="emailMissingError" class="inline-error">
+    Customer email missing. Ask customer for their Xself Home email.
+  </div>
+
+  <!-- Manual fallback link (state-driven) -->
+  <div id="manualLinkRow" class="manual-link-row">
+    <button id="manualLink" class="manual-link" type="button">Manual fallback</button>
+  </div>
+
+  <!-- Manual fallback section (hidden until tapped) -->
+  <div id="manualSection">
+    <!-- Product -->
+    <div class="card">
+      <p class="eyebrow">Product</p>
+      <div class="product-locked-mode">
+        <div class="compact-row">
+          <div style="min-width: 0; flex: 1;">
+            <div id="selectedTitle" class="compact-title"></div>
+            <div id="selectedMeta"  class="compact-meta"></div>
+          </div>
+          <button class="link-btn" type="button" id="changeProductBtn">Change</button>
+        </div>
+      </div>
+      <div class="product-fallback-mode">
+        <input id="productSearch" type="text" placeholder="Search by title or SKU" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" />
+        <div id="searchResults" class="search-results" hidden></div>
+      </div>
+    </div>
+
+    <!-- Customer -->
+    <div class="card">
+      <p class="eyebrow">Customer</p>
+      <input id="customerEmail" type="email" placeholder="customer@example.com" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="email" enterkeyhint="next" />
+      <div class="helper">Enter the email the customer uses to sign in to Xself Home.</div>
+    </div>
+
+    <!-- Advanced -->
+    <details>
+      <summary>Advanced</summary>
+      <div class="card" style="margin-top: 6px;">
+        <label for="productId">Product ID</label>
+        <input id="productId" type="text" placeholder="supplier_product_id" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+
+        <label for="supplierSku">SKU</label>
+        <input id="supplierSku" type="text" placeholder="XH-..." autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" />
+
+        <label for="expiresHours">Expires in (hours)</label>
+        <input id="expiresHours" type="number" min="1" max="720" value="1" inputmode="numeric" enterkeyhint="done" />
+        <div class="helper">Default 1 hour. Max 720 (30 days).</div>
+      </div>
+    </details>
+
+    <div class="manual-link-row">
+      <button id="closeManualLink" class="manual-link" type="button">Close manual fallback</button>
+    </div>
+  </div>
+
+  <div id="submitErrorBox" class="alert alert-error" hidden></div>
+  <div id="successBox"     class="alert alert-success" hidden></div>
+</div>
+
+<div class="submit-dock">
+  <button class="primary" type="button" id="submitBtn">Create Special Offer</button>
+</div>
+
+<script>
+(() => {
+  const STORAGE_KEY = 'xself_admin_special_offer_v1';
+  const SETUP_FIELDS = ['supabaseUrl', 'anonKey', 'agentToken', 'agentName'];
+  const $ = (id) => document.getElementById(id);
+
+  function loadSetup() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch { return {}; }
+  }
+  function saveSetup(v) { localStorage.setItem(STORAGE_KEY, JSON.stringify(v)); }
+  function setupComplete(s) {
+    return !!(s.supabaseUrl && s.anonKey && s.agentToken && s.agentName);
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
+  function readParam(sp, name) {
+    const v = (sp.get(name) || '').trim();
+    if (!v || v.includes('{{') || v.includes('}}')) return '';
+    return v;
+  }
+  function isValidEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
+
+  // ── State helpers ──────────────────────────────────────────────────────
+  function refreshProductState() {
+    const ok = !!($('productId').value.trim() && $('supplierSku').value.trim());
+    document.body.classList.toggle('has-product', ok);
+  }
+  function refreshEmailState() {
+    const v = ($('customerEmail').value || '').trim();
+    document.body.classList.toggle('has-email', !!v && isValidEmail(v));
+  }
+  function setManual(open) {
+    document.body.classList.toggle('manual-open', open);
+    if (open) {
+      // Auto-focus the field most likely needed.
+      setTimeout(() => {
+        if (!document.body.classList.contains('has-product')) $('productSearch')?.focus();
+        else if (!document.body.classList.contains('has-email')) $('customerEmail')?.focus();
+      }, 80);
+    }
+  }
+
+  // ── Hydrate setup ──────────────────────────────────────────────────────
+  (function hydrate() {
+    const setup = loadSetup();
+    SETUP_FIELDS.forEach(k => { if ($(k) && setup[k]) $(k).value = setup[k]; });
+    if (setupComplete(setup)) document.body.classList.add('setup-complete');
+  })();
+
+  $('saveSetupBtn').addEventListener('click', () => {
+    const setup = {};
+    SETUP_FIELDS.forEach(k => { setup[k] = ($(k).value || '').trim(); });
+    if (!setupComplete(setup)) { alert('All four setup fields are required.'); return; }
+    saveSetup(setup);
+    document.body.classList.add('setup-complete');
+    runDeferredProductPrefill();
+    focusPriceIfReady();
+  });
+
+  $('settingsBtn').addEventListener('click', () => {
+    document.body.classList.remove('setup-complete');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // ── URL params ─────────────────────────────────────────────────────────
+  const sp                  = new URLSearchParams(window.location.search);
+  const urlEmail            = readParam(sp, 'email');
+  const crispConversationId = readParam(sp, 'conversation_id');
+  const urlSku              = readParam(sp, 'sku');
+  const urlProductId        = readParam(sp, 'product_id');
+  const urlTitle            = readParam(sp, 'title');
+
+  // Email: silently fill the (hidden) input and mark state.
+  if (urlEmail && isValidEmail(urlEmail)) {
+    $('customerEmail').value = urlEmail;
+  }
+  refreshEmailState();
+
+  // ── Product locking ────────────────────────────────────────────────────
+  function lockProduct({ id, sku, title, price }) {
+    $('productId').value   = id  || '';
+    $('supplierSku').value = sku || '';
+    $('selectedTitle').textContent = `Product locked: ${title || '(no title)'}`;
+    const skuPart = `SKU ${sku || '—'}`;
+    const pricePart = price > 0
+      ? `List $${price.toFixed(2)} · Min quote $${Math.max(50, Math.ceil(price * 50) / 100).toFixed(2)}`
+      : '';
+    $('selectedMeta').textContent = pricePart ? `${skuPart} · ${pricePart}` : skuPart;
+    refreshProductState();
+  }
+  function unlockProduct() {
+    $('productId').value   = '';
+    $('supplierSku').value = '';
+    $('selectedTitle').textContent = '';
+    $('selectedMeta').textContent  = '';
+    refreshProductState();
+  }
+
+  function focusPriceIfReady() {
+    if (document.body.classList.contains('setup-complete')) {
+      setTimeout(() => $('quotedPrice')?.focus({ preventScroll: false }), 80);
+    }
+  }
+
+  // Lock instantly from URL if both an identifier AND a title are present.
+  if ((urlSku || urlProductId) && urlTitle) {
+    lockProduct({
+      id:    urlProductId || '',
+      sku:   urlSku       || '',
+      title: urlTitle,
+      price: 0,
+    });
+  }
+
+  // ── Manual fallback open / close + product change ─────────────────────
+  $('manualLink').addEventListener('click', () => setManual(true));
+  $('closeManualLink').addEventListener('click', () => setManual(false));
+  $('changeProductBtn').addEventListener('click', () => {
+    unlockProduct();
+    $('productSearch').value = '';
+    setTimeout(() => $('productSearch').focus(), 80);
+  });
+
+  // Track manual customer-email edits.
+  $('customerEmail').addEventListener('input', refreshEmailState);
+
+  // Track manual Product ID / SKU edits in Advanced.
+  $('productId').addEventListener('input', refreshProductState);
+  $('supplierSku').addEventListener('input', refreshProductState);
+
+  // ── Deferred DB lookup ─────────────────────────────────────────────────
+  let productPrefillTried = false;
+  async function runDeferredProductPrefill() {
+    if (productPrefillTried) return;
+    if (!urlSku && !urlProductId) return;
+    const setup = loadSetup();
+    if (!setupComplete(setup)) return;
+    productPrefillTried = true;
+
+    const params = urlSku
+      ? `sku_custom=eq.${encodeURIComponent(urlSku)}`
+      : `supplier_product_id=eq.${encodeURIComponent(urlProductId)}`;
+    const url = `${setup.supabaseUrl}/rest/v1/sellable_products?` +
+      `${params}&select=supplier_product_id,sku_custom,product_title,selling_price,price&limit=1`;
+    try {
+      const res = await fetch(url, {
+        headers: { 'apikey': setup.anonKey, 'Authorization': `Bearer ${setup.anonKey}` },
+      });
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows.length === 1) {
+        const r = rows[0];
+        const price = Number(r.selling_price ?? r.price ?? 0) || 0;
+        lockProduct({
+          id:    r.supplier_product_id,
+          sku:   r.sku_custom,
+          title: urlTitle || r.product_title,
+          price,
+        });
+        focusPriceIfReady();
+      }
+    } catch {
+      // Network failure — leave manual fallback as the recovery path.
+    }
+  }
+  runDeferredProductPrefill();
+  focusPriceIfReady();
+
+  // ── Manual fallback search ─────────────────────────────────────────────
+  let searchTimer = null;
+  const searchInput = $('productSearch');
+  const resultsBox  = $('searchResults');
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (q.length < 2) { resultsBox.hidden = true; resultsBox.innerHTML = ''; return; }
+    searchTimer = setTimeout(() => runSearch(q), 300);
+  });
+  document.addEventListener('click', (e) => {
+    if (!resultsBox.contains(e.target) && e.target !== searchInput) resultsBox.hidden = true;
+  });
+
+  async function runSearch(query) {
+    const { supabaseUrl, anonKey } = loadSetup();
+    if (!supabaseUrl || !anonKey) {
+      resultsBox.hidden = false;
+      resultsBox.innerHTML = '<div class="search-result">Open ⚙ Settings and complete setup first.</div>';
+      return;
+    }
+    const escaped = encodeURIComponent(`*${query}*`);
+    const url = `${supabaseUrl}/rest/v1/sellable_products?` +
+      `or=(product_title.ilike.${escaped},sku_custom.ilike.${escaped})` +
+      `&select=supplier_product_id,sku_custom,product_title,selling_price,price&limit=10`;
+    try {
+      const res = await fetch(url, {
+        headers: { 'apikey': anonKey, 'Authorization': `Bearer ${anonKey}` },
+      });
+      const rows = await res.json();
+      if (!Array.isArray(rows)) {
+        resultsBox.hidden = false;
+        resultsBox.innerHTML = `<div class="search-result">Search failed: ${escapeHtml(rows.message || JSON.stringify(rows).slice(0,200))}</div>`;
+        return;
+      }
+      if (rows.length === 0) {
+        resultsBox.hidden = false;
+        resultsBox.innerHTML = '<div class="search-result">No products found.</div>';
+        return;
+      }
+      renderSearchResults(rows);
+    } catch (err) {
+      resultsBox.hidden = false;
+      resultsBox.innerHTML = `<div class="search-result">Search error: ${escapeHtml(err.message || String(err))}</div>`;
+    }
+  }
+  function renderSearchResults(rows) {
+    resultsBox.innerHTML = rows.map(r => {
+      const price = r.selling_price ?? r.price ?? 0;
+      return `<div class="search-result"
+                   data-id="${escapeAttr(r.supplier_product_id ?? '')}"
+                   data-sku="${escapeAttr(r.sku_custom ?? '')}"
+                   data-price="${Number(price) || 0}"
+                   data-title="${escapeAttr(r.product_title ?? '')}">
+        <div class="search-result-title">${escapeHtml(r.product_title || '(no title)')}</div>
+        <div class="search-result-meta">${escapeHtml(r.sku_custom || '—')} · $${Number(price || 0).toFixed(2)}</div>
+      </div>`;
+    }).join('');
+    resultsBox.hidden = false;
+    resultsBox.querySelectorAll('.search-result').forEach(el => {
+      el.addEventListener('click', () => {
+        lockProduct({
+          id:    el.dataset.id,
+          sku:   el.dataset.sku,
+          title: el.dataset.title,
+          price: parseFloat(el.dataset.price) || 0,
+        });
+        resultsBox.hidden = true;
+        focusPriceIfReady();
+      });
+    });
+  }
+
+  // ── Dynamic submit-button label ────────────────────────────────────────
+  function updateSubmitLabel() {
+    const v = parseFloat($('quotedPrice').value);
+    $('submitBtn').textContent = Number.isFinite(v) && v >= 50
+      ? `Create Offer · $${v.toFixed(2)}`
+      : 'Create Special Offer';
+  }
+  $('quotedPrice').addEventListener('input', updateSubmitLabel);
+  updateSubmitLabel();
+
+  // ── Submit ─────────────────────────────────────────────────────────────
+  const submitBtn      = $('submitBtn');
+  const submitErrorBox = $('submitErrorBox');
+  const successBox     = $('successBox');
+
+  submitBtn.addEventListener('click', async () => {
+    submitErrorBox.hidden = true;
+    successBox.hidden = true;
+    successBox.innerHTML = '';
+
+    const setup = loadSetup();
+    if (!setupComplete(setup)) {
+      return showSubmitError('Open ⚙ Settings and complete setup first.');
+    }
+
+    const productId          = $('productId').value.trim();
+    const supplierSku        = $('supplierSku').value.trim();
+    const customerEmail      = $('customerEmail').value.trim();
+    const quotedPriceDollars = parseFloat($('quotedPrice').value);
+    const expiresHours       = parseInt($('expiresHours').value, 10) || 1;
+
+    if (!productId || !supplierSku) {
+      setManual(true);
+      return showSubmitError('Product not detected. Use Manual fallback to pick one.');
+    }
+    if (!customerEmail) {
+      setManual(true);
+      return showSubmitError('Customer email is required. Use Manual fallback to enter it.');
+    }
+    if (!isValidEmail(customerEmail)) {
+      setManual(true);
+      return showSubmitError('Customer email looks invalid.');
+    }
+    if (!quotedPriceDollars || quotedPriceDollars < 50) {
+      return showSubmitError('Quoted price must be at least $50.');
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
+    const body = {
+      product_id:         productId,
+      supplier_sku:       supplierSku,
+      customer_email:     customerEmail,
+      quoted_price_cents: Math.round(quotedPriceDollars * 100),
+      agent_name:         setup.agentName,
+      expires_in_hours:   expiresHours,
+    };
+    if (crispConversationId) body.crisp_session_id = crispConversationId;
+
+    try {
+      const res = await fetch(`${setup.supabaseUrl}/functions/v1/agent-create-quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Agent-Token': setup.agentToken },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        let msg = data.error || res.statusText || `HTTP ${res.status}`;
+        if (data.original_price_cents != null)
+          msg += ` (list $${(data.original_price_cents / 100).toFixed(2)})`;
+        if (data.minimum_allowed_cents != null)
+          msg += ` — min allowed $${(data.minimum_allowed_cents / 100).toFixed(2)}`;
+        return showSubmitError(msg);
+      }
+
+      const expires   = new Date(data.expires_at).toLocaleString();
+      const listPrice = `$${(data.original_price_cents / 100).toFixed(2)}`;
+      const quoted    = `$${quotedPriceDollars.toFixed(2)}`;
+      const title     = ($('selectedTitle').textContent || '').replace(/^Product locked:\s*/, '') || '(product)';
+      successBox.innerHTML = `
+        <h3>Offer created ✓</h3>
+        <dl class="kv">
+          <dt>Product</dt>  <dd>${escapeHtml(title)}</dd>
+          <dt>Quoted</dt>   <dd>${quoted} <span style="color: var(--muted);">(list ${listPrice})</span></dd>
+          <dt>Customer</dt> <dd>${escapeHtml(customerEmail)}</dd>
+          <dt>Expires</dt>  <dd>${escapeHtml(expires)}</dd>
+        </dl>
+      `;
+      successBox.hidden = false;
+      $('quotedPrice').value = '';
+      updateSubmitLabel();
+      successBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (err) {
+      showSubmitError(`Network error: ${err.message || String(err)}`);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  function showSubmitError(text) {
+    submitErrorBox.textContent = text;
+    submitErrorBox.hidden = false;
+    submitErrorBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // Initial state pass.
+  refreshProductState();
+  refreshEmailState();
+})();
+</script>
+</body>
+</html>

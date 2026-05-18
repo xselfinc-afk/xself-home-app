@@ -77,3 +77,37 @@ export async function setSupportSessionMeta(
 ): Promise<void> {
   await invoke<SetMetaResp>('set_meta', { session_id: sessionId, ...meta });
 }
+
+/**
+ * Posts a human-readable product summary into the Crisp conversation timeline
+ * as an agent-only private note. Visible to the support agent, not surfaced
+ * in the customer-facing chat list. Used by SupportScreen to introduce which
+ * product the customer is currently asking about.
+ */
+export async function sendSupportProductContext(
+  sessionId: string,
+  content: string,
+  opts?: {
+    imageUrl?: string;
+    imageName?: string;
+    customerEmail?: string;
+    productId?: string;
+    sku?: string;
+    title?: string;
+  },
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    session_id: sessionId,
+    content,
+  };
+  if (opts?.imageUrl)      payload.image_url      = opts.imageUrl;
+  if (opts?.imageName)     payload.image_name     = opts.imageName;
+  if (opts?.customerEmail) payload.customer_email = opts.customerEmail;
+  if (opts?.productId)     payload.product_id     = opts.productId;
+  if (opts?.sku)           payload.sku            = opts.sku;
+  if (opts?.title)         payload.title          = opts.title;
+  await invoke<{ ok: true; image_failed?: boolean; offer_link_failed?: boolean }>(
+    'send_product_context',
+    payload,
+  );
+}

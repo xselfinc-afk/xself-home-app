@@ -15,6 +15,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
+import { sanitizeSupplierName } from '../src/utils/supplierNameSanitizer';
 
 dotenv.config();
 
@@ -97,6 +98,11 @@ function buildOptimizedTitle(
 ): string {
   // Prefer display title as starting point — it's already cleaner
   let title = (displayTitle || rawTitle || '').trim();
+
+  // Centralised supplier-prefix removal (K&K, etc.). Mirrors the
+  // normalization pipeline so optimized_title stays in lockstep with
+  // product_title. Add new supplier names in src/utils/supplierNameSanitizer.ts.
+  title = sanitizeSupplierName(title).cleaned;
 
   // Strip brands
   for (const re of BRAND_PATTERNS) {

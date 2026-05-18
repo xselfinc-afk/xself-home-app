@@ -27,6 +27,9 @@ const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
 
 const SUPABASE_URL             = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+// Needed only for the quote-redemption path: we verify the caller's JWT to
+// match the quote's customer_email server-side. Set this in Function Secrets.
+const SUPABASE_ANON_KEY         = Deno.env.get('SUPABASE_ANON_KEY')         ?? '';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const RESERVATION_TTL_MINUTES = 10;
@@ -80,6 +83,13 @@ interface RequestBody {
   guestToken?: string;
   /** 'card' | 'affirm' | '' (auto) */
   paymentMethodSelected?: string;
+  /**
+   * Optional custom-quote redeem token. When present, the line price is
+   * replaced by the server-stored quoted_price_cents, and the request must
+   * include a Bearer JWT whose `email` claim matches the quote's
+   * customer_email. MVP supports single-item buy-now only.
+   */
+  quoteToken?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,6 +123,7 @@ serve(async (req: Request) => {
       userId,
       guestToken: providedGuestToken,
       paymentMethodSelected = '',
+      quoteToken,
     } = body;
 
     // ── Input validation ──────────────────────────────────────────────────────
@@ -149,9 +160,103 @@ serve(async (req: Request) => {
       auth: { persistSession: false },
     });
 
+    // ── Quote validation (only when quoteToken is present) ───────────────────
+    // MVP rule: redemption requires sign-in. We verify the caller's JWT and
+    // match `email` against support_quotes.customer_email. We override the
+    // line price with the server-stored quoted_price_cents so the client's
+    // unitPriceCents cannot influence the charge. The quote is "claimed"
+    // atomically after the order row is inserted (see below); a Stripe
+    // failure reverts the quote back to 'active' (see rollback block).
+    let quoteRecord: {
+      id: string;
+      product_id: string;
+      supplier_sku: string;
+      quoted_price_cents: number;
+      max_qty: number;
+    } | null = null;
+
+    if (quoteToken) {
+      const authHeader = req.headers.get('authorization') ?? '';
+      const jwt = authHeader.toLowerCase().startsWith('bearer ')
+        ? authHeader.slice(7).trim() : '';
+      if (!jwt) {
+        return jsonResponse({ error: 'quote_redemption_requires_signin' }, 401);
+      }
+
+      const authClient = createClient(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY,
+        {
+          auth: { persistSession: false },
+          global: { headers: { Authorization: `Bearer ${jwt}` } },
+        },
+      );
+      const { data: userData, error: userErr } = await authClient.auth.getUser(jwt);
+      if (userErr || !userData?.user) {
+        return jsonResponse({ error: 'invalid_auth_token' }, 401);
+      }
+      const callerEmail = (userData.user.email ?? '').trim().toLowerCase();
+      if (!callerEmail) {
+        return jsonResponse({ error: 'quote_redemption_requires_email' }, 403);
+      }
+
+      const { data: quote, error: qErr } = await supabase
+        .from('support_quotes')
+        .select('id, product_id, supplier_sku, customer_email, quoted_price_cents, max_qty, status, expires_at')
+        .eq('redeem_token', quoteToken)
+        .maybeSingle();
+
+      if (qErr) {
+        console.error('[create-checkout-order] quote lookup failed:', qErr.message);
+        return jsonResponse({ error: 'quote_lookup_failed' }, 500);
+      }
+      if (!quote)                          return jsonResponse({ error: 'quote_invalid' }, 422);
+      if (quote.status !== 'active')       return jsonResponse({ error: `quote_${quote.status}` }, 422);
+      if (new Date(quote.expires_at).getTime() <= Date.now()) {
+        return jsonResponse({ error: 'quote_expired' }, 422);
+      }
+      if (String(quote.customer_email).trim().toLowerCase() !== callerEmail) {
+        return jsonResponse({ error: 'quote_email_mismatch' }, 422);
+      }
+      // The cart may contain other items at their normal client-supplied
+      // prices; the quote applies to exactly one line that matches both the
+      // product_id and supplier_sku stored on the quote. Other lines are
+      // unaffected. Multi-quote-per-cart is intentionally NOT supported in
+      // this revision — body still carries a single `quoteToken` at root.
+      const matchingIndex = items.findIndex(it =>
+        it.productId === quote.product_id && it.sku === quote.supplier_sku
+      );
+      if (matchingIndex === -1) {
+        return jsonResponse({ error: 'quote_not_in_cart' }, 422);
+      }
+      const matchingItem = items[matchingIndex];
+      if (matchingItem.qty > quote.max_qty) {
+        return jsonResponse({ error: 'quote_qty_exceeded', max_qty: quote.max_qty }, 422);
+      }
+
+      // Server overrides the client-supplied price for the matched line
+      // only. All other cart lines retain their original `unitPriceCents`.
+      items[matchingIndex] = { ...matchingItem, unitPriceCents: quote.quoted_price_cents };
+      quoteRecord = {
+        id:                 quote.id,
+        product_id:         quote.product_id,
+        supplier_sku:       quote.supplier_sku,
+        quoted_price_cents: quote.quoted_price_cents,
+        max_qty:            quote.max_qty,
+      };
+      console.log(
+        '[create-checkout-order] quote validated:',
+        quoteRecord.id,
+        '| caller_email:', callerEmail,
+        '| product:', quoteRecord.product_id,
+        '| price_cents:', quoteRecord.quoted_price_cents,
+      );
+    }
+
     // ── Inventory validation ──────────────────────────────────────────────────
-    // Same logic as validate-checkout-inventory — inline here to avoid an extra
-    // HTTP round-trip and to run in a single service-role DB session.
+    // STRICT: only fresh per-warehouse website_scrape rows count. If those are
+    // missing, abort with inventory_unavailable rather than silently inventing
+    // a warehouse — see plan-fulfillment for the rationale (CAX1 incident).
     const productIds = [...new Set(items.map(i => i.productId))];
     const staleThreshold = new Date(
       Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000,
@@ -183,7 +288,7 @@ serve(async (req: Request) => {
     const inventoryFailures: { productId: string; sku: string; reason: string }[] = [];
     for (const item of items) {
       if (!stockMap.has(item.productId)) {
-        inventoryFailures.push({ productId: item.productId, sku: item.sku, reason: 'no_inventory' });
+        inventoryFailures.push({ productId: item.productId, sku: item.sku, reason: 'inventory_unavailable' });
       } else if ((stockMap.get(item.productId) ?? 0) < item.qty) {
         inventoryFailures.push({ productId: item.productId, sku: item.sku, reason: 'insufficient_qty' });
       }
@@ -274,6 +379,7 @@ serve(async (req: Request) => {
           qty:   i.qty,
         })),
         fulfillment_groups_json: [],
+        quote_id:              quoteRecord?.id ?? null,
         created_at:            now,
         updated_at:            now,
       });
@@ -281,6 +387,35 @@ serve(async (req: Request) => {
     if (orderError) {
       console.error('[create-checkout-order] Order insert failed:', orderError.message);
       return jsonResponse({ error: 'Failed to create order record' }, 500);
+    }
+
+    // ── Atomic quote claim ────────────────────────────────────────────────────
+    // First writer wins. Concurrent redemptions of the same redeem_token lose
+    // the race and trigger a rollback of the just-created order row. The
+    // WHERE clause also re-checks expiration so a quote can't be claimed after
+    // it expired between validation and this update.
+    if (quoteRecord) {
+      const { data: claimRows, error: claimErr } = await supabase
+        .from('support_quotes')
+        .update({ status: 'used', order_id: orderId, used_at: now })
+        .eq('id', quoteRecord.id)
+        .eq('status', 'active')
+        .gt('expires_at', now)
+        .select('id');
+
+      if (claimErr) {
+        console.error('[create-checkout-order] quote claim failed:', claimErr.message);
+        await supabase.from('orders')
+          .update({ status: 'abandoned', updated_at: new Date().toISOString() })
+          .eq('order_id', orderId);
+        return jsonResponse({ error: 'quote_claim_failed' }, 500);
+      }
+      if (!claimRows || claimRows.length === 0) {
+        await supabase.from('orders')
+          .update({ status: 'abandoned', updated_at: new Date().toISOString() })
+          .eq('order_id', orderId);
+        return jsonResponse({ error: 'quote_already_used_or_expired' }, 409);
+      }
     }
 
     // ── Create order_items ────────────────────────────────────────────────────
@@ -361,15 +496,26 @@ serve(async (req: Request) => {
     if (!stripeRes.ok) {
       const errMsg = (stripeJson?.error as Record<string, unknown>)?.message ?? 'Stripe error';
       console.error('[create-checkout-order] Stripe PI creation failed:', errMsg);
-      // Mark order abandoned and release reservations so stock is not locked
-      await Promise.all([
+      const rollbackTs = new Date().toISOString();
+      const rollbackOps: Array<Promise<unknown>> = [
         supabase.from('orders')
-          .update({ status: 'abandoned', updated_at: new Date().toISOString() })
+          .update({ status: 'abandoned', updated_at: rollbackTs })
           .eq('order_id', orderId),
         supabase.from('inventory_reservations')
-          .update({ status: 'released', updated_at: new Date().toISOString() })
+          .update({ status: 'released', updated_at: rollbackTs })
           .eq('order_id', orderId),
-      ]);
+      ];
+      // Revert the claimed quote so the customer can retry the offer.
+      if (quoteRecord) {
+        rollbackOps.push(
+          supabase.from('support_quotes')
+            .update({ status: 'active', order_id: null, used_at: null })
+            .eq('id', quoteRecord.id)
+            .eq('order_id', orderId)
+            .eq('status', 'used'),
+        );
+      }
+      await Promise.all(rollbackOps);
       return jsonResponse({ error: String(errMsg) }, 502);
     }
 

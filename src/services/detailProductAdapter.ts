@@ -6,6 +6,7 @@ import { collectImages } from './imageSelector';
 export { collectImages };
 import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
 import { sourceUrl } from '../utils/imageSource';
+import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
 
 // ── Debug counter (remove after Phase 3 verification) ────────────────────────
 let _debugCount = 0;
@@ -278,11 +279,20 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
       ]
     : undefined;
 
+  // Resolve title with the canonical precedence, then sanitize at the
+  // adapter boundary so supplier/manufacturer names (e.g. "K&K") never
+  // surface to any screen — even if the underlying DB column or a cached
+  // row temporarily still carries them. Patterns live in
+  // src/utils/supplierNameSanitizer.ts.
+  const rawName = r.optimized_title || r.product_title_display || r.product_title || '';
+  const cleanedName = sanitizeSupplierName(rawName).cleaned;
+  const cleanedDisplayTitle = sanitizeSupplierName(r.product_title_display).cleaned;
+
   const base: Product = {
     id: r.supplier_product_id,
-    name: r.optimized_title || r.product_title_display || r.product_title || '',
-    shortTitle: toShortTitle(r.optimized_title || r.product_title_display || r.product_title || ''),
-    displayTitle: r.product_title_display || undefined,
+    name: cleanedName,
+    shortTitle: toShortTitle(cleanedName),
+    displayTitle: cleanedDisplayTitle || undefined,
     category,
     desc: r.short_description,
     price: customerPrice,

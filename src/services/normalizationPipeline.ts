@@ -22,6 +22,7 @@ import { cleanTitle, buildDisplayTitle } from './titleGenerator';
 import { buildDescription, buildBulletPoints, removeSpecDuplicates } from './featureGenerator';
 import { categoryCode, sceneCode, skuSuffix, fmtDimensions, fmtWeight } from './specFormatter';
 import { computeFamilyKey } from './familyKeyGenerator';
+import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
 
 // ── Output shape (maps directly to standardized_products columns) ─────────────
 
@@ -148,8 +149,12 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
   const [primaryImage = '', ...galleryImages] = rankedImages;
 
   // ── Title ────────────────────────────────────────────────────────────────────
+  // Strip supplier / manufacturer / vendor prefixes (e.g. "K&K") BEFORE
+  // cleanTitle so subsequent retail formatting sees only product copy.
+  // New supplier names go into src/utils/supplierNameSanitizer.ts.
   const rawTitle = String(row.title ?? '');
-  const productTitle = cleanTitle(rawTitle) || rawTitle;
+  const sanitizedRawTitle = sanitizeSupplierName(rawTitle).cleaned;
+  const productTitle = cleanTitle(sanitizedRawTitle) || sanitizedRawTitle;
   const productTitleDisplay = buildDisplayTitle(productTitle);
 
   // ── Description: 1-2 clean retail sentences ──────────────────────────────────

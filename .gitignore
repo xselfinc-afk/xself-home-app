@@ -28,5 +28,8 @@ android/
 
 # Sessions / secrets
 scripts/.giga-session.json
+scripts/.giga-chrome-profile/
+logs/
+tmp/
 .env
 .env.*

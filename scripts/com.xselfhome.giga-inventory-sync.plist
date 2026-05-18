@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd LaunchAgent for GIGA inventory sync.
+
+  Installs to ~/Library/LaunchAgents/. Runs as the logged-in user so it
+  inherits keychain access and your normal Playwright cache. Twice daily at
+  06:00 and 18:00 local time. Output captured to logs/ inside the repo.
+
+  IMPORTANT: this file uses hard-coded paths. If you ever move the repo,
+  re-run the install procedure (see README in scripts/runGigaInventorySync.sh
+  or the docstring in saveGigaSession.ts).
+
+  Install:
+    cp scripts/com.xselfhome.giga-inventory-sync.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.xselfhome.giga-inventory-sync.plist 2>/dev/null || true
+    launchctl load   -w ~/Library/LaunchAgents/com.xselfhome.giga-inventory-sync.plist
+    launchctl list   | grep giga-inventory-sync
+
+  Trigger manually:
+    launchctl start com.xselfhome.giga-inventory-sync
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.xselfhome.giga-inventory-sync.plist
+    rm ~/Library/LaunchAgents/com.xselfhome.giga-inventory-sync.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xselfhome.giga-inventory-sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/heliu/xself-home-app/scripts/runGigaInventorySync.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/heliu/xself-home-app</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/heliu/xself-home-app/logs/giga-inventory-sync.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/heliu/xself-home-app/logs/giga-inventory-sync.err.log</string>
+
+  <!-- Local time. Twice daily: 6 AM and 6 PM. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>6</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>18</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
+
+  <!-- launchd ships with a minimal PATH; the wrapper script extends this
+       at runtime, but giving launchd a sensible base avoids spawn errors. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LANG</key>
+    <string>en_US.UTF-8</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Don't spawn more than once per minute even if Apple coalesces missed
+       runs after wake-from-sleep. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <!-- Restart if the Mac was asleep at the scheduled time. -->
+  <key>StartOnMount</key>
+  <false/>
+</dict>
+</plist>
