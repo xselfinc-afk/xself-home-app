@@ -259,7 +259,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
         if (!data?.valid || !data?.selectedWarehouse) {
           const status: string = data?.fulfillmentStatus ?? 'unknown';
           console.warn(`[Checkout] plan-fulfillment: valid=false status=${status} reason=${data?.reason ?? ''}`);
-          if (status === 'stale_inventory' || status === 'no_inventory' || status === 'insufficient_qty') {
+          const isInventoryStatus =
+            status === 'stale_inventory'        ||
+            status === 'no_inventory'           ||
+            status === 'insufficient_qty'       ||
+            status === 'inventory_unavailable'  ||
+            status === 'warehouse_data_unavailable';
+          if (isInventoryStatus) {
             setIsInventoryStale(true);
           } else {
             setDeliveryErrorKind('geocode_failed');
@@ -281,7 +287,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           groups: [group],
           totalShipping: data.shipping,
           isSingleWarehouse: true,
-          isFallback: false,
+          // Surface the existing "Live inventory unavailable" banner whenever
+          // the server reports anything other than fresh inventory.
+          isFallback: data.inventoryFreshness !== 'fresh',
         };
 
         console.log(`[Checkout] Fulfillment plan: warehouse=${data.selectedWarehouse.code} dist=${data.distanceMiles.toFixed(1)}mi pickup=${data.usePickup} ship=$${data.shipping} freshness=${data.inventoryFreshness}`);
@@ -501,8 +509,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
     });
 
     // Confirm Affirm payment — Stripe opens Affirm authorization in browser.
-    // Shipping is already set on the PaymentIntent by the Edge Function (secret key);
-    // passing it again here would cause a "cannot change with publishable key" error.
+    // For Affirm specifically, the Edge Function attaches shipping[name] +
+    // shipping[address][...] on the PaymentIntent (secret-key only); the
+    // browser-side confirmPayment passes billingDetails for the payment
+    // method itself. Don't re-send shipping here — Stripe rejects shipping
+    // changes from the publishable key once the PI exists.
     const { error: confirmError, paymentIntent: confirmedPI } = await confirmPayment(clientSecret, {
       paymentMethodType: 'Affirm',
       paymentMethodData: {

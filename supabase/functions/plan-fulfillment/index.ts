@@ -9,7 +9,10 @@ const GOOGLE_MAPS_API_KEY = Deno.env.get('GOOGLE_MAPS_API_KEY') ?? '';
 
 const STALE_THRESHOLD_HOURS = 24;
 const SHIPPING_FEE = 99;
-const PICKUP_THRESHOLD_MILES = 30;
+// Customers within this distance may CHOOSE pickup or delivery; beyond it,
+// pickup is hidden and only delivery is offered. Bumped from 30 → 100 to give
+// nearby customers the option without forcing pickup on them.
+const PICKUP_THRESHOLD_MILES = 100;
 const MAX_CART_ITEMS = 20;
 const MAX_QTY_PER_ITEM = 99;
 const MAX_FIELD_LENGTH = 200;
@@ -120,11 +123,15 @@ async function geocodeAddress(address: string): Promise<Coords> {
   return json.results[0].geometry.location as Coords;
 }
 
-/** Estimated delivery string — mirrors fulfillmentPlanner.ts */
-function estimatedDelivery(distanceMiles: number): string {
-  if (distanceMiles <= 30) return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
-  if (distanceMiles <= 100) return '1–2 business days';
-  if (distanceMiles <= 300) return '2–4 business days';
+/** Estimated delivery / pickup string — mirrors fulfillmentPlanner.ts.
+ *  When the order is being fulfilled by pickup, returns the pickup window.
+ *  Otherwise, returns a distance-based delivery ETA. We gate on usePickup
+ *  (not distance) so a delivery-mode order at 50mi correctly shows
+ *  "1–2 business days" rather than a pickup window. */
+function estimatedDelivery(distanceMiles: number, usePickup: boolean): string {
+  if (usePickup)              return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
+  if (distanceMiles <= 100)   return '1–2 business days';
+  if (distanceMiles <= 300)   return '2–4 business days';
   return '3–7 business days';
 }
 
@@ -211,14 +218,19 @@ serve(async (req: Request) => {
     const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000).toISOString();
     const productIds = [...new Set(items.map((i) => i.productId))];
 
-    // ── 1. Load fresh scraped inventory from inventory_cache ─────────────────
+    // ── 1. Load scraped inventory from inventory_cache ───────────────────────
+    // Previously we required last_synced_at >= now - 24h and failed-closed
+    // when that produced no rows. That blocked ALL customers whenever the GIGA
+    // sync paused. We now accept ANY per-warehouse rows (regardless of age)
+    // and flag freshness in the response. Per-warehouse binding is preserved
+    // (CAX1 cannot recur because warehouse assignment is still bound to a real
+    // row), and out-of-stock protection still runs via the qty checks below.
     const { data: inventoryRows, error: inventoryErr } = await supabase
       .from('inventory_cache')
       .select('product_id, warehouse_code, quantity, last_synced_at')
       .in('product_id', productIds)
       .eq('source_type', 'website_scrape')
-      .eq('sync_status', 'ok')
-      .gte('last_synced_at', staleThreshold);
+      .eq('sync_status', 'ok');
 
     if (inventoryErr) {
       console.error('[plan-fulfillment] inventory_cache error:', inventoryErr.message);
@@ -226,13 +238,28 @@ serve(async (req: Request) => {
     }
 
     if (!inventoryRows || inventoryRows.length === 0) {
-      // No fresh per-warehouse scraped data at all. Refusing the order here is
-      // the safe choice — a stale/missing inventory snapshot must NEVER be
-      // smoothed over by an aggregate-only fallback, because warehouse
-      // assignment then has nothing real to bind the reservation to (the bug
-      // that caused CAX1 to be picked for a product with stock only in CA8 /
-      // AT4 / NJ2). Caller surfaces inventory_unavailable to the user.
-      return invalidResponse('inventory_unavailable', 'No fresh per-warehouse inventory data available');
+      // Truly no per-warehouse data at all. Refuse the order — we have no
+      // basis to bind a reservation to a warehouse.
+      return invalidResponse('inventory_unavailable', 'No per-warehouse inventory data available');
+    }
+
+    // Determine freshness from the oldest row we'll rely on. Used for the
+    // server log (admin signal) and surfaced to the client so the UI can show
+    // the "Live inventory unavailable" banner instead of a misleading
+    // address error.
+    const oldestSync = inventoryRows.reduce<string | null>((min, row) => {
+      const t = (row.last_synced_at as string | null) ?? null;
+      if (!t) return min;
+      return min === null || t < min ? t : min;
+    }, null);
+    const inventoryFreshness: 'fresh' | 'stale' | 'unknown' =
+      oldestSync === null ? 'unknown' :
+      oldestSync >= staleThreshold ? 'fresh' : 'stale';
+    if (inventoryFreshness !== 'fresh') {
+      console.warn(
+        `[plan-fulfillment] STALE INVENTORY (freshness=${inventoryFreshness}, oldestSync=${oldestSync ?? 'unknown'}) — ` +
+        `serving with isFallback so ops can manually verify warehouse stock before shipment.`,
+      );
     }
 
     // productId → warehouseCode → qty
@@ -352,7 +379,7 @@ serve(async (req: Request) => {
     }
 
     // ── 7. Attempt single-warehouse fulfillment ──────────────────────────────
-    // Pickup candidates (within 30mi + supports_pickup) first, then shipping.
+    // Pickup candidates (within PICKUP_THRESHOLD_MILES + supports_pickup) first, then shipping.
     const pickupCandidates = ranked.filter(
       (r) => r.distanceMiles <= PICKUP_THRESHOLD_MILES && r.warehouse.supports_pickup,
     );
@@ -423,11 +450,11 @@ serve(async (req: Request) => {
       deliveryEligible,
       usePickup,
       shipping: usePickup ? 0 : SHIPPING_FEE,
-      estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles),
+      estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles, usePickup),
       pickupWindow,
       availableQty: totalAvailableAtWarehouse(selectedEntry.warehouse.code),
-      inventoryFreshness: 'fresh',
-      inventoryTimestamp: new Date().toISOString(),
+      inventoryFreshness,
+      inventoryTimestamp: oldestSync ?? new Date().toISOString(),
     };
 
     console.log(

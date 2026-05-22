@@ -254,21 +254,22 @@ serve(async (req: Request) => {
     }
 
     // ── Inventory validation ──────────────────────────────────────────────────
-    // STRICT: only fresh per-warehouse website_scrape rows count. If those are
-    // missing, abort with inventory_unavailable rather than silently inventing
-    // a warehouse — see plan-fulfillment for the rationale (CAX1 incident).
+    // Accept ANY per-warehouse website_scrape rows (regardless of age). The
+    // staleness gate previously blocked all checkouts whenever GIGA sync
+    // paused; we now let stale rows flow through (per-warehouse binding still
+    // prevents CAX1) and rely on the qty check below for out-of-stock
+    // protection. Freshness is surfaced via plan-fulfillment's
+    // inventoryFreshness field, which the client renders as a fallback
+    // banner. STALE_THRESHOLD_HOURS is kept only for legacy reference.
     const productIds = [...new Set(items.map(i => i.productId))];
-    const staleThreshold = new Date(
-      Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000,
-    ).toISOString();
+    void STALE_THRESHOLD_HOURS;
 
     const { data: freshRows, error: invError } = await supabase
       .from('inventory_cache')
       .select('product_id, quantity, warehouse_code')
       .in('product_id', productIds)
       .eq('source_type', 'website_scrape')
-      .eq('sync_status', 'ok')
-      .gte('last_synced_at', staleThreshold);
+      .eq('sync_status', 'ok');
 
     if (invError) {
       console.error('[create-checkout-order] Inventory query failed:', invError.message);
@@ -468,6 +469,27 @@ serve(async (req: Request) => {
       stripeParams.append('payment_method_types[]', 'card');
     } else if (paymentMethodSelected === 'affirm') {
       stripeParams.append('payment_method_types[]', 'affirm');
+
+      // Affirm requires a shipping block on the PaymentIntent for risk
+      // underwriting. We use the address the client already passed plus a
+      // shipping name derived from customer.email (no name field is currently
+      // sent in the body — use the email's local part with punctuation
+      // softened, falling back to the full email or a generic label). The
+      // address shape on the body is { line1, city, state, zip, country };
+      // line2 is optional and only appended when present.
+      const email = (customer.email ?? '').trim();
+      const emailLocal = email.includes('@') ? email.slice(0, email.indexOf('@')) : email;
+      const shippingName = (emailLocal.replace(/[._+\-]+/g, ' ').trim() || email || 'Xself Home Customer').slice(0, 200);
+
+      stripeParams.append('shipping[name]',                shippingName);
+      stripeParams.append('shipping[address][line1]',      String(address.line1));
+      if ((address as { line2?: string }).line2) {
+        stripeParams.append('shipping[address][line2]',    String((address as { line2?: string }).line2));
+      }
+      stripeParams.append('shipping[address][city]',       String(address.city));
+      stripeParams.append('shipping[address][state]',      String(address.state));
+      stripeParams.append('shipping[address][postal_code]', String(address.zip));
+      stripeParams.append('shipping[address][country]',    String(address.country ?? 'US'));
     } else {
       stripeParams.append('automatic_payment_methods[enabled]', 'true');
     }

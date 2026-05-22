@@ -1,0 +1,1926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xself Home — Admin Orders</title>
+<style>
+  :root {
+    --canvas:   #F3F1EB;
+    --surface:  #FFFFFF;
+    --ink:      #1C1917;
+    --muted:    #6B7280;
+    --hairline: rgba(0, 0, 0, 0.08);
+    --gold:     #EAB320;
+    --gold-deep:#CA8A04;
+    --danger:   #DC2626;
+    --success:  #059669;
+    --info:     #2563EB;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    padding: 24px 16px 80px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--canvas);
+  }
+  .container { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.3px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    margin: 0 0 14px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 12px 0 6px;
+  }
+  input[type=text], input[type=email], input[type=password] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+  }
+  button {
+    padding: 10px 18px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--gold);
+    color: white;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--gold-deep);
+    border: 1px solid var(--gold-deep);
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .pill-paid    { background: rgba(5,150,105,0.12);  color: #065F46; }
+  .pill-pending { background: rgba(202,138,4,0.14);  color: var(--gold-deep); }
+  .pill-failed  { background: rgba(220,38,38,0.12);  color: #7F1D1D; }
+  .pill-info    { background: rgba(37,99,235,0.10);  color: #1D4ED8; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 6px; border-bottom: 1px solid var(--hairline); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
+  tr.order-row { cursor: pointer; }
+  tr.order-row:hover { background: rgba(0,0,0,0.02); }
+  pre {
+    background: #f5f5f0;
+    padding: 12px;
+    border-radius: 8px;
+    overflow: auto;
+    font-size: 12px;
+    line-height: 1.5;
+    max-height: 360px;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  .right { text-align: right; }
+  .hidden { display: none; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+  .toast {
+    position: fixed;
+    right: 16px;
+    top: 16px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    padding: 12px 16px;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+    z-index: 50;
+    max-width: 360px;
+  }
+  .read-only-banner {
+    background: rgba(37,99,235,0.10);
+    color: #1D4ED8;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    margin-bottom: 14px;
+    font-weight: 600;
+  }
+  .row-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .row-actions input[type=text] { max-width: 280px; }
+  .err { color: var(--danger); font-size: 12px; margin-top: 12px; }
+  a.back { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
+  a.back:hover { text-decoration: underline; }
+
+  /* Phase 5.1 — detail panel additions */
+  .order-row.selected { background: rgba(202,138,4,0.08); }
+  .order-row.selected:hover { background: rgba(202,138,4,0.12); }
+  .kv-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .kv-grid > div, .addr-grid > div {
+    background: rgba(0,0,0,0.02);
+    padding: 8px 12px;
+    border-radius: 8px;
+  }
+  .kv-grid .full-row, .addr-grid .full-row { grid-column: 1 / -1; }
+  .kv-label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .kv-value {
+    display: block;
+    font-size: 13px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+  .addr-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-top: 8px;
+  }
+  @media (max-width: 720px) {
+    .kv-grid   { grid-template-columns: 1fr; }
+    .addr-grid { grid-template-columns: 1fr; }
+  }
+  details {
+    background: rgba(0,0,0,0.02);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin: 8px 0;
+  }
+  details > summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 4px 0;
+    user-select: none;
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: '▸ '; color: var(--muted); }
+  details[open] > summary::before { content: '▾ '; }
+  details[open] > summary { margin-bottom: 8px; }
+  details pre { margin: 0; max-height: 360px; }
+  .section { margin-top: 18px; }
+  code {
+    font-size: 12px;
+    background: rgba(0,0,0,0.04);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+
+  /* Phase 5.2 — custom payment link card */
+  .paylink-card {
+    margin-top: 18px;
+    padding: 14px 16px;
+    background: rgba(202,138,4,0.06);
+    border: 1px solid rgba(202,138,4,0.24);
+    border-radius: 12px;
+  }
+  .paylink-card .eyebrow { color: var(--gold-deep); }
+  .paylink-grid {
+    display: grid;
+    grid-template-columns: 1fr 120px;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .paylink-grid input[type=number],
+  .paylink-grid input[type=text] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+  }
+  .paylink-grid .full-row { grid-column: 1 / -1; }
+  .paylink-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .paylink-result {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    font-size: 13px;
+    word-break: break-all;
+  }
+  .paylink-result a { color: var(--gold-deep); font-weight: 600; }
+  .paylink-status { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .paylink-status.err { color: var(--danger); }
+
+  /* Phase 5.3 — payment-link history (read-only audit table) */
+  .paylink-history-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--gold-deep);
+    border: 1px solid rgba(202,138,4,0.4);
+    cursor: pointer;
+  }
+  .paylink-history-btn:hover { background: rgba(202,138,4,0.06); }
+  .paylink-history-btn + .paylink-history-btn { margin-left: 4px; }
+  #paylinkHistoryContent table { font-size: 12px; }
+  #paylinkHistoryContent code { font-size: 11px; }
+  #paylinkHistoryContent .pill { font-size: 10px; }
+
+  /* Phase 6.1 — paid payment action panel */
+  .paid-action-card {
+    margin-top: 18px;
+    padding: 16px;
+    background: rgba(5,150,105,0.06);
+    border: 1px solid rgba(5,150,105,0.28);
+    border-radius: 12px;
+  }
+  .paid-action-card .eyebrow { color: #065F46; }
+  .paid-action-suggestion {
+    margin: 10px 0 14px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border-left: 3px solid #059669;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .paid-action-suggestion strong { color: #065F46; }
+  .paid-action-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .paid-action-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 8px;
+    background: transparent;
+    color: #065F46;
+    border: 1px solid rgba(5,150,105,0.45);
+    cursor: pointer;
+  }
+  .paid-action-btn:hover { background: rgba(5,150,105,0.08); }
+
+  /* ─── Phase 6.2 — premium SaaS-style layout ──────────────────────────── */
+
+  /* Wider container — Stripe/Shopify-style breathing room */
+  .container { max-width: 1280px; }
+  @media (min-width: 768px) { body { padding: 32px 24px 100px; } }
+
+  /* Page prelude (h1 + sub + read-only banner) — slim for signed-in surface */
+  .container > h1            { font-size: 18px; font-weight: 700; letter-spacing: -0.2px; margin: 0 0 2px; }
+  .container > p.sub         { font-size: 12px; margin: 0 0 12px; }
+  .container > .read-only-banner {
+    background: rgba(37,99,235,0.06);
+    color: #1D4ED8;
+    border: 1px solid rgba(37,99,235,0.18);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 11px;
+    margin-bottom: 18px;
+    font-weight: 600;
+  }
+
+  /* Admin header (inside list-card — signed-in only) */
+  .admin-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 8px 0 20px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--hairline);
+    flex-wrap: wrap;
+  }
+  .admin-header .admin-title {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin: 0;
+    color: var(--ink);
+  }
+  .admin-header .admin-subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 4px 0 0;
+  }
+  .admin-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .admin-email {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.03);
+    border-radius: 8px;
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font: inherit;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .btn-ghost:hover { background: rgba(0,0,0,0.03); }
+  .btn-primary-sm {
+    background: var(--gold);
+    color: white;
+    border: 0;
+    padding: 8px 18px;
+    border-radius: 10px;
+    font: inherit;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .btn-primary-sm:hover { background: var(--gold-deep); }
+
+  /* KPI cards */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 1024px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px)  { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+  .kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    transition: box-shadow 120ms ease, transform 120ms ease;
+  }
+  .kpi-card:hover {
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+    transform: translateY(-1px);
+  }
+  .kpi-card .kpi-label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .kpi-card .kpi-value {
+    display: block;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .kpi-card[data-kpi="paid"]     .kpi-value { color: #065F46; }
+  .kpi-card[data-kpi="pending"]  .kpi-value { color: var(--gold-deep); }
+  .kpi-card[data-kpi="total"]    .kpi-value { color: var(--ink); }
+
+  /* Filter toolbar */
+  .filter-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  }
+  .filter-input, .filter-select {
+    padding: 9px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+  }
+  .filter-input:focus, .filter-select:focus {
+    outline: none;
+    border-color: var(--gold-deep);
+    box-shadow: 0 0 0 3px rgba(202,138,4,0.18);
+  }
+  .filter-search { flex: 1 1 240px; min-width: 200px; }
+  .filter-select { min-width: 160px; }
+  .filter-input[type=date] { min-width: 140px; }
+
+  /* Orders table card */
+  .orders-table-card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  }
+  .orders-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+  }
+  .orders-table thead th {
+    position: sticky;
+    top: 0;
+    background: rgba(248,247,243,0.96);
+    backdrop-filter: blur(6px);
+    z-index: 1;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--hairline);
+    text-align: left;
+  }
+  .orders-table thead th.right { text-align: right; }
+  .orders-table tbody td {
+    padding: 16px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: middle;
+  }
+  .orders-table tbody tr {
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .orders-table tbody tr:hover { background: rgba(0,0,0,0.025); }
+  .orders-table tbody tr.selected { background: rgba(202,138,4,0.08); }
+  .orders-table tbody tr.selected:hover { background: rgba(202,138,4,0.12); }
+  .orders-table tbody tr:last-child td { border-bottom: 0; }
+
+  /* Slightly fuller pills for the new table */
+  .orders-table .pill { padding: 3px 10px; font-size: 11px; }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 20px;
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0;
+  }
+
+  /* Phase Admin 1.0A — loaded-count indicator + limit warning */
+  .loaded-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    background: rgba(0,0,0,0.02);
+    border-top: 1px solid var(--hairline);
+    border-radius: 0 0 12px 12px;
+    flex-wrap: wrap;
+  }
+  .loaded-status .loaded-count { font-weight: 700; color: var(--ink); }
+  .loaded-status .limit-warn {
+    color: var(--gold-deep);
+    background: rgba(202,138,4,0.10);
+    border: 1px solid rgba(202,138,4,0.32);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 11px;
+  }
+
+  /* Phase Admin 1.0A — safe horizontal scroll for the orders table on phones */
+  @media (max-width: 720px) {
+    .orders-table-card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .orders-table      { min-width: 720px; }
+  }
+
+  /* Phase Admin 1.0A — Stripe dashboard deep links inline with code */
+  a.stripe-link {
+    color: var(--info);
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(37,99,235,0.45);
+  }
+  a.stripe-link:hover { color: #1D4ED8; border-bottom-style: solid; }
+
+  /* Phase Admin 1.0B — Order action panel (state-machine buttons + history) */
+  .order-action-card {
+    margin-top: 18px;
+    padding: 16px;
+    background: rgba(37,99,235,0.04);
+    border: 1px solid rgba(37,99,235,0.22);
+    border-radius: 12px;
+  }
+  .order-action-card .eyebrow { color: #1D4ED8; }
+  .order-action-card.is-final {
+    background: rgba(0,0,0,0.025);
+    border-color: var(--hairline);
+  }
+  .order-action-card.is-final .eyebrow { color: var(--muted); }
+  .order-action-btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .order-action-btn {
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+    cursor: pointer;
+  }
+  .order-action-btn:hover { background: rgba(0,0,0,0.025); }
+  .order-action-btn.primary {
+    background: var(--gold);
+    color: white;
+    border-color: var(--gold);
+  }
+  .order-action-btn.primary:hover { background: var(--gold-deep); border-color: var(--gold-deep); }
+  .order-action-btn.danger {
+    color: #7F1D1D;
+    border-color: rgba(220,38,38,0.45);
+  }
+  .order-action-btn.danger:hover { background: rgba(220,38,38,0.06); }
+  .order-action-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .order-action-status {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 10px;
+  }
+  .order-action-status.err { color: var(--danger); }
+  .order-action-cancel-form {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+  }
+  .order-action-cancel-form input[type=text] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    margin-bottom: 8px;
+  }
+  .order-action-history table { font-size: 12px; }
+  .order-action-history code { font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Xself Home — Admin Orders</h1>
+  <p class="sub">Read-only MVP · Phase 5.0 · View customer orders. No writes.</p>
+  <div class="read-only-banner">READ-ONLY · No status updates · No refund actions · Stripe edits happen in the Stripe dashboard.</div>
+
+  <!-- SETUP CARD -->
+  <div id="setup-card" class="card">
+    <p class="eyebrow">Setup</p>
+    <p class="sub">
+      Paste your Supabase project URL and the project's public anon key. Both are public values from the project —
+      never the service role key. Persisted in this browser's localStorage.
+    </p>
+    <label for="supabaseUrl">Supabase Project URL</label>
+    <input id="supabaseUrl" type="text" placeholder="https://&lt;project&gt;.supabase.co" autocomplete="off" />
+    <label for="anonKey">Anon Key (publishable)</label>
+    <input id="anonKey" type="text" placeholder="eyJ..." autocomplete="off" />
+    <div style="margin-top:14px"><button id="saveSetup">Save</button></div>
+    <p id="setupError" class="err"></p>
+  </div>
+
+  <!-- LOGIN CARD -->
+  <div id="login-card" class="card hidden">
+    <p class="eyebrow">Sign in</p>
+    <p class="sub">Use the Supabase email + password for your admin user. Your email must be present in the <code>admin_users</code> table.</p>
+    <label for="loginEmail">Email</label>
+    <input id="loginEmail" type="email" autocomplete="email" />
+    <label for="loginPassword">Password</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" />
+    <div style="margin-top:14px"><button id="signIn">Sign in</button></div>
+    <p id="loginError" class="err"></p>
+  </div>
+
+  <!-- ORDERS LIST — Phase 6.2 premium layout -->
+  <div id="list-card" class="hidden">
+
+    <!-- Admin header -->
+    <header class="admin-header">
+      <div>
+        <h2 class="admin-title">Xself Home</h2>
+        <p class="admin-subtitle">Admin Dashboard</p>
+      </div>
+      <div class="admin-actions">
+        <span id="signedInAs" class="admin-email"></span>
+        <button id="refresh"  class="btn-ghost">Refresh</button>
+        <button id="signOut"  class="btn-ghost">Sign out</button>
+      </div>
+    </header>
+
+    <!-- KPI summary cards -->
+    <section class="kpi-grid">
+      <div class="kpi-card" data-kpi="total">
+        <span class="kpi-label">Total orders</span>
+        <span class="kpi-value" id="kpiTotal">—</span>
+      </div>
+      <div class="kpi-card" data-kpi="pending">
+        <span class="kpi-label">Pending payment</span>
+        <span class="kpi-value" id="kpiPending">—</span>
+      </div>
+      <div class="kpi-card" data-kpi="paid">
+        <span class="kpi-label">Paid</span>
+        <span class="kpi-value" id="kpiPaid">—</span>
+      </div>
+      <div class="kpi-card" data-kpi="delivery">
+        <span class="kpi-label">Delivery</span>
+        <span class="kpi-value" id="kpiDelivery">—</span>
+      </div>
+      <div class="kpi-card" data-kpi="pickup">
+        <span class="kpi-label">Pickup</span>
+        <span class="kpi-value" id="kpiPickup">—</span>
+      </div>
+    </section>
+
+    <!-- Premium filter toolbar -->
+    <section class="filter-toolbar">
+      <input id="searchBox"        type="text"  class="filter-input filter-search" placeholder="Search order number or email" />
+      <select id="filterStatus"    class="filter-select">
+        <option value="">All statuses</option>
+        <option value="pending_payment">Pending payment</option>
+        <option value="paid">Paid</option>
+        <option value="pending_pickup">Pending pickup</option>
+        <option value="ready_for_pickup">Ready for pickup</option>
+        <option value="picked_up">Picked up</option>
+        <option value="processing">Processing</option>
+        <option value="shipped">Shipped</option>
+        <option value="delivered">Delivered</option>
+        <option value="cancelled">Cancelled</option>
+        <option value="canceled">Canceled</option>
+        <option value="failed">Failed</option>
+        <option value="abandoned">Abandoned</option>
+      </select>
+      <select id="filterFulfillment" class="filter-select">
+        <option value="">All fulfillment</option>
+        <option value="pickup">Pickup</option>
+        <option value="delivery">Delivery</option>
+      </select>
+      <input id="filterDateFrom"  type="date" class="filter-input" title="From date" />
+      <input id="filterDateTo"    type="date" class="filter-input" title="To date" />
+      <button id="filterApply"    class="btn-primary-sm">Apply</button>
+      <button id="filterClear"    class="btn-ghost">Clear</button>
+    </section>
+
+    <!-- Orders table -->
+    <section class="orders-table-card">
+      <table class="orders-table">
+        <thead>
+          <tr>
+            <th>Order #</th>
+            <th>Status</th>
+            <th>Paid</th>
+            <th>Customer</th>
+            <th>Phone</th>
+            <th class="right">Total</th>
+            <th>Fulfillment</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="ordersTbody"></tbody>
+      </table>
+      <p id="emptyState" class="empty-state" style="display:none">No orders match the current filters.</p>
+      <!-- Phase Admin 1.0A — loaded-count + limit warning -->
+      <div id="loadedStatus" class="loaded-status" style="display:none">
+        <span>Loaded <span id="loadedCount" class="loaded-count">0</span> orders</span>
+        <span id="loadedFiltered" style="display:none">· <span id="loadedFilteredCount">0</span> match current filters</span>
+        <span id="loadedLimitWarn" class="limit-warn" style="display:none">
+          Showing the most recent — older orders are not loaded
+        </span>
+      </div>
+    </section>
+  </div>
+
+  <!-- DETAIL CARD -->
+  <div id="detail-card" class="card hidden">
+    <p class="eyebrow"><a href="#" id="backLink" class="back">← back to list</a></p>
+    <div id="detailContent"></div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+</div>
+
+<script type="module">
+  import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+  const LS_PREFIX = 'admin-orders.';
+  // Phase Admin 1.0A — bumped from 200 to give a much larger working window.
+  // If a deployment regularly approaches this, swap to cursor-based pagination.
+  const ORDER_QUERY_LIMIT = 1000;
+
+  let supabase = null;
+
+  function loadSetup() {
+    try {
+      return {
+        supabaseUrl: localStorage.getItem(LS_PREFIX + 'supabaseUrl') || '',
+        anonKey:     localStorage.getItem(LS_PREFIX + 'anonKey')     || '',
+      };
+    } catch {
+      return { supabaseUrl: '', anonKey: '' };
+    }
+  }
+
+  function show(id, on) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (on) el.classList.remove('hidden');
+    else    el.classList.add('hidden');
+  }
+
+  function toast(msg, kind) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.color = kind === 'err' ? 'var(--danger)' : 'var(--ink)';
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 3500);
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+  }
+  function escapeAttr(s) { return escapeHtml(s).replaceAll('\n', ' '); }
+
+  function fmtPrice(n) {
+    if (n == null || isNaN(Number(n))) return '—';
+    return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  }
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString(); } catch { return String(iso); }
+  }
+
+  // Phase Admin 1.0A — Stripe dashboard deep links.
+  // Test-mode is detected from the URL embedded with each payment-link row
+  // (`buy.stripe.com/test_…`) when available; for PaymentIntents we don't
+  // have that signal on the client, so we link to the live dashboard and let
+  // the admin toggle to test mode there if needed.
+  function stripeLink(kind, id, opts) {
+    if (!id) return '<code>—</code>';
+    const isTest = !!(opts && opts.test);
+    const base   = `https://dashboard.stripe.com${isTest ? '/test' : ''}`;
+    const path   = kind === 'payment_link' ? '/payment-links/' : '/payments/';
+    const url    = `${base}${path}${encodeURIComponent(id)}`;
+    return `<a class="stripe-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" title="Open in Stripe dashboard"><code>${escapeHtml(id)}</code></a>`;
+  }
+
+  function paidPill(status) {
+    const s = (status || 'pending').toLowerCase();
+    const cls = s === 'paid' ? 'pill-paid' : s === 'failed' ? 'pill-failed' : 'pill-pending';
+    return `<span class="pill ${cls}">${escapeHtml(s.replace(/_/g, ' '))}</span>`;
+  }
+  function statusPill(status) {
+    const s = (status || 'pending').toLowerCase();
+    const cls =
+      (s === 'delivered' || s === 'picked_up' || s === 'paid')
+        ? 'pill-paid'
+        : (s === 'failed' || s === 'cancelled' || s === 'canceled' || s === 'abandoned')
+          ? 'pill-failed'
+          : 'pill-pending';
+    return `<span class="pill ${cls}">${escapeHtml(s.replace(/_/g, ' '))}</span>`;
+  }
+
+  // ── SETUP / AUTH ─────────────────────────────────────────────────────────
+  function saveSetup() {
+    const url = document.getElementById('supabaseUrl').value.trim();
+    const key = document.getElementById('anonKey').value.trim();
+    document.getElementById('setupError').textContent = '';
+    if (!url || !key) {
+      document.getElementById('setupError').textContent = 'Both URL and Anon Key are required.';
+      return;
+    }
+    // Refuse anything that decodes to role=service_role — never accept the
+    // service role key in this static page.
+    try {
+      const part = key.split('.')[1];
+      if (part) {
+        const padded = part + '==='.slice((part.length + 3) % 4);
+        const decoded = JSON.parse(atob(padded.replace(/-/g, '+').replace(/_/g, '/')));
+        if (decoded && decoded.role === 'service_role') {
+          document.getElementById('setupError').textContent =
+            'That looks like a SERVICE ROLE key. Use the ANON (publishable) key.';
+          return;
+        }
+      }
+    } catch { /* not a JWT body — accept */ }
+    try {
+      localStorage.setItem(LS_PREFIX + 'supabaseUrl', url);
+      localStorage.setItem(LS_PREFIX + 'anonKey',     key);
+    } catch {}
+    bootstrap();
+  }
+
+  async function signIn() {
+    document.getElementById('loginError').textContent = '';
+    const email    = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!email || !password) {
+      document.getElementById('loginError').textContent = 'Email and password required.';
+      return;
+    }
+    if (!supabase) {
+      const setup = loadSetup();
+      if (!setup.supabaseUrl || !setup.anonKey) {
+        document.getElementById('loginError').textContent = 'Setup is missing — fill in URL + Anon Key first.';
+        return;
+      }
+      supabase = createClient(setup.supabaseUrl, setup.anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true },
+      });
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      document.getElementById('loginError').textContent = error.message;
+      return;
+    }
+    await bootstrap();
+  }
+
+  async function signOut() {
+    if (supabase) await supabase.auth.signOut();
+    show('list-card',   false);
+    show('detail-card', false);
+    show('login-card',  true);
+  }
+
+  // ── DATA LOAD ────────────────────────────────────────────────────────────
+  let allOrders = [];
+
+  async function loadOrders() {
+    const tbody = document.getElementById('ordersTbody');
+    tbody.innerHTML = '<tr><td colspan="8" class="sub">Loading…</td></tr>';
+    const { data, error } = await supabase
+      .from('admin_orders_summary')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(ORDER_QUERY_LIMIT);
+    if (error) {
+      tbody.innerHTML = `<tr><td colspan="8" style="color:var(--danger)">Load failed: ${escapeHtml(error.message)}</td></tr>`;
+      const ls = document.getElementById('loadedStatus');
+      if (ls) ls.style.display = 'none';
+      return;
+    }
+    allOrders = data || [];
+    renderKPIs();
+    renderOrders();
+    renderLoadedStatus();
+  }
+
+  // Phase Admin 1.0A — show "Loaded N orders" + warn when the hard limit is
+  // hit (older orders are silently truncated by the server-side .limit()).
+  function renderLoadedStatus(filteredCount) {
+    const wrap   = document.getElementById('loadedStatus');
+    const count  = document.getElementById('loadedCount');
+    const warn   = document.getElementById('loadedLimitWarn');
+    const filt   = document.getElementById('loadedFiltered');
+    const filtN  = document.getElementById('loadedFilteredCount');
+    if (!wrap || !count || !warn) return;
+    wrap.style.display = 'flex';
+    count.textContent = String(allOrders.length);
+    warn.style.display = (allOrders.length >= ORDER_QUERY_LIMIT) ? 'inline-block' : 'none';
+    if (typeof filteredCount === 'number' && filteredCount !== allOrders.length) {
+      filt.style.display  = 'inline';
+      filtN.textContent   = String(filteredCount);
+    } else if (filt) {
+      filt.style.display = 'none';
+    }
+  }
+
+  // Phase 6.2 — KPI summary cards. Computed from `allOrders` (the same
+  // dataset that drives the table) so KPIs reflect the full result set, not
+  // just the currently-filtered subset.
+  function renderKPIs() {
+    const counts = { total: 0, pending: 0, paid: 0, delivery: 0, pickup: 0 };
+    for (const o of allOrders) {
+      counts.total++;
+      const ps = String(o.payment_status || '').toLowerCase();
+      const st = String(o.status || '').toLowerCase();
+      if (ps === 'paid' || st === 'paid' || st === 'delivered' || st === 'picked_up' || st === 'pending_pickup' || st === 'ready_for_pickup' || st === 'shipped' || st === 'processing') {
+        counts.paid++;
+      } else if (ps === 'pending' || st === 'pending_payment' || st === 'pending') {
+        counts.pending++;
+      }
+      const fm = String(o.fulfillment_method || '').toLowerCase();
+      if (fm === 'pickup')   counts.pickup++;
+      if (fm === 'delivery') counts.delivery++;
+    }
+    const set = (id, n) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(n);
+    };
+    set('kpiTotal',    counts.total);
+    set('kpiPending',  counts.pending);
+    set('kpiPaid',     counts.paid);
+    set('kpiDelivery', counts.delivery);
+    set('kpiPickup',   counts.pickup);
+  }
+
+  function renderOrders() {
+    const statusSel    = document.getElementById('filterStatus');
+    const fulfillSel   = document.getElementById('filterFulfillment');
+    const dateFromInp  = document.getElementById('filterDateFrom');
+    const dateToInp    = document.getElementById('filterDateTo');
+    const status       = (statusSel?.value    || '').trim().toLowerCase();
+    const fulfillment  = (fulfillSel?.value   || '').trim().toLowerCase();
+    const dateFrom     = (dateFromInp?.value  || '').trim();
+    const dateTo       = (dateToInp?.value    || '').trim();
+    const q            = (document.getElementById('searchBox')?.value || '').trim().toLowerCase();
+
+    const fromTs = dateFrom ? new Date(dateFrom + 'T00:00:00').getTime() : null;
+    const toTs   = dateTo   ? new Date(dateTo   + 'T23:59:59.999').getTime() : null;
+
+    const filtered = allOrders.filter(o => {
+      if (status) {
+        // Match either order.status or order.payment_status exactly.
+        const st = String(o.status || '').toLowerCase();
+        const ps = String(o.payment_status || '').toLowerCase();
+        if (st !== status && ps !== status) return false;
+      }
+      if (fulfillment) {
+        const fm = String(o.fulfillment_method || '').toLowerCase();
+        if (fm !== fulfillment) return false;
+      }
+      if (fromTs != null || toTs != null) {
+        const created = o.created_at ? new Date(o.created_at).getTime() : NaN;
+        if (Number.isNaN(created)) return false;
+        if (fromTs != null && created < fromTs) return false;
+        if (toTs   != null && created > toTs)   return false;
+      }
+      if (q) {
+        const hay = ((o.order_number || '') + ' ' + (o.order_id || '') + ' ' + (o.contact_email || '')).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const tbody = document.getElementById('ordersTbody');
+    renderLoadedStatus(filtered.length);
+    if (filtered.length === 0) {
+      tbody.innerHTML = '';
+      document.getElementById('emptyState').style.display = 'block';
+      return;
+    }
+    document.getElementById('emptyState').style.display = 'none';
+    tbody.innerHTML = filtered.map(o => `
+      <tr class="order-row" data-order="${escapeAttr(o.order_id)}">
+        <td><strong>${escapeHtml(o.order_number || o.order_id || '')}</strong></td>
+        <td>${statusPill(o.status)}</td>
+        <td>${paidPill(o.payment_status)}</td>
+        <td>${escapeHtml(o.contact_email || '—')}</td>
+        <td>${escapeHtml(o.customer_phone || '—')}</td>
+        <td class="num right">${fmtPrice(o.total)}</td>
+        <td>${escapeHtml(o.fulfillment_method || '—')}</td>
+        <td>${escapeHtml(fmtDate(o.created_at))}</td>
+      </tr>
+    `).join('');
+    tbody.querySelectorAll('tr.order-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        tbody.querySelectorAll('tr.order-row.selected').forEach(r => r.classList.remove('selected'));
+        tr.classList.add('selected');
+        openDetail(tr.dataset.order);
+      });
+    });
+  }
+
+  async function openDetail(orderId) {
+    if (!orderId) return;
+    show('list-card',   false);
+    show('detail-card', true);
+    const detail = document.getElementById('detailContent');
+    detail.innerHTML = '<p class="sub">Loading detail…</p>';
+    const { data, error } = await supabase
+      .from('admin_order_detail')
+      .select('*')
+      .eq('order_id', orderId)
+      .maybeSingle();
+    if (error || !data) {
+      detail.innerHTML = `
+        <p style="color:var(--danger)"><strong>Detail load failed</strong></p>
+        <p class="sub">${escapeHtml(error?.message || 'Order not found in admin_order_detail. Check that you are on the admin allowlist and that the SQL migration has been applied.')}</p>
+        <p style="margin-top:14px"><a href="#" class="back" id="errBack">← back to list</a></p>
+      `;
+      document.getElementById('errBack')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        show('detail-card', false);
+        show('list-card',   true);
+      });
+      return;
+    }
+    renderDetail(data);
+  }
+
+  // items_json is the pre-Phase-8 cart snapshot — keyed by various id-style
+  // fields. Build a lookup so normalized order_items rows can fetch their
+  // color / variant_sku for the table display.
+  function buildColorLookup(itemsJson) {
+    const map = new Map();
+    if (!Array.isArray(itemsJson)) return map;
+    for (const raw of itemsJson) {
+      if (!raw || typeof raw !== 'object') continue;
+      const obj = raw;
+      const keys = [
+        obj.product_id, obj.supplier_product_id, obj.supplierProductId,
+        obj.sku, obj.supplier_sku, obj.skuCustom, obj.variant_sku, obj.id,
+      ];
+      for (const k of keys) {
+        if (typeof k === 'string' && k.length > 0 && !map.has(k)) {
+          map.set(k, obj);
+        }
+      }
+    }
+    return map;
+  }
+
+  // address_json shape varies (Stripe / our own checkout / generic). Try
+  // common keys; return null if nothing matches so the caller can fall
+  // back to raw JSON.
+  function fmtAddress(addr) {
+    if (!addr || typeof addr !== 'object') return null;
+    const a = addr;
+    const out = {
+      name:   a.name || a.full_name || a.recipient_name || a.recipient || '',
+      phone:  a.phone || a.phone_number || '',
+      line1:  a.address_line_1 || a.line1 || a.street || a.address || a.street1 || '',
+      line2:  a.address_line_2 || a.line2 || a.street2 || a.apt || a.unit || a.suite || '',
+      city:   a.city || a.locality || a.town || '',
+      state:  a.state || a.region || a.administrative_area || a.province || '',
+      zip:    a.zip || a.zipcode || a.postal_code || a.postcode || '',
+      country: a.country || a.country_code || '',
+      notes:  a.delivery_notes || a.notes || a.instructions || a.comments || '',
+    };
+    if (!out.name && !out.line1 && !out.city && !out.zip && !out.phone) return null;
+    return out;
+  }
+
+  function renderDetail(o) {
+    const detail        = document.getElementById('detailContent');
+    const items         = Array.isArray(o.items)        ? o.items        : [];
+    const reservations  = Array.isArray(o.reservations) ? o.reservations : [];
+    const itemsJson     = Array.isArray(o.items_json)   ? o.items_json   : [];
+    const colorLookup   = buildColorLookup(itemsJson);
+
+    const itemsRows = items.map(it => {
+      const variant     = colorLookup.get(it.product_id) || colorLookup.get(it.supplier_sku) || {};
+      const color       = variant.color || variant.color_name || variant.colour || '';
+      const variantSku  = variant.variant_sku || variant.skuCustom || variant.sku_custom || '';
+      const colorCell   = color || variantSku
+        ? `${escapeHtml(color || '—')}${variantSku ? ` <span class="muted">(${escapeHtml(variantSku)})</span>` : ''}`
+        : '—';
+      return `
+        <tr>
+          <td>${escapeHtml(it.title || '—')}</td>
+          <td><code>${escapeHtml(it.product_id || '—')}</code></td>
+          <td><code>${escapeHtml(it.supplier_sku || '—')}</code></td>
+          <td>${colorCell}</td>
+          <td class="right">${escapeHtml(String(it.quantity ?? '—'))}</td>
+          <td class="right num">${fmtPrice((it.unit_price_cents ?? 0) / 100)}</td>
+          <td class="right num">${fmtPrice((it.total_cents ?? 0) / 100)}</td>
+        </tr>`;
+    }).join('');
+
+    const resRows = reservations.map(r => `
+      <tr>
+        <td><code>${escapeHtml(r.warehouse_code || '—')}</code></td>
+        <td><code>${escapeHtml(r.supplier_sku || '—')}</code></td>
+        <td><code>${escapeHtml(r.product_id || '—')}</code></td>
+        <td class="right">${escapeHtml(String(r.quantity ?? '—'))}</td>
+        <td>${escapeHtml(r.status || '—')}</td>
+        <td>${escapeHtml(fmtDate(r.expires_at))}</td>
+      </tr>`).join('');
+
+    const addr = fmtAddress(o.address_json);
+    const addressSection = addr ? `
+      <div class="addr-grid">
+        ${addr.name    ? `<div><span class="kv-label">Name</span><span class="kv-value">${escapeHtml(addr.name)}</span></div>` : ''}
+        ${addr.phone   ? `<div><span class="kv-label">Phone</span><span class="kv-value">${escapeHtml(addr.phone)}</span></div>` : ''}
+        ${addr.line1   ? `<div class="full-row"><span class="kv-label">Street</span><span class="kv-value">${escapeHtml(addr.line1)}${addr.line2 ? '<br/>' + escapeHtml(addr.line2) : ''}</span></div>` : ''}
+        ${addr.city    ? `<div><span class="kv-label">City</span><span class="kv-value">${escapeHtml(addr.city)}</span></div>` : ''}
+        ${addr.state   ? `<div><span class="kv-label">State</span><span class="kv-value">${escapeHtml(addr.state)}</span></div>` : ''}
+        ${addr.zip     ? `<div><span class="kv-label">Zip</span><span class="kv-value">${escapeHtml(addr.zip)}</span></div>` : ''}
+        ${addr.country ? `<div><span class="kv-label">Country</span><span class="kv-value">${escapeHtml(addr.country)}</span></div>` : ''}
+        ${addr.notes   ? `<div class="full-row"><span class="kv-label">Notes</span><span class="kv-value">${escapeHtml(addr.notes)}</span></div>` : ''}
+      </div>
+    ` : `<p class="sub">Could not infer address fields — showing raw JSON.</p>
+        <pre>${escapeHtml(JSON.stringify(o.address_json ?? {}, null, 2))}</pre>`;
+
+    detail.innerHTML = `
+      <h2>Order ${escapeHtml(o.order_number || o.order_id)}</h2>
+      <p class="sub">
+        <code>${escapeHtml(o.order_id)}</code> ·
+        Created ${escapeHtml(fmtDate(o.created_at))} ·
+        Updated ${escapeHtml(fmtDate(o.updated_at))}
+      </p>
+
+      <div class="kv-grid">
+        <div><span class="kv-label">Status</span><span class="kv-value">${statusPill(o.status)}</span></div>
+        <div><span class="kv-label">Payment</span><span class="kv-value">${paidPill(o.payment_status)}</span></div>
+        <div><span class="kv-label">Fulfillment</span><span class="kv-value">${escapeHtml(o.fulfillment_method || '—')}</span></div>
+        <div><span class="kv-label">Total</span><span class="kv-value num"><strong>${fmtPrice(o.total)}</strong></span></div>
+        <div><span class="kv-label">Email</span><span class="kv-value">${escapeHtml(o.contact_email || o.guest_email || '—')}</span></div>
+        <div><span class="kv-label">Phone</span><span class="kv-value">${escapeHtml(o.customer_phone || '—')}</span></div>
+        <div class="full-row"><span class="kv-label">Payment Intent</span><span class="kv-value">${stripeLink('payment_intent', o.payment_intent_id || o.stripe_payment_intent_id || '')}</span></div>
+        <div class="full-row"><span class="kv-label">User / guest</span><span class="kv-value">${escapeHtml(o.user_id || '(guest)')}${o.guest_token ? ` · token <code>${escapeHtml(o.guest_token)}</code>` : ''}</span></div>
+      </div>
+
+      <!-- Phase Admin 1.0B — Order action panel (rendered async after detail loads) -->
+      <div id="orderActionPanel"></div>
+
+      <div class="section">
+        <p class="eyebrow">Totals</p>
+        <p>
+          Subtotal: <span class="num">${fmtPrice(o.subtotal)}</span> ·
+          Shipping: <span class="num">${fmtPrice(o.shipping_total)}</span> ·
+          Tax: <span class="num">${fmtPrice(o.tax)}</span> ·
+          <strong>Total: <span class="num">${fmtPrice(o.total)}</span></strong>
+        </p>
+      </div>
+
+      <div class="section">
+        <p class="eyebrow">Items (${items.length})</p>
+        ${items.length > 0 ? `
+          <table>
+            <thead><tr>
+              <th>Title</th>
+              <th>product_id</th>
+              <th>supplier_sku</th>
+              <th>Color / variant</th>
+              <th class="right">Qty</th>
+              <th class="right">Unit</th>
+              <th class="right">Line</th>
+            </tr></thead>
+            <tbody>${itemsRows}</tbody>
+          </table>` :
+          '<p class="sub">No normalized line items found. Showing <code>items_json</code> snapshot below.</p>'}
+      </div>
+
+      <div class="section">
+        <p class="eyebrow">Address</p>
+        ${addressSection}
+      </div>
+
+      <div class="section">
+        <p class="eyebrow">Fulfillment</p>
+        <p><strong>Method:</strong> ${escapeHtml(o.fulfillment_method || '—')}</p>
+        <p class="eyebrow" style="margin-top:14px">Reservations (${reservations.length})</p>
+        ${reservations.length > 0 ? `
+          <table>
+            <thead><tr>
+              <th>Warehouse</th>
+              <th>supplier_sku</th>
+              <th>product_id</th>
+              <th class="right">Qty</th>
+              <th>Status</th>
+              <th>Expires</th>
+            </tr></thead>
+            <tbody>${resRows}</tbody>
+          </table>` :
+          '<p class="sub">No reservations recorded for this order.</p>'}
+      </div>
+
+      <div class="section paylink-card" data-order-id="${escapeAttr(o.order_id)}">
+        <p class="eyebrow">Custom payment link</p>
+        <p class="sub" style="margin:0 0 10px">
+          Generate a Stripe Payment Link at a negotiated price. The browser never sees the
+          Stripe secret key — this calls the <code>admin-create-payment-link</code> Edge Function
+          which validates your admin allowlist membership server-side.
+        </p>
+        <div class="paylink-grid">
+          <div>
+            <label class="kv-label" style="margin-bottom:4px">Unit price (USD)</label>
+            <input type="number" min="0.50" step="0.01" id="paylinkUnitPrice" placeholder="e.g. 379.99" />
+          </div>
+          <div>
+            <label class="kv-label" style="margin-bottom:4px">Quantity</label>
+            <input type="number" min="1" step="1" id="paylinkQuantity" value="1" />
+          </div>
+          <div class="full-row">
+            <label class="kv-label" style="margin-bottom:4px">Title (optional)</label>
+            <input type="text" id="paylinkTitle" placeholder="${escapeAttr((items[0]?.title) || 'Xself Home Custom Order')}" />
+          </div>
+          <div class="full-row">
+            <label class="kv-label" style="margin-bottom:4px">Note (optional, stored in Stripe metadata)</label>
+            <input type="text" id="paylinkNote" placeholder="e.g. agreed via chat on 2026-05-20" />
+          </div>
+        </div>
+        <p class="muted" style="margin-top:10px">
+          Linked to order <code>${escapeHtml(o.order_id)}</code> ·
+          customer <code>${escapeHtml(o.contact_email || o.guest_email || '—')}</code>
+          ${items[0]?.product_id ? `· first line product <code>${escapeHtml(items[0].product_id)}</code>` : ''}
+        </p>
+        <div class="paylink-actions">
+          <button id="paylinkCreate">Create payment link</button>
+          <button id="paylinkCopy" class="secondary" disabled>Copy URL</button>
+          <button id="paylinkOpen" class="secondary" disabled>Open in browser</button>
+        </div>
+        <div id="paylinkResult" class="paylink-result hidden"></div>
+        <div id="paylinkStatus" class="paylink-status"></div>
+      </div>
+
+      <div id="paidActionPanel" class="hidden"></div>
+
+      <div class="section">
+        <p class="eyebrow">Payment link history</p>
+        <p class="sub" style="margin:0 0 10px">
+          Every Stripe Payment Link previously created for this order via the admin dashboard.
+          Read-only — no edits, no deletes, no refunds. Rows come from
+          <code>admin_custom_payment_links</code>.
+        </p>
+        <div id="paylinkHistoryContent"></div>
+      </div>
+
+      <div class="section">
+        <p class="eyebrow">Raw snapshots (click to expand)</p>
+        <details><summary>items_json (cart snapshot)</summary>
+          <pre>${escapeHtml(JSON.stringify(o.items_json ?? [], null, 2))}</pre>
+        </details>
+        <details><summary>address_json</summary>
+          <pre>${escapeHtml(JSON.stringify(o.address_json ?? {}, null, 2))}</pre>
+        </details>
+        <details><summary>fulfillment_plan</summary>
+          <pre>${escapeHtml(JSON.stringify(o.fulfillment_plan ?? {}, null, 2))}</pre>
+        </details>
+        <details><summary>fulfillment_groups_json</summary>
+          <pre>${escapeHtml(JSON.stringify(o.fulfillment_groups_json ?? [], null, 2))}</pre>
+        </details>
+        <details><summary>Full order JSON</summary>
+          <pre>${escapeHtml(JSON.stringify(o, null, 2))}</pre>
+        </details>
+      </div>
+    `;
+
+    wirePaymentLinkHandlers(o, items);
+
+    // Phase Admin 1.0B — load status history then render the order action
+    // panel above. Fire-and-forget so the rest of the detail card paints
+    // immediately; the panel slot stays empty until the history resolves.
+    loadOrderStatusEvents(o.order_id).then(events => renderOrderActionPanel(o, events));
+  }
+
+  // ── Phase Admin 1.0B — Order status state machine (client mirror) ───────
+  // The Edge Function is the source of truth and re-validates everything.
+  // This client-side table is only used to render the right buttons. Keep in
+  // sync with supabase/functions/admin-update-order-status/index.ts.
+  const DELIVERY_NEXT = {
+    paid:                'processing',
+    processing:          'scheduled_delivery',
+    scheduled_delivery:  'delivered',
+  };
+  const PICKUP_NEXT = {
+    paid:               'pending_pickup',
+    pending_pickup:     'ready_for_pickup',
+    ready_for_pickup:   'picked_up',
+  };
+  const FINAL_STATES = new Set(['delivered', 'picked_up', 'cancelled']);
+  const STATUS_LABELS = {
+    processing:         'Mark processing',
+    scheduled_delivery: 'Schedule delivery',
+    delivered:          'Mark delivered',
+    pending_pickup:     'Mark pending pickup',
+    ready_for_pickup:   'Mark ready for pickup',
+    picked_up:          'Mark picked up',
+    cancelled:          'Cancel order',
+  };
+
+  function nextAdvanceFor(method, current) {
+    const fm  = String(method  || '').toLowerCase();
+    const cur = String(current || '').toLowerCase();
+    if (FINAL_STATES.has(cur)) return null;
+    const path = fm === 'pickup' ? PICKUP_NEXT : DELIVERY_NEXT;
+    return path[cur] || null;
+  }
+
+  async function loadOrderStatusEvents(orderId) {
+    if (!orderId) return [];
+    const { data, error } = await supabase
+      .from('order_status_events')
+      .select('from_status, to_status, reason, admin_email, created_at')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) {
+      console.warn('[order-status-events] load failed:', error.message);
+      return [];
+    }
+    return data || [];
+  }
+
+  async function callUpdateOrderStatus(orderId, toStatus, reason) {
+    const setup = loadSetup();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      return { ok: false, error: 'session_expired', detail: 'Session expired — sign in again.' };
+    }
+    try {
+      const resp = await fetch(`${setup.supabaseUrl}/functions/v1/admin-update-order-status`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+          'apikey':        setup.anonKey,
+        },
+        body: JSON.stringify({
+          order_id:  orderId,
+          to_status: toStatus,
+          reason:    reason || null,
+        }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok || !body.ok) {
+        return {
+          ok: false,
+          error:  body.error || ('http_' + resp.status),
+          detail: body.detail || body.message || 'unknown error',
+        };
+      }
+      return { ok: true, body };
+    } catch (e) {
+      return { ok: false, error: 'network_error', detail: (e && e.message) ? e.message : String(e) };
+    }
+  }
+
+  function renderOrderActionHistory(events) {
+    if (!events || events.length === 0) {
+      return '<p class="sub" style="margin:0">No status changes recorded yet.</p>';
+    }
+    const rows = events.map(e => `
+      <tr>
+        <td>${escapeHtml(fmtDate(e.created_at))}</td>
+        <td>${escapeHtml(e.from_status || '—')}</td>
+        <td>${statusPill(e.to_status)}</td>
+        <td>${escapeHtml(e.admin_email || '—')}</td>
+        <td>${escapeHtml(e.reason || '—')}</td>
+      </tr>`).join('');
+    return `
+      <div class="order-action-history">
+        <table>
+          <thead><tr>
+            <th>When</th><th>From</th><th>To</th><th>By</th><th>Reason</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function renderOrderActionPanel(order, events) {
+    const panel = document.getElementById('orderActionPanel');
+    if (!panel) return;
+    const currentStatus = String(order.status || '').toLowerCase();
+    const method        = String(order.fulfillment_method || '').toLowerCase();
+    const isFinal       = FINAL_STATES.has(currentStatus);
+    const advance       = isFinal ? null : nextAdvanceFor(method, currentStatus);
+
+    const advanceBtn = advance
+      ? `<button class="order-action-btn primary" data-action="advance" data-to="${escapeAttr(advance)}">${escapeHtml(STATUS_LABELS[advance] || ('Mark ' + advance))}</button>`
+      : '';
+    const cancelBtn = isFinal
+      ? ''
+      : `<button class="order-action-btn danger" data-action="cancel-open">Cancel order</button>`;
+
+    const buttonsHtml = (advanceBtn || cancelBtn)
+      ? `<div class="order-action-btn-row">${advanceBtn}${cancelBtn}</div>`
+      : '';
+
+    const finalNote = isFinal
+      ? `<p class="muted" style="margin-top:6px">Order is in a final state — no further transitions allowed.</p>`
+      : '';
+
+    panel.innerHTML = `
+      <div class="section order-action-card${isFinal ? ' is-final' : ''}">
+        <p class="eyebrow">Order action</p>
+        <div class="kv-grid">
+          <div><span class="kv-label">Current status</span><span class="kv-value">${statusPill(currentStatus)}</span></div>
+          <div><span class="kv-label">Fulfillment</span><span class="kv-value">${escapeHtml(order.fulfillment_method || '—')}</span></div>
+          <div><span class="kv-label">Order #</span><span class="kv-value"><code>${escapeHtml(order.order_number || order.order_id || '')}</code></span></div>
+        </div>
+        ${buttonsHtml}
+        ${finalNote}
+        <div id="orderActionCancelForm" class="order-action-cancel-form hidden">
+          <label class="kv-label" style="margin-bottom:6px">Reason for cancellation (required)</label>
+          <input id="orderActionCancelReason" type="text" placeholder="e.g. customer requested cancellation; refund issued in Stripe" />
+          <div style="display:flex; gap:8px">
+            <button class="order-action-btn danger" data-action="cancel-confirm">Confirm cancel</button>
+            <button class="order-action-btn"        data-action="cancel-abort">Back</button>
+          </div>
+        </div>
+        <p id="orderActionStatus" class="order-action-status"></p>
+        <p class="eyebrow" style="margin-top:16px">Recent status changes</p>
+        ${renderOrderActionHistory(events)}
+      </div>`;
+
+    wireOrderActionHandlers(order);
+  }
+
+  function wireOrderActionHandlers(order) {
+    const panel = document.getElementById('orderActionPanel');
+    if (!panel) return;
+    const status = panel.querySelector('#orderActionStatus');
+    const form   = panel.querySelector('#orderActionCancelForm');
+    const reason = panel.querySelector('#orderActionCancelReason');
+
+    function setMsg(msg, isErr) {
+      if (!status) return;
+      status.textContent = msg || '';
+      status.classList.toggle('err', !!isErr);
+    }
+
+    async function performUpdate(toStatus, reasonText, triggerBtn) {
+      // Disable all action buttons synchronously to prevent double-fire.
+      const buttons = panel.querySelectorAll('button.order-action-btn');
+      buttons.forEach(b => { b.disabled = true; });
+      setMsg(toStatus === 'cancelled' ? 'Cancelling order…' : 'Updating status…');
+      const result = await callUpdateOrderStatus(order.order_id, toStatus, reasonText);
+      if (!result.ok) {
+        setMsg(`Failed (${result.error}): ${result.detail}`, true);
+        buttons.forEach(b => { b.disabled = false; });
+        if (triggerBtn) triggerBtn.disabled = false;
+        return;
+      }
+      setMsg(`Status updated to "${toStatus}". Refreshing…`);
+      // Refresh detail (re-fetches order + events) and list (KPIs / row status).
+      // Both run in parallel; detail refresh re-renders the panel.
+      try {
+        await Promise.all([openDetail(order.order_id), loadOrders()]);
+      } catch (e) {
+        setMsg(`Status updated, but refresh failed: ${(e && e.message) || e}`, true);
+      }
+    }
+
+    panel.querySelectorAll('button.order-action-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.action;
+        if (action === 'advance') {
+          const toStatus = btn.dataset.to;
+          if (!toStatus) return;
+          await performUpdate(toStatus, null, btn);
+        } else if (action === 'cancel-open') {
+          if (form) form.classList.remove('hidden');
+          setMsg('');
+          if (reason) { reason.value = ''; reason.focus(); }
+        } else if (action === 'cancel-abort') {
+          if (form) form.classList.add('hidden');
+          setMsg('');
+        } else if (action === 'cancel-confirm') {
+          const reasonText = reason ? reason.value.trim() : '';
+          if (!reasonText) {
+            setMsg('Cancellation reason is required.', true);
+            if (reason) reason.focus();
+            return;
+          }
+          await performUpdate('cancelled', reasonText, btn);
+        }
+      });
+    });
+  }
+
+  // Phase 6.1 — Paid Payment Action panel. Read-only. Renders when any
+  // admin_custom_payment_links row for this order has status='paid'. Suggests
+  // next-step copy based on order.fulfillment_method and offers copy helpers.
+  // Does NOT mutate order status, fulfillment, inventory, or any other table.
+  function renderPaidActionPanel(order, paidRow) {
+    const panel = document.getElementById('paidActionPanel');
+    if (!panel) return;
+
+    const fmt          = String(order.fulfillment_method || '').toLowerCase();
+    const isPickup     = fmt === 'pickup';
+    const isDelivery   = fmt === 'delivery';
+    const totalCents   = Number(paidRow.negotiated_total_cents) || 0;
+    const totalUsd     = totalCents / 100;
+    const totalStr     = '$' + totalUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const paidAtIso    = paidRow.paid_at || paidRow.created_at;
+    const paidAtHuman  = paidAtIso ? new Date(paidAtIso).toLocaleString() : '—';
+    const paidAtShort  = paidAtIso
+      ? new Date(paidAtIso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '—';
+    const customerEmail = order.contact_email || order.guest_email || '';
+    const orderNumber   = order.order_number || order.order_id || '';
+
+    const suggestion = isPickup
+      ? 'Customer has paid. Confirm pickup window and prepare order for pickup.'
+      : isDelivery
+        ? 'Customer has paid. Confirm delivery address and schedule delivery.'
+        : 'Customer has paid. Review order details and confirm fulfillment method.';
+
+    const paymentSummary = `Payment received: ${totalStr} for order ${orderNumber} on ${paidAtShort}.`;
+
+    const nextStepMessage = isPickup
+      ? 'Thank you, your payment has been received. We will confirm your pickup window and prepare your order.'
+      : isDelivery
+        ? 'Thank you, your payment has been received. We will confirm your delivery address and schedule your delivery.'
+        : 'Thank you, your payment has been received. We will confirm your fulfillment details shortly.';
+
+    panel.classList.remove('hidden');
+    panel.innerHTML = `
+      <div class="section paid-action-card">
+        <p class="eyebrow">Paid payment action</p>
+        <div class="kv-grid">
+          <div><span class="kv-label">Paid amount</span><span class="kv-value num"><strong>${escapeHtml(totalStr)}</strong></span></div>
+          <div><span class="kv-label">Paid at</span><span class="kv-value">${escapeHtml(paidAtHuman)}</span></div>
+          <div><span class="kv-label">Fulfillment</span><span class="kv-value">${escapeHtml(order.fulfillment_method || '—')}</span></div>
+          <div><span class="kv-label">Customer email</span><span class="kv-value">${escapeHtml(customerEmail || '—')}</span></div>
+          <div class="full-row"><span class="kv-label">Order number</span><span class="kv-value"><code>${escapeHtml(orderNumber)}</code></span></div>
+        </div>
+        <div class="paid-action-suggestion">
+          <strong>Suggested next action:</strong> ${escapeHtml(suggestion)}
+        </div>
+        <div class="paid-action-actions">
+          <button class="paid-action-btn" id="paidActionCopyEmail"   data-copy="${escapeAttr(customerEmail)}">Copy customer email</button>
+          <button class="paid-action-btn" id="paidActionCopySummary" data-copy="${escapeAttr(paymentSummary)}">Copy payment summary</button>
+          <button class="paid-action-btn" id="paidActionCopyMessage" data-copy="${escapeAttr(nextStepMessage)}">Copy next-step message</button>
+        </div>
+        <p class="muted" id="paidActionStatus" style="margin-top:8px"></p>
+      </div>
+    `;
+
+    // Wire the three copy helpers — purely client-side clipboard writes.
+    panel.querySelectorAll('.paid-action-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const text = btn.dataset.copy || '';
+        const statusEl = document.getElementById('paidActionStatus');
+        if (!text) {
+          if (statusEl) statusEl.textContent = 'Nothing to copy.';
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          if (statusEl) statusEl.textContent = `Copied: ${text.length > 60 ? text.slice(0, 60) + '…' : text}`;
+          const orig = btn.textContent;
+          btn.textContent = 'Copied ✓';
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        } catch (e) {
+          if (statusEl) statusEl.textContent = `Copy failed: ${e.message || e}`;
+        }
+      });
+    });
+  }
+
+  // Phase 5.3 — Read-only audit of every Stripe Payment Link previously
+  // created for this order. Queries admin_custom_payment_links (gated by
+  // RLS to admins). No write actions; per-row buttons only copy the URL
+  // or open it in a new tab.
+  async function loadPaymentLinkHistory(orderArg) {
+    const el = document.getElementById('paylinkHistoryContent');
+    const paidPanel = document.getElementById('paidActionPanel');
+    if (paidPanel) { paidPanel.classList.add('hidden'); paidPanel.innerHTML = ''; }
+    if (!el) return;
+    // Accept either an order object (preferred — gives us fulfillment_method,
+    // contact_email, etc. for the Phase 6.1 paid action panel) or a bare order_id
+    // string (legacy callers).
+    const order = (orderArg && typeof orderArg === 'object') ? orderArg : null;
+    const orderId = order ? order.order_id : orderArg;
+    if (!orderId) {
+      el.innerHTML = '<p class="sub">(no order_id — history unavailable)</p>';
+      return;
+    }
+    el.innerHTML = '<p class="sub">Loading payment-link history…</p>';
+    const { data, error } = await supabase
+      .from('admin_custom_payment_links')
+      .select('created_at, created_by_email, negotiated_unit_price_cents, quantity, negotiated_total_cents, status, paid_at, stripe_payment_link_id, stripe_url')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false });
+    if (error) {
+      el.innerHTML = `<p style="color:var(--danger)">Failed to load history: ${escapeHtml(error.message)}</p>`;
+      return;
+    }
+    if (!data || data.length === 0) {
+      el.innerHTML = '<p class="sub">No payment links created for this order.</p>';
+      return;
+    }
+    // Phase 6.1 — surface a paid-action panel when any link has been paid.
+    if (order && paidPanel) {
+      const paid = data.find(r => r.status === 'paid');
+      if (paid) renderPaidActionPanel(order, paid);
+    }
+    const rows = data.map(r => {
+      const unitUsd  = (Number(r.negotiated_unit_price_cents)  || 0) / 100;
+      const totalUsd = (Number(r.negotiated_total_cents)        || 0) / 100;
+      const status   = String(r.status || '—');
+      const pillCls  = status === 'paid'
+        ? 'pill-paid'
+        : (status === 'expired' || status === 'cancelled') ? 'pill-failed'
+        : 'pill-pending';
+      const url = r.stripe_url || '';
+      const isTest = typeof url === 'string' && /buy\.stripe\.com\/test[_/]/i.test(url);
+      return `
+        <tr>
+          <td>${escapeHtml(fmtDate(r.created_at))}</td>
+          <td>${escapeHtml(r.created_by_email || '—')}</td>
+          <td class="right num">${fmtPrice(unitUsd)}</td>
+          <td class="right">${escapeHtml(String(r.quantity ?? 1))}</td>
+          <td class="right num"><strong>${fmtPrice(totalUsd)}</strong></td>
+          <td><span class="pill ${pillCls}">${escapeHtml(status)}</span></td>
+          <td>${stripeLink('payment_link', r.stripe_payment_link_id || '', { test: isTest })}</td>
+          <td>
+            <button class="paylink-history-btn paylink-history-copy" data-url="${escapeAttr(url)}" ${url ? '' : 'disabled'}>Copy URL</button>
+            <button class="paylink-history-btn paylink-history-open" data-url="${escapeAttr(url)}" ${url ? '' : 'disabled'}>Open</button>
+          </td>
+        </tr>`;
+    }).join('');
+    el.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Created</th>
+          <th>By</th>
+          <th class="right">Unit</th>
+          <th class="right">Qty</th>
+          <th class="right">Total</th>
+          <th>Status</th>
+          <th>Stripe link ID</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    el.querySelectorAll('.paylink-history-copy').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const url = btn.dataset.url;
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+          const orig = btn.textContent;
+          btn.textContent = 'Copied ✓';
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        } catch {
+          btn.textContent = 'Failed';
+          setTimeout(() => { btn.textContent = 'Copy URL'; }, 1500);
+        }
+      });
+    });
+    el.querySelectorAll('.paylink-history-open').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const url = btn.dataset.url;
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    });
+  }
+
+  // Phase 5.2 — Custom payment link UI handlers. Calls the
+  // admin-create-payment-link Edge Function with the signed-in user's
+  // JWT. NEVER touches Stripe secret keys or service-role keys; those
+  // live only on the server.
+  function wirePaymentLinkHandlers(order, items) {
+    const createBtn = document.getElementById('paylinkCreate');
+    const copyBtn   = document.getElementById('paylinkCopy');
+    const openBtn   = document.getElementById('paylinkOpen');
+    const result    = document.getElementById('paylinkResult');
+    const status    = document.getElementById('paylinkStatus');
+    if (!createBtn || !copyBtn || !openBtn) return;
+
+    // Load the read-only audit history for this order on open. Passing
+    // the full order object (not just order_id) so the Phase 6.1 paid-
+    // action panel can see fulfillment_method / contact_email.
+    loadPaymentLinkHistory(order);
+
+    let currentUrl = '';
+
+    function setStatus(msg, isErr) {
+      status.textContent = msg;
+      status.classList.toggle('err', !!isErr);
+    }
+
+    createBtn.addEventListener('click', async () => {
+      // Phase Admin 1.0A — disable the Create button synchronously BEFORE any
+      // async work so a fast double-click can never fire two Stripe calls.
+      if (createBtn.disabled) return;
+      createBtn.disabled = true;
+      setStatus('');
+      result.classList.add('hidden');
+      copyBtn.disabled = true;
+      openBtn.disabled = true;
+      const unitDollarsRaw = document.getElementById('paylinkUnitPrice').value;
+      const quantityRaw    = document.getElementById('paylinkQuantity').value;
+      const titleRaw       = document.getElementById('paylinkTitle').value;
+      const noteRaw        = document.getElementById('paylinkNote').value;
+      const unitDollars = Number(unitDollarsRaw);
+      const quantity    = Math.max(1, Math.floor(Number(quantityRaw) || 1));
+      if (!Number.isFinite(unitDollars) || unitDollars <= 0) {
+        setStatus('Enter a positive unit price in USD.', true);
+        createBtn.disabled = false;
+        return;
+      }
+      const unitCents = Math.round(unitDollars * 100);
+      if (unitCents <= 0) {
+        setStatus('Unit price must convert to a positive integer in cents.', true);
+        createBtn.disabled = false;
+        return;
+      }
+
+      const setup = loadSetup();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setStatus('Session expired — sign in again.', true);
+        createBtn.disabled = false;
+        return;
+      }
+
+      setStatus('Creating payment link…');
+      try {
+        const resp = await fetch(`${setup.supabaseUrl}/functions/v1/admin-create-payment-link`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type':  'application/json',
+            // Supabase platform requires the publishable apikey header on
+            // function calls even when the Bearer is the user JWT.
+            'apikey': setup.anonKey,
+          },
+          body: JSON.stringify({
+            order_id:                    order.order_id ?? null,
+            order_number:                order.order_number ?? null,
+            customer_email:              order.contact_email || order.guest_email || null,
+            customer_phone:              order.customer_phone ?? null,
+            product_id:                  items[0]?.product_id ?? null,
+            supplier_sku:                items[0]?.supplier_sku ?? null,
+            title:                       titleRaw.trim() || (items[0]?.title ?? 'Xself Home Custom Order'),
+            quantity,
+            negotiated_unit_price_cents: unitCents,
+            note:                        noteRaw.trim() || null,
+          }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || !body.ok) {
+          setStatus(`Failed: ${body.error || resp.status} — ${body.detail || body.message || 'unknown error'}`, true);
+          createBtn.disabled = false;
+          return;
+        }
+        currentUrl = body.url;
+        result.classList.remove('hidden');
+        result.innerHTML = `
+          <p><strong>Payment link created.</strong></p>
+          <p style="margin:6px 0"><a href="${escapeAttr(currentUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(currentUrl)}</a></p>
+          <p class="muted">
+            payment_link_id: <code>${escapeHtml(body.payment_link_id || '')}</code> ·
+            price_id: <code>${escapeHtml(body.price_id || '')}</code> ·
+            ${fmtPrice((body.amount_cents || 0) / 100)} total (${escapeHtml(String(body.quantity || 1))}×)
+          </p>
+          ${body.warning ? `<p class="muted" style="color:var(--danger)">${escapeHtml(body.warning)}</p>` : ''}
+        `;
+        copyBtn.disabled = false;
+        openBtn.disabled = false;
+        setStatus('Created.');
+        // Refresh the audit history so the just-created link shows up.
+        // Pass the full order object so the paid-action panel can re-evaluate.
+        loadPaymentLinkHistory(order);
+      } catch (e) {
+        setStatus(`Network error: ${e.message || e}`, true);
+      } finally {
+        createBtn.disabled = false;
+      }
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      if (!currentUrl) return;
+      try {
+        await navigator.clipboard.writeText(currentUrl);
+        setStatus('URL copied to clipboard.');
+      } catch {
+        setStatus('Copy failed — select the URL manually.', true);
+      }
+    });
+
+    openBtn.addEventListener('click', () => {
+      if (!currentUrl) return;
+      window.open(currentUrl, '_blank', 'noopener,noreferrer');
+    });
+  }
+
+  // ── BOOTSTRAP ────────────────────────────────────────────────────────────
+  async function bootstrap() {
+    const setup = loadSetup();
+    document.getElementById('supabaseUrl').value = setup.supabaseUrl;
+    document.getElementById('anonKey').value     = setup.anonKey;
+
+    if (!setup.supabaseUrl || !setup.anonKey) {
+      show('setup-card',  true);
+      show('login-card',  false);
+      show('list-card',   false);
+      show('detail-card', false);
+      return;
+    }
+    supabase = createClient(setup.supabaseUrl, setup.anonKey, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      show('setup-card',  false);
+      show('login-card',  true);
+      show('list-card',   false);
+      show('detail-card', false);
+      return;
+    }
+    document.getElementById('signedInAs').textContent = session.user.email || '';
+
+    // Verify admin allowlist membership — RLS already gates everything, but
+    // this gives a clean "you're not on the list" message instead of an
+    // empty orders table.
+    const adminCheck = await supabase
+      .from('admin_users')
+      .select('email')
+      .ilike('email', session.user.email || '')
+      .maybeSingle();
+    if (adminCheck.error || !adminCheck.data) {
+      toast('This account is not on the admin allowlist. Signing out.', 'err');
+      await supabase.auth.signOut();
+      show('list-card',  false);
+      show('detail-card', false);
+      show('login-card', true);
+      return;
+    }
+
+    show('setup-card',  false);
+    show('login-card',  false);
+    show('list-card',   true);
+    show('detail-card', false);
+    await loadOrders();
+  }
+
+  // ── EVENT WIRING ─────────────────────────────────────────────────────────
+  document.getElementById('saveSetup').addEventListener('click', saveSetup);
+  document.getElementById('signIn').addEventListener('click', signIn);
+  document.getElementById('signOut').addEventListener('click', signOut);
+  // Phase Admin 1.0A — Refresh now restores the list view (collapse any open
+  // detail), clears row selection, then reloads orders.
+  document.getElementById('refresh').addEventListener('click', () => {
+    show('detail-card', false);
+    show('list-card',   true);
+    document.querySelectorAll('#ordersTbody tr.order-row.selected')
+      .forEach(r => r.classList.remove('selected'));
+    loadOrders();
+  });
+  document.getElementById('filterStatus').addEventListener('change', renderOrders);
+  document.getElementById('searchBox').addEventListener('input', renderOrders);
+  // Phase 6.2 — new filter controls + Apply/Clear buttons.
+  document.getElementById('filterFulfillment')?.addEventListener('change', renderOrders);
+  document.getElementById('filterDateFrom')   ?.addEventListener('change', renderOrders);
+  document.getElementById('filterDateTo')     ?.addEventListener('change', renderOrders);
+  document.getElementById('filterApply')      ?.addEventListener('click',  renderOrders);
+  document.getElementById('filterClear')      ?.addEventListener('click',  () => {
+    const sb = document.getElementById('searchBox');
+    const fs = document.getElementById('filterStatus');
+    const ff = document.getElementById('filterFulfillment');
+    const df = document.getElementById('filterDateFrom');
+    const dt = document.getElementById('filterDateTo');
+    if (sb) sb.value = '';
+    if (fs) fs.value = '';
+    if (ff) ff.value = '';
+    if (df) df.value = '';
+    if (dt) dt.value = '';
+    renderOrders();
+  });
+  document.getElementById('backLink').addEventListener('click', (e) => {
+    e.preventDefault();
+    show('detail-card', false);
+    show('list-card',   true);
+  });
+
+  bootstrap();
+</script>
+</body>
+</html>

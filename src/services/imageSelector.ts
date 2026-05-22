@@ -6,22 +6,12 @@
  * Image selection and ranking for normalized product data.
  * Uses ONLY raw_payload.mainImageUrl and raw_payload.imageUrls.
  * Never uses the supplier fileUrls column (row.images) — it may contain PDFs.
+ *
+ * Deny-list logic is shared with the Playwright scraper via
+ * `src/utils/productImageRules.ts` (PRODUCT_DISPLAY_RULES.md §1.8 / DEP-5).
  */
 
-const BAD_IMAGE_KEYWORDS = [
-  'label', 'manual', 'instruction', 'detail', 'details', 'size',
-  'spec', 'specification', 'specifications', 'cert', 'test', 'warning',
-  'pdf', 'assembly', 'carton', 'package', 'dimension', 'dimensions',
-  'prop65', 'closeup', 'close-up', 'parts', 'installation', 'step',
-  'guide', 'barcode', 'sticker', 'document', 'certificate', 'report',
-  'tcps', 'care', 'paper', 'card', 'carta', 'description', 'shooting',
-  'lighting', 'difference',
-];
-
-function isBadImageUrl(url: string): boolean {
-  const l = url.toLowerCase();
-  return BAD_IMAGE_KEYWORDS.some(k => l.includes(k));
-}
+import { isLikelyNonProductImage } from '../utils/productImageRules';
 
 /**
  * Returns all usable product images ranked by quality, capped at maxImages.
@@ -47,7 +37,7 @@ export function collectImages(
   const scored = all.map((url, i) => {
     const l = url.toLowerCase();
     let score = 100 - i * 2;
-    if (isBadImageUrl(l)) score -= 120;
+    if (isLikelyNonProductImage(url)) score -= 120;
     if (l.includes('main')) score += 30;
     if (l.includes('primary')) score += 26;
     if (l.includes('front')) score += 24;

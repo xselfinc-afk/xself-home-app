@@ -5,6 +5,7 @@
  *   payment_intent.succeeded    → mark order paid, fulfill reservations
  *   payment_intent.payment_failed → mark order failed, release reservations
  *   payment_intent.canceled     → mark order canceled, release reservations
+ *   checkout.session.completed  → mark admin custom Payment Link paid
  *
  * Order lookup strategy (backward-compatible):
  *   1. Look up by orders.payment_intent_id (Phase 8 flow)
@@ -14,6 +15,7 @@
  *   - succeeded: no-op if order.status is already 'paid' or 'pending_pickup'
  *   - failed/canceled: WHERE NOT IN (paid, pending_pickup) prevents downgrading paid orders
  *   - reservation updates use WHERE status='reserved' — already-transitioned rows are no-ops
+ *   - admin Payment Link sync updates the same row by Stripe payment_link id
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -31,6 +33,15 @@ const STRIPE_WEBHOOK_SECRET = (Deno.env.get('STRIPE_WEBHOOK_SECRET') ?? '')
 
 const SUPABASE_URL             = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+function stripeId(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (value && typeof value === 'object') {
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === 'string' && id.trim() ? id : null;
+  }
+  return null;
+}
 
 // ── Stripe webhook signature verification ─────────────────────────────────────
 // Manual HMAC-SHA256 verification — Stripe Node SDK is not available in Deno.
@@ -110,12 +121,96 @@ serve(async (req: Request) => {
     'payment_intent.succeeded',
     'payment_intent.payment_failed',
     'payment_intent.canceled',
+    // Phase 5.4 — admin-negotiated Payment Link payments arrive as
+    // Checkout Sessions. PI metadata is not propagated by default for
+    // Payment Links, so the session is the authoritative match anchor.
+    'checkout.session.completed',
   ];
 
   if (!HANDLED.includes(eventType)) {
     return new Response(JSON.stringify({ received: true, action: 'ignored' }), { status: 200 });
   }
 
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  // ── Phase 5.4 — Payment Link checkout sessions (admin negotiated prices) ──
+  // Branched BEFORE the existing payment_intent handler so app-order behaviour
+  // is unchanged. Matches by stripe_payment_link_id; Stripe retries safely
+  // rewrite the same paid fields on the same row.
+  if (eventType === 'checkout.session.completed') {
+    const session     = (event.data as Record<string, unknown>)?.object as Record<string, unknown>;
+    const sessionId   = session?.id as string | undefined;
+    const paymentLink = stripeId(session?.payment_link);
+    const piId        = stripeId(session?.payment_intent);
+    const paymentStatus = session?.payment_status as string | undefined;
+    const eventCreated = event.created as number | undefined;
+
+    if (!paymentLink) {
+      console.log('[Webhook] checkout.session.completed without payment_link — ignoring');
+      return new Response(
+        JSON.stringify({ received: true, action: 'no_payment_link', session_id: sessionId ?? null }),
+        { status: 200 },
+      );
+    }
+
+    if (paymentStatus && paymentStatus !== 'paid') {
+      console.log('[Webhook] checkout.session.completed payment_link is not paid yet:', paymentLink, paymentStatus);
+      return new Response(
+        JSON.stringify({
+          received: true,
+          action: 'admin_link_not_paid',
+          payment_link: paymentLink,
+          session_id: sessionId ?? null,
+          payment_status: paymentStatus,
+        }),
+        { status: 200 },
+      );
+    }
+
+    const paidAtIso = eventCreated ? new Date(eventCreated * 1000).toISOString() : new Date().toISOString();
+
+    const { data: updated, error: updErr } = await supabase
+      .from('admin_custom_payment_links')
+      .update({
+        status:                     'paid',
+        paid_at:                    paidAtIso,
+        stripe_checkout_session_id: sessionId ?? null,
+        stripe_payment_intent_id:   piId ?? null,
+      })
+      .eq('stripe_payment_link_id', paymentLink)
+      .select('id, order_id, order_number, negotiated_total_cents');
+
+    if (updErr) {
+      console.error('[Webhook] admin_custom_payment_links update failed:', updErr.message);
+      // Return 500 so Stripe retries — do not return 200 on DB failure
+      return new Response(JSON.stringify({ error: updErr.message }), { status: 500 });
+    }
+
+    if (!updated || updated.length === 0) {
+      console.log('[Webhook] checkout.session.completed — no admin link matched:', paymentLink);
+      return new Response(
+        JSON.stringify({ received: true, action: 'no_admin_link_match', payment_link: paymentLink }),
+        { status: 200 },
+      );
+    }
+
+    console.log('[Webhook] admin link paid:', paymentLink, '→ row', updated[0]?.id, '· session', sessionId);
+    return new Response(
+      JSON.stringify({
+        received:        true,
+        action:          'admin_link_paid',
+        rows:            updated.length,
+        payment_link:    paymentLink,
+        session_id:      sessionId,
+        order_id:        updated[0]?.order_id ?? null,
+      }),
+      { status: 200 },
+    );
+  }
+
+  // ── payment_intent.* events (existing flow, unchanged below this line) ────
   const paymentIntent   = (event.data as Record<string, unknown>)?.object as Record<string, unknown>;
   const paymentIntentId = paymentIntent?.id as string;
   const metadata        = ((paymentIntent?.metadata ?? {}) as Record<string, string>);
@@ -127,10 +222,6 @@ serve(async (req: Request) => {
   }
 
   console.log('[Webhook]', eventType, '— PI:', paymentIntentId, '| meta order_id:', orderIdMeta ?? 'none');
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
 
   // ── Find order (two-phase lookup for backward compatibility) ──────────────
   let orderId:     string | null = null;

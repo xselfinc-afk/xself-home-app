@@ -7,6 +7,12 @@ export { collectImages };
 import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
 import { sourceUrl } from '../utils/imageSource';
 import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
+import {
+  resolveProductTitle,
+  resolveCustomerPrice,
+  resolveOriginalPrice,
+  resolveDiscountPercent,
+} from './productResolvers';
 
 // ── Debug counter (remove after Phase 3 verification) ────────────────────────
 let _debugCount = 0;
@@ -256,12 +262,21 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
   // Use the full category name from specs for display/filtering; fall back to code
   const category = specsJson['Category'] || r.category_code;
 
-  // AI-managed retail price — falls back to supplier price when not yet set
-  const customerPrice = r.selling_price != null && r.selling_price > 0 ? r.selling_price : r.price;
-  // Show strikethrough when supplier's list price is genuinely above what we charge
-  const originalPrice = r.original_price != null && r.original_price > customerPrice
-    ? r.original_price
-    : undefined;
+  // Customer-facing price ladder centralized in resolveCustomerPrice
+  // (PRODUCT_DISPLAY_RULES.md §1.2): selling_price wins when positive,
+  // else falls back to supplier price.
+  const customerPrice = resolveCustomerPrice({
+    selling_price: r.selling_price,
+    price:         r.price,
+  });
+  // Strikethrough + percent centralized in productResolvers
+  // (PRODUCT_DISPLAY_RULES.md §1.3). originalPrice is undefined unless the
+  // compare-at is strictly greater than the customer-facing price.
+  const originalPrice = resolveOriginalPrice({
+    original_price: r.original_price,
+    customerPrice,
+  });
+  const discountPercent = resolveDiscountPercent({ originalPrice, customerPrice });
 
   // Build a single real variant so the app hides the fake VARIANT_COLORS fallback.
   // show_color_selector = false → picker stays hidden (colorImageVariants.length <= 1 guard).
@@ -279,13 +294,16 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
       ]
     : undefined;
 
-  // Resolve title with the canonical precedence, then sanitize at the
-  // adapter boundary so supplier/manufacturer names (e.g. "K&K") never
-  // surface to any screen — even if the underlying DB column or a cached
-  // row temporarily still carries them. Patterns live in
-  // src/utils/supplierNameSanitizer.ts.
-  const rawName = r.optimized_title || r.product_title_display || r.product_title || '';
-  const cleanedName = sanitizeSupplierName(rawName).cleaned;
+  // Title resolution centralized in resolveProductTitle (see
+  // PRODUCT_DISPLAY_RULES.md §1.1). Falls back to 'Untitled Product' when
+  // every source field is empty. displayTitle stays as a separately
+  // sanitized copy of product_title_display per the current adapter
+  // contract — that resolver is reserved for a later phase.
+  const cleanedName = resolveProductTitle({
+    optimized_title:       r.optimized_title,
+    product_title_display: r.product_title_display,
+    product_title:         r.product_title,
+  });
   const cleanedDisplayTitle = sanitizeSupplierName(r.product_title_display).cleaned;
 
   const base: Product = {
@@ -297,9 +315,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     desc: r.short_description,
     price: customerPrice,
     originalPrice,
-    discountPercent: originalPrice
-      ? Math.round((1 - customerPrice / originalPrice) * 100)
-      : 0,
+    discountPercent,
     rating: 4.6,
     reviewCount: 24,
     stock: r.total_available_qty ?? 0,

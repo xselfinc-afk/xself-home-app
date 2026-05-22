@@ -25,6 +25,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
 import { loadProductFamily } from './src/services/productFamilyService';
 import { LIST_SELECT } from './src/services/detailProductAdapter';
+import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
 import { HeroBanner } from './src/components/HeroBanner';
 import { selectHeroImage } from './src/utils/heroImageSelector';
@@ -763,14 +764,13 @@ function HomeScreen({ navigation }) {
     return result;
   }, [withImages]);
 
-  // Max discount % across all products with a valid original price — drives hero subtitle
+  // Max discount % across all products — drives hero subtitle. Reads
+  // adapter-produced `discountPercent` (PRODUCT_DISPLAY_RULES.md §1.3) so
+  // the formula lives in resolveDiscountPercent, not at the render site.
   const maxDiscount = useMemo(() => {
     let best = 0;
     for (const p of withImages) {
-      if (p.originalPrice && p.originalPrice > p.price) {
-        const pct = Math.round(((p.originalPrice - p.price) / p.originalPrice) * 100);
-        if (pct > best) best = pct;
-      }
+      if (p.discountPercent > best) best = p.discountPercent;
     }
     return best;
   }, [withImages]);
@@ -1559,7 +1559,11 @@ function ProductDetailScreen({ route, navigation }) {
                     product.tags?.material?.length ? { label: 'Material', value: product.tags.material.map((m: string) => m.replace(/-/g, ' ')).join(', ') } : null,
                     { label: 'Weight', value: (product as any).weight ?? '—' },
                     { label: 'Brand', value: 'Xselfhome' },
-                    { label: 'SKU', value: product.variants?.[0]?.sku ?? 'XSF-XXXX' },
+                    { label: 'SKU', value: resolveSkuDisplay({
+                        skuCustom: product.skuCustom,
+                        sku:       product.variants?.[0]?.sku,
+                        id:        product.id,
+                    }) },
                   ].filter(Boolean) as { label: string; value: string }[];
                   return (
                     <View>

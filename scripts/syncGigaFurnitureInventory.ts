@@ -54,6 +54,26 @@ const PAGE_DELAY_MS = process.env.PAGE_DELAY_MS
   ? parseInt(process.env.PAGE_DELAY_MS, 10)
   : 1200;
 
+// ── Incremental / priority-batching config ────────────────────────────────────
+// Default mode is incremental: each run selects a bounded slice of products
+// chosen by priority + freshness so we don't re-scrape everything every day.
+// Set INVENTORY_FULL_SYNC=1 to fall back to the legacy "scrape every product"
+// behavior (used by `npm run inventory:sync:full`).
+const FULL_SYNC = process.env.INVENTORY_FULL_SYNC === '1';
+const BATCH_SIZE = process.env.INVENTORY_BATCH_SIZE
+  ? parseInt(process.env.INVENTORY_BATCH_SIZE, 10)
+  : 30;
+
+// SLA windows per priority tier (hours). A product is "due" when its newest
+// inventory_cache row is older than this — or it has never been synced.
+const TIER_0_MAX_HOURS = 24;  // hot:  recently ordered → ~daily refresh
+const TIER_1_MAX_HOURS = 48;  // warm: in_stock         → ~every 2 days
+const TIER_2_MAX_HOURS = 72;  // cold: everything else  → ~every 3 days
+                              //       (well inside the 3–7 day SLA target)
+
+// Look-back window for "recently ordered" classification (tier 0).
+const RECENT_ORDER_DAYS = 30;
+
 // ── Warehouse helpers — copied from scrapeGigaInventory.ts (do not modify that file) ──
 
 const WH_CODE_RE = /\b(CA[A-Z]*\d+|NJX\d+|NJ[A-Z]*\d+|AT[A-Z]*\d+|TX[A-Z]*\d+)\b/gi;
@@ -344,6 +364,117 @@ async function writeToSupabase(
   return { rowsWritten: rows.length, error: null };
 }
 
+// ── Per-product scrape (extracted so we can retry on transient failures) ──────
+
+type ScrapeOutcome =
+  | { kind: 'session_expired' }
+  | { kind: 'out_of_stock'; signals: string[] }
+  | { kind: 'success'; rows: WarehouseRow[]; totalAvailable: number | null; resolvedUrl: string }
+  | { kind: 'retriable_failure'; reason: string; resolvedUrl: string };
+
+async function detectOosSignals(page: Page): Promise<{ score: number; details: string[] }> {
+  return page.evaluate(() => {
+    const text = (document.body?.innerText ?? '');
+    const details: string[] = [];
+    let score = 0;
+    if (/(^|[^\d])0\s+Available\b/i.test(text)) { score++; details.push('"0 Available"'); }
+    if (/Warehouse\s*Quantity[\s\S]{0,80}?No\s*data/i.test(text)) { score++; details.push('Warehouse Quantity: No data'); }
+    if (/Total\s*Item\s*Cost[\s\S]{0,80}?N\/?A/i.test(text)) { score++; details.push('Total Item Cost: N/A'); }
+    const btns = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
+    const disabledBuy = btns.some(b => {
+      const label = ((b as HTMLElement).innerText ?? b.textContent ?? '').trim();
+      if (!/\b(buy\s*now|add\s*to\s*cart)\b/i.test(label)) return false;
+      const cls = (b as HTMLElement).className?.toString() ?? '';
+      return (
+        (b as HTMLButtonElement).disabled === true ||
+        b.getAttribute('disabled') !== null ||
+        b.getAttribute('aria-disabled') === 'true' ||
+        /\b(disabled|btn-disabled|is-disabled|opacity-50)\b/i.test(cls)
+      );
+    });
+    if (disabledBuy) { score++; details.push('Buy/AddToCart disabled'); }
+    return { score, details };
+  });
+}
+
+async function scrapeProductOnce(
+  page: Page,
+  product: { product_id: string; product_url: string; title: string | null },
+  warnings: string[],
+): Promise<ScrapeOutcome> {
+  let resolvedUrl = product.product_url;
+  try {
+    resolvedUrl = await resolveProductUrl(page, product.product_url);
+
+    try {
+      await page.goto(resolvedUrl, { waitUntil: 'networkidle', timeout: 30_000 });
+    } catch (e) {
+      warnings.push(`Page load timeout — continuing: ${(e as Error).message.slice(0, 80)}`);
+    }
+
+    const finalUrl = page.url();
+    const earlyText: string = await page.evaluate(() => document.body?.innerText?.slice(0, 600) ?? '');
+
+    const isLoginPage =
+      /log\s*in|sign\s*in|password/i.test(earlyText) &&
+      !/product|warehouse|shipping/i.test(earlyText);
+    if (isLoginPage || /login|sign-in/i.test(finalUrl)) {
+      return { kind: 'session_expired' };
+    }
+
+    const { clicked, inventoryVisible } = await clickSpecifiedWarehouse(page);
+    if (!clicked) {
+      warnings.push('"Specified Warehouse" label not found on this page');
+      return { kind: 'retriable_failure', reason: 'no_warehouse_radio', resolvedUrl };
+    }
+    if (!inventoryVisible) {
+      warnings.push('Radio clicked but Warehouse Quantity table did not appear');
+    }
+
+    const { rows } = await extractWarehouseRows(page);
+    const fullPageText: string = await page.evaluate(() => document.body?.innerText ?? '');
+    const totalAvailable = extractTotalAvailable(fullPageText);
+
+    // Single-warehouse override (same rule as scrapeGigaInventory.ts)
+    if (rows.length === 1 && totalAvailable !== null) {
+      rows[0].quantity = totalAvailable;
+      rows[0].quantityExact = true;
+    }
+
+    if (rows.length === 0) {
+      const oosSignals = await detectOosSignals(page);
+      const isOutOfStock = oosSignals.score >= 2 || oosSignals.details.includes('"0 Available"');
+      if (isOutOfStock) {
+        return { kind: 'out_of_stock', signals: oosSignals.details };
+      }
+      return { kind: 'retriable_failure', reason: 'no_rows_extracted', resolvedUrl };
+    }
+
+    return { kind: 'success', rows, totalAvailable, resolvedUrl };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warnings.push(`Unexpected error: ${msg.slice(0, 120)}`);
+    return { kind: 'retriable_failure', reason: `error: ${msg.slice(0, 80)}`, resolvedUrl };
+  }
+}
+
+async function saveDebugArtifacts(page: Page, productId: string): Promise<void> {
+  try {
+    const dir = path.join(process.cwd(), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeId = productId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const pngPath  = path.join(dir, `giga-debug-${safeId}-${ts}.png`);
+    const htmlPath = path.join(dir, `giga-debug-${safeId}-${ts}.html`);
+    await page.screenshot({ path: pngPath, fullPage: false });
+    const html = await page.content();
+    fs.writeFileSync(htmlPath, html, 'utf8');
+    console.log(`  📎 Debug artifacts saved: ${path.relative(process.cwd(), pngPath)}, ${path.relative(process.cwd(), htmlPath)}`);
+  } catch (e) {
+    console.log(`  ⚠ Could not save debug artifacts: ${(e as Error).message}`);
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -365,40 +496,172 @@ async function run() {
   console.log('═══════════════════════════════════════════════════════════════════');
   console.log(' GIGA FURNITURE INVENTORY BATCH SYNC');
   console.log('═══════════════════════════════════════════════════════════════════');
+  console.log(` MODE            : ${FULL_SYNC ? 'FULL (all products)' : 'INCREMENTAL (priority + freshness)'}`);
   console.log(` DRY_RUN         : ${DRY_RUN}`);
   console.log(` HEADED          : ${HEADED}`);
-  console.log(` INVENTORY_LIMIT : ${isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : 'all'}`);
+  console.log(` BATCH_SIZE      : ${FULL_SYNC ? '(ignored)' : BATCH_SIZE}`);
+  console.log(` INVENTORY_LIMIT : ${isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : '(unset)'}`);
   console.log(` PAGE_DELAY_MS   : ${PAGE_DELAY_MS}`);
   console.log(` SESSION_FILE    : ${SESSION_FILE}`);
   console.log('═══════════════════════════════════════════════════════════════════\n');
 
-  // ── Fetch product list from giga_products ───────────────────────────────────
+  // ── Fetch product list from standardized_products ──────────────────────────
+  // Source-of-truth: standardized_products. supplier_product_id is the GIGA
+  // native SKU and matches inventory_cache.product_id, so the rest of the
+  // pipeline (scrape → inventory_cache → refresh_product_inventory_status)
+  // is unchanged. All rows in this project originate from GIGA — there is no
+  // separate `supplier` column on standardized_products.
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
   const { data: products, error: fetchError } = await supabase
-    .from('giga_products')
-    .select('product_id, product_url, title')
-    .eq('top_category', 'Furniture')
-    .neq('product_url', '')
-    .order('last_synced_at', { ascending: false });
+    .from('standardized_products')
+    .select('supplier_product_id, product_title, inventory_status')
+    .eq('normalization_status', 'done')
+    .not('supplier_product_id', 'is', null)
+    .order('created_at', { ascending: false });
 
   if (fetchError) {
-    console.error('[FurnitureInventory] Failed to fetch giga_products:', fetchError.message);
+    console.error('[FurnitureInventory] Failed to fetch standardized_products:', fetchError.message);
     process.exit(1);
   }
 
   if (!products || products.length === 0) {
-    console.log('[FurnitureInventory] No Furniture products found in giga_products — nothing to do.');
+    console.log('[FurnitureInventory] No normalized products found in standardized_products — nothing to do.');
     return;
   }
 
-  const allProducts = products.filter(p => p.product_url?.startsWith('http'));
-  const batch = allProducts.slice(0, isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : allProducts.length);
+  // Remap to the legacy { product_id, product_url, title } shape so the scrape
+  // loop below is unchanged. A sku= URL is constructed from the GIGA SKU;
+  // resolveProductUrl() follows it to the canonical product_id= portal page
+  // on first navigation, exactly as it did for legacy giga_products rows.
+  type CandidateProduct = {
+    product_id: string;
+    product_url: string;
+    title: string | null;
+    inventory_status: string | null;
+  };
+  const seen = new Set<string>();
+  const allProducts: CandidateProduct[] = [];
+  for (const row of products) {
+    const sku = (row as { supplier_product_id?: string | null })?.supplier_product_id;
+    if (typeof sku !== 'string' || sku.length === 0 || seen.has(sku)) continue;
+    seen.add(sku);
+    allProducts.push({
+      product_id: sku,
+      product_url: `https://www.gigab2b.com/index.php?route=product/product&sku=${encodeURIComponent(sku)}`,
+      title: (row as { product_title?: string | null })?.product_title ?? null,
+      inventory_status:
+        (row as { inventory_status?: string | null })?.inventory_status ?? null,
+    });
+  }
 
-  console.log(`[FurnitureInventory] Products in giga_products (Furniture): ${allProducts.length}`);
-  console.log(`[FurnitureInventory] Batch size this run               : ${batch.length}\n`);
+  // ── Build the batch ────────────────────────────────────────────────────────
+  // FULL_SYNC=1: legacy behavior — process every product (capped by
+  //              INVENTORY_LIMIT if set). Used by `npm run inventory:sync:full`
+  //              and ad-hoc backfills.
+  // Otherwise:   priority + freshness selection.
+  //              Tier 0 (hot)  : ordered in last RECENT_ORDER_DAYS → ≤24h SLA
+  //              Tier 1 (warm) : inventory_status='in_stock'        → ≤48h SLA
+  //              Tier 2 (cold) : everything else                    → ≤72h SLA
+  //              "Due" products are those whose newest inventory_cache row is
+  //              older than the tier's SLA (or null = never synced). The queue
+  //              is then sorted by (tier ASC, lastSync ASC NULLS FIRST), which
+  //              gives an implicit rotating cursor — products just synced
+  //              today drift to the back tomorrow.
+  let batch: CandidateProduct[];
+
+  if (FULL_SYNC) {
+    batch = allProducts.slice(
+      0,
+      isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : allProducts.length,
+    );
+    console.log(`[FurnitureInventory] FULL SYNC mode — scanning ${batch.length} product(s)\n`);
+  } else {
+    const allIds = allProducts.map(p => p.product_id);
+
+    // Newest scrape-row timestamp per product (from inventory_cache).
+    const lastSyncMap = new Map<string, number>();
+    {
+      const { data: invRows, error: invErr } = await supabase
+        .from('inventory_cache')
+        .select('product_id, last_synced_at')
+        .in('product_id', allIds)
+        .eq('source_type', 'website_scrape')
+        .eq('sync_status', 'ok');
+      if (invErr) {
+        console.warn(`[FurnitureInventory] inventory_cache freshness lookup failed (treating all as due): ${invErr.message}`);
+      } else {
+        for (const r of invRows ?? []) {
+          const pid = (r as { product_id?: string | null }).product_id;
+          const ts  = (r as { last_synced_at?: string | null }).last_synced_at;
+          if (!pid || !ts) continue;
+          const t = Date.parse(ts);
+          if (Number.isNaN(t)) continue;
+          const prev = lastSyncMap.get(pid);
+          if (prev === undefined || t > prev) lastSyncMap.set(pid, t);
+        }
+      }
+    }
+
+    // Tier-0 set: products ordered in the last RECENT_ORDER_DAYS days.
+    const recentlyOrderedSet = new Set<string>();
+    {
+      const cutoff = new Date(Date.now() - RECENT_ORDER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      const { data: orderedRows, error: ordErr } = await supabase
+        .from('order_items')
+        .select('product_id')
+        .gte('created_at', cutoff);
+      if (ordErr) {
+        console.warn(`[FurnitureInventory] order_items lookup failed (no tier-0 boost this run): ${ordErr.message}`);
+      } else {
+        for (const r of orderedRows ?? []) {
+          const pid = (r as { product_id?: string | null }).product_id;
+          if (pid) recentlyOrderedSet.add(pid);
+        }
+      }
+    }
+
+    const now = Date.now();
+    const maxAgeMs = [
+      TIER_0_MAX_HOURS * 60 * 60 * 1000,
+      TIER_1_MAX_HOURS * 60 * 60 * 1000,
+      TIER_2_MAX_HOURS * 60 * 60 * 1000,
+    ] as const;
+
+    type Ranked = { p: CandidateProduct; tier: 0 | 1 | 2; lastSync: number };
+    const ranked: Ranked[] = [];
+    let dueByTier: [number, number, number] = [0, 0, 0];
+
+    for (const p of allProducts) {
+      const tier: 0 | 1 | 2 =
+        recentlyOrderedSet.has(p.product_id) ? 0 :
+        p.inventory_status === 'in_stock'    ? 1 : 2;
+      const lastSync = lastSyncMap.get(p.product_id) ?? 0;
+      const dueCutoff = now - maxAgeMs[tier];
+      if (lastSync >= dueCutoff) continue; // already fresh enough for its tier
+      ranked.push({ p, tier, lastSync });
+      dueByTier[tier]++;
+    }
+
+    // Sort: tier ASC (hottest first), then lastSync ASC (oldest first).
+    // never-synced (lastSync=0) naturally sorts before any real timestamp.
+    ranked.sort((a, b) => a.tier - b.tier || a.lastSync - b.lastSync);
+
+    const cap = isFinite(INVENTORY_LIMIT) ? Math.min(INVENTORY_LIMIT, BATCH_SIZE) : BATCH_SIZE;
+    batch = ranked.slice(0, cap).map(r => r.p);
+
+    console.log(`[FurnitureInventory] Eligible products total: ${allProducts.length}`);
+    console.log(`[FurnitureInventory] Due this run            : ${ranked.length}` +
+                `  (tier0=${dueByTier[0]} tier1=${dueByTier[1]} tier2=${dueByTier[2]})`);
+    console.log(`[FurnitureInventory] Selected for this batch : ${batch.length} (cap=${cap})\n`);
+  }
+
+  if (batch.length === 0) {
+    console.log('[FurnitureInventory] Nothing due to refresh — all products within their tier SLA. Exiting cleanly.');
+    return;
+  }
 
   // ── Launch browser ──────────────────────────────────────────────────────────
   const browser = await chromium.launch({ headless: !HEADED, slowMo: HEADED ? 60 : 0 });
@@ -411,9 +674,11 @@ async function run() {
   let attempted     = 0;
   let succeeded     = 0;
   let failed        = 0;
+  let outOfStock    = 0; // tracked separately — NOT a scraper failure
   let rowsWritten   = 0;
   let sessionExpired = false;
   const failedSkus: { productId: string; url: string; reason: string }[] = [];
+  const outOfStockSkus: { productId: string; url: string }[] = [];
 
   // ── Batch loop ──────────────────────────────────────────────────────────────
   for (let i = 0; i < batch.length; i++) {
@@ -425,97 +690,80 @@ async function run() {
     console.log(`\n${logPrefix} — ${title}`);
     console.log(`  URL: ${product.product_url}`);
 
-    const result: ProductScrapeResult = {
-      productId: product.product_id as string,
-      productUrl: product.product_url as string,
-      title,
-      loginRequired: false,
-      specifiedWarehouseClicked: false,
-      inventoryVisibleAfterClick: false,
-      totalAvailable: null,
-      warehouseRows: [],
-      warnings: [],
-    };
+    const warnings: string[] = [];
 
-    try {
-      // ── 0. Resolve URL (sku= → product_id= if needed) ───────────────────────
-      const resolvedUrl = await resolveProductUrl(page, product.product_url as string);
-      if (resolvedUrl !== product.product_url) {
-        result.productUrl = resolvedUrl;
+    // Attempt 1 (normal delay). Retry once with doubled delay on retriable
+    // failures (no_warehouse_radio, no_rows_extracted, unexpected error).
+    // Safety: max 1 retry per SKU. Session-expired and out_of_stock are not
+    // retried — they have terminal meaning.
+    let outcome = await scrapeProductOnce(page, product, warnings);
+    if (outcome.kind === 'retriable_failure') {
+      console.log(`  ↻ Attempt 1 failed (${outcome.reason}) — retrying once with longer delay`);
+      await page.waitForTimeout(PAGE_DELAY_MS * 2);
+      outcome = await scrapeProductOnce(page, product, warnings);
+    }
+
+    if (outcome.kind === 'session_expired') {
+      console.log(`  ✗ Session expired — aborting batch`);
+      failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'session_expired' });
+      failed++;
+      sessionExpired = true;
+      break;
+    }
+
+    if (outcome.kind === 'out_of_stock') {
+      console.log(`  ○ Out of stock — no warehouse rows  (signals: ${outcome.signals.join(', ')})`);
+      outOfStock++;
+      outOfStockSkus.push({ productId: product.product_id as string, url: product.product_url as string });
+
+      if (DRY_RUN) {
+        console.log(`  [DRY_RUN] Would zero existing inventory_cache rows + refresh inventory_status — skipping`);
+      } else {
+        const nowIso = new Date().toISOString();
+        const { error: zeroErr } = await supabase
+          .from('inventory_cache')
+          .update({
+            quantity:        0,
+            quantity_floor:  0,
+            quantity_raw:    '0',
+            quantity_exact:  true,
+            is_available:    false,
+            total_available: 0,
+            last_synced_at:  nowIso,
+            sync_status:     'ok',
+          })
+          .eq('product_id', product.product_id as string)
+          .eq('source_type', 'website_scrape');
+        if (zeroErr) {
+          console.log(`  ⚠ Could not zero existing inventory_cache rows (non-fatal): ${zeroErr.message}`);
+        } else {
+          console.log(`  ✓ Existing inventory_cache rows zeroed`);
+        }
+        const { error: rpcErr } = await supabase.rpc(
+          'refresh_product_inventory_status',
+          { p_supplier_product_id: product.product_id as string },
+        );
+        if (rpcErr) {
+          console.log(`  ⚠ refresh_product_inventory_status failed (non-fatal): ${rpcErr.message}`);
+        } else {
+          console.log(`  ✓ inventory_status refreshed (expect out_of_stock)`);
+        }
       }
-
-      // ── 1. Navigate ─────────────────────────────────────────────────────────
-      try {
-        await page.goto(resolvedUrl, { waitUntil: 'networkidle', timeout: 30_000 });
-      } catch (e) {
-        result.warnings.push(`Page load timeout — continuing: ${(e as Error).message.slice(0, 80)}`);
-      }
-
-      const finalUrl = page.url();
-      const earlyText = await page.evaluate(() => document.body?.innerText?.slice(0, 600) ?? '');
-
-      // ── 2. Session check ────────────────────────────────────────────────────
-      const isLoginPage =
-        /log\s*in|sign\s*in|password/i.test(earlyText) &&
-        !/product|warehouse|shipping/i.test(earlyText);
-
-      if (isLoginPage || /login|sign-in/i.test(finalUrl)) {
-        result.loginRequired = true;
-        result.warnings.push('Session expired — re-run saveGigaSession.ts then restart batch');
-        console.log(`  ✗ Session expired — aborting batch`);
-        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'session_expired' });
-        failed++;
-        sessionExpired = true;
-        // Session expired: abort entire batch (all remaining would also fail)
-        break;
-      }
-
-      // ── 3. Click "Specified Warehouse" ──────────────────────────────────────
-      const { clicked, inventoryVisible } = await clickSpecifiedWarehouse(page);
-      result.specifiedWarehouseClicked  = clicked;
-      result.inventoryVisibleAfterClick = inventoryVisible;
-
-      if (!clicked) {
-        result.warnings.push('"Specified Warehouse" label not found on this page');
-        console.log(`  ⚠ "Specified Warehouse" not found — skipping`);
-        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'no_warehouse_radio' });
-        failed++;
-        if (PAGE_DELAY_MS > 0) await page.waitForTimeout(PAGE_DELAY_MS);
-        continue;
-      }
-
-      if (!inventoryVisible) {
-        result.warnings.push('Radio clicked but Warehouse Quantity table did not appear');
-        console.log(`  ⚠ Inventory table did not appear after click`);
-      }
-
-      // ── 4. Extract warehouse rows + total available ─────────────────────────
-      const { rows } = await extractWarehouseRows(page);
-      const fullPageText: string = await page.evaluate(() => document.body?.innerText ?? '');
-      result.totalAvailable = extractTotalAvailable(fullPageText);
-
-      // Single-warehouse override (same rule as scrapeGigaInventory.ts)
-      if (rows.length === 1 && result.totalAvailable !== null) {
-        rows[0].quantity      = result.totalAvailable;
-        rows[0].quantityExact = true;
+    } else if (outcome.kind === 'retriable_failure') {
+      // Still failed after the retry — save debug artifacts and record.
+      console.log(`  ⚠ Both attempts failed: ${outcome.reason}`);
+      await saveDebugArtifacts(page, product.product_id as string);
+      failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: outcome.reason });
+      failed++;
+    } else {
+      // outcome.kind === 'success'
+      const rows = outcome.rows;
+      if (rows.length === 1 && outcome.totalAvailable !== null) {
         console.log(
-          `  ↳ Single warehouse (${rows[0].warehouseCode}): quantity overridden to ${result.totalAvailable} (from totalAvailable)`,
+          `  ↳ Single warehouse (${rows[0].warehouseCode}): quantity overridden to ${outcome.totalAvailable} (from totalAvailable)`,
         );
       }
-
-      result.warehouseRows = rows;
-
-      if (rows.length === 0) {
-        result.warnings.push('No warehouse rows extracted — page may have different DOM structure');
-        console.log(`  ⚠ No warehouse rows found`);
-        failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: 'no_rows_extracted' });
-        failed++;
-        if (PAGE_DELAY_MS > 0) await page.waitForTimeout(PAGE_DELAY_MS);
-        continue;
-      }
-
-      // ── 5. Log extracted data ───────────────────────────────────────────────
-      console.log(`  totalAvailable: ${result.totalAvailable ?? '(not found)'}`);
+      console.log(`  totalAvailable: ${outcome.totalAvailable ?? '(not found)'}`);
       for (const row of rows) {
         console.log(
           `  ${row.warehouseCode.padEnd(10)} state=${row.state ?? '?'}  ` +
@@ -523,25 +771,31 @@ async function run() {
         );
       }
 
-      // ── 6. Write to Supabase (skip in DRY_RUN) ──────────────────────────────
       if (DRY_RUN) {
         console.log(`  [DRY_RUN] Would upsert ${rows.length} row(s) — skipping DB write`);
         succeeded++;
-        rowsWritten += rows.length; // count for dry-run summary
+        rowsWritten += rows.length;
       } else {
+        const result: ProductScrapeResult = {
+          productId: product.product_id as string,
+          productUrl: outcome.resolvedUrl,
+          title,
+          loginRequired: false,
+          specifiedWarehouseClicked: true,
+          inventoryVisibleAfterClick: true,
+          totalAvailable: outcome.totalAvailable,
+          warehouseRows: rows,
+          warnings,
+        };
         const { rowsWritten: written, error: writeErr } = await writeToSupabase(result, supabase);
         if (writeErr) {
           console.log(`  ✗ DB write failed: ${writeErr}`);
-          result.warnings.push(`DB write failed: ${writeErr}`);
           failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: `db_write: ${writeErr}` });
           failed++;
         } else {
           console.log(`  ✓ Upserted ${written} inventory row(s)`);
           succeeded++;
           rowsWritten += written;
-
-          // Refresh aggregated inventory status on standardized_products immediately
-          // so sellable_products view reflects this product's real stock.
           const { error: rpcErr } = await supabase.rpc(
             'refresh_product_inventory_status',
             { p_supplier_product_id: product.product_id as string },
@@ -553,16 +807,8 @@ async function run() {
           }
         }
       }
-
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  ✗ Unexpected error: ${msg.slice(0, 120)}`);
-      result.warnings.push(`Unexpected error: ${msg.slice(0, 120)}`);
-      failedSkus.push({ productId: product.product_id as string, url: product.product_url as string, reason: `error: ${msg.slice(0, 80)}` });
-      failed++;
     }
 
-    // ── Inter-product delay ────────────────────────────────────────────────────
     if (PAGE_DELAY_MS > 0 && i < batch.length - 1) {
       await page.waitForTimeout(PAGE_DELAY_MS);
     }
@@ -580,9 +826,18 @@ async function run() {
   console.log(` Run finished         : ${runFinishedAt}`);
   console.log(` Products attempted   : ${attempted}`);
   console.log(` Products succeeded   : ${succeeded}`);
+  console.log(` Products out of stock: ${outOfStock}`);
   console.log(` Products failed      : ${failed}`);
   console.log(` Inventory rows ${DRY_RUN ? '(dry)' : 'written'}: ${rowsWritten}`);
   if (DRY_RUN) console.log(` [DRY_RUN mode — no DB writes performed]`);
+
+  if (outOfStockSkus.length > 0) {
+    console.log('\n Out of stock (zeroed, not failures):');
+    for (const o of outOfStockSkus) {
+      console.log(`   ${o.productId}`);
+      console.log(`   ${o.url}`);
+    }
+  }
 
   if (failedSkus.length > 0) {
     console.log('\n Failed products:');

@@ -154,7 +154,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Assembly Required', value: 'Minimal (legs)' },
       { group: 'Assembly & Use',     label: 'Recommended Use',   value: 'Indoor' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -665,7 +665,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Assembly Required', value: 'Yes (legs)' },
       { group: 'Assembly & Use',     label: 'Recommended Use',   value: 'Indoor' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -981,7 +981,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Assembly Required', value: 'Yes' },
       { group: 'Assembly & Use',     label: 'Tools Included',    value: 'Yes' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -1692,7 +1692,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Tools Included',    value: 'Yes' },
       { group: 'Assembly & Use',     label: 'Memory Presets',    value: '4' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -2207,7 +2207,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Bulb Type',         value: 'E26 (not included)' },
       { group: 'Assembly & Use',     label: 'Dimmable',          value: 'Yes' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -2478,7 +2478,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',     label: 'Wall Mount',    value: 'Included' },
       { group: 'Assembly & Use',     label: 'Assembly Required', value: 'Minimal' },
       { group: 'Shipping & Handling', label: 'Shipping',  value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',    value: 'Within 100 mi of warehouse' },
     ],
   },
   {
@@ -2748,7 +2748,7 @@ export const products: Product[] = [
       { group: 'Assembly & Use',    label: 'Assembly Required', value: 'Yes' },
       { group: 'Assembly & Use',    label: 'Tools Included',    value: 'Yes' },
       { group: 'Shipping & Handling', label: 'Shipping',        value: 'Available' },
-      { group: 'Shipping & Handling', label: 'Pickup',          value: 'Within 30 mi of warehouse' },
+      { group: 'Shipping & Handling', label: 'Pickup',          value: 'Within 100 mi of warehouse' },
     ],
   },
 ];
