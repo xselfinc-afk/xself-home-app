@@ -19,6 +19,10 @@ import { incrementProductCounter } from '../services/analyticsService';
 import { DEBUG_FLAGS } from '../config/debugFlags';
 import { debugEnabled } from '../utils/debug';
 
+// Affirm requires a minimum order of $50 USD. The Affirm tile is hidden/disabled
+// below this threshold and the handler guards against stale state.
+const AFFIRM_MIN_TOTAL = 50;
+
 /**
  * Canonical fingerprint of a fulfillment plan for change detection.
  * Groups are sorted by warehouse code so order differences don't matter.
@@ -234,6 +238,28 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     (async () => {
       try {
+        // Warm-up: refresh inventory_cache for cart SKUs via the live XHR path
+        // before plan-fulfillment runs. Non-fatal — if this fails or returns
+        // binary_only, plan-fulfillment still reads whatever is in inventory_cache
+        // and surfaces a stale banner exactly as before.
+        const cartProductIds = [...new Set(planItems.map(i => i.productId))].filter(Boolean);
+        if (cartProductIds.length > 0) {
+          try {
+            const warm = await supabase.functions.invoke('giga-warehouse-stock', {
+              body: { skus: cartProductIds },
+            });
+            console.log('[Checkout] inventory warm-up:', {
+              skus: cartProductIds.length,
+              error: warm.error?.message ?? null,
+              source: (warm.data as { source?: string } | null)?.source ?? null,
+              binaryOnly: (warm.data as { binaryOnly?: boolean } | null)?.binaryOnly ?? false,
+            });
+          } catch (warmErr) {
+            console.log('[Checkout] inventory warm-up threw (non-fatal):', (warmErr as Error).message);
+          }
+          if (cancelled) return;
+        }
+
         console.log('[Checkout] Calling plan-fulfillment edge function', {
           itemCount: planItems.length,
           skus: planItems.map(i => i.sku),
@@ -324,6 +350,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
   type PaymentMethod = 'apple_pay' | 'card' | 'affirm';
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
+
+  // If totals fall below Affirm's $50 minimum (e.g. after a coupon/credit was
+  // applied), drop the user back to card so the picker state stays valid.
+  useEffect(() => {
+    if (paymentMethod === 'affirm' && total < AFFIRM_MIN_TOTAL) {
+      setPaymentMethod('card');
+    }
+  }, [paymentMethod, total]);
   const [reviewExpanded, setReviewExpanded] = useState(false);
   // Tracks inline CardField completeness — null until user interacts
   const [cardDetails, setCardDetails] = useState<{ complete: boolean } | null>(null);
@@ -447,6 +481,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
       : undefined;
     const effectiveQuoteToken = quoteToken ?? cartQuoteToken;
 
+    // Affirm risk underwriting requires a real first+last name on shipping[name].
+    // Send it from the selected address so the Edge Function does not fall back
+    // to deriving a single-word name from the customer's email local-part.
+    const customerName = selectedAddress
+      ? `${selectedAddress.first_name ?? ''} ${selectedAddress.last_name ?? ''}`.trim()
+      : '';
+
     const { data, error } = await supabase.functions.invoke('create-checkout-order', {
       body: {
         items,
@@ -455,6 +496,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         fulfillmentMethod: fulfillmentChoice ?? 'delivery',
         userId: user?.id ?? null,
         paymentMethodSelected,
+        ...(customerName ? { customerName } : {}),
         // Optional: present only when SupportScreen forwarded a special-offer
         // quote on Buy Now, OR when a cart line carries a quoteToken.
         ...(effectiveQuoteToken ? { quoteToken: effectiveQuoteToken } : {}),
@@ -483,6 +525,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     setAffirmError(null);
     setAffirmDevDetail(null);
+
+    // Affirm requires a minimum order of $50 USD. The Affirm tile is gated by
+    // total in the picker but guard here so a stale selection cannot bypass.
+    if (total < AFFIRM_MIN_TOTAL) {
+      setAffirmError(`Affirm is available on orders over $${AFFIRM_MIN_TOTAL}. Please choose another payment method.`);
+      return;
+    }
+
     setAffirmLoading(true);
 
     if (debugEnabled(DEBUG_FLAGS.forcePaymentFailure)) {
@@ -540,11 +590,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
         setAffirmLoading(false);
         return;
       }
-      const devDetail = (confirmError as any).message
+      const detail = (confirmError as any).message
         || (confirmError as any).localizedMessage
         || JSON.stringify(confirmError);
-      console.log('[Affirm] confirm error detail:', devDetail);
-      if (__DEV__) setAffirmDevDetail(devDetail);
+      const code = (confirmError as any).code ?? 'unknown';
+      // Always log the exact Stripe error so production failures are diagnosable
+      // in crash/log aggregators. Card and Apple Pay paths are unaffected.
+      console.warn('[Affirm] confirmPayment failed', { code, detail, paymentIntentId });
+      if (__DEV__) setAffirmDevDetail(`${code}: ${detail}`);
       setAffirmError('Affirm could not be started. Please try again or choose another payment method.');
       setAffirmLoading(false);
       return;
@@ -734,27 +787,44 @@ export default function CheckoutScreen({ route, navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Payment</Text>
           <View style={styles.card}>
-            {([
-              { id: 'apple_pay', icon: 'logo-apple',    label: 'Apple Pay',           sub: 'Recommended' },
-              { id: 'card',      icon: 'card-outline',  label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
-              { id: 'affirm',    icon: 'cash-outline',  label: 'Affirm',              sub: `From $${Math.ceil(total / 12)}/mo` },
-            ] as { id: PaymentMethod; icon: any; label: string; sub: string | null }[]).map((pm, idx, arr) => (
-              <TouchableOpacity
-                key={pm.id}
-                style={[styles.pmRow, idx < arr.length - 1 && styles.pmRowBorder]}
-                onPress={() => setPaymentMethod(pm.id)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.pmRadio, paymentMethod === pm.id && styles.pmRadioSelected]}>
-                  {paymentMethod === pm.id && <View style={styles.pmRadioDot} />}
-                </View>
-                <Ionicons name={pm.icon} size={18} color={paymentMethod === pm.id ? '#CA8A04' : '#6B7280'} style={{ marginRight: 10 }} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.pmLabel, paymentMethod === pm.id && styles.pmLabelSelected]}>{pm.label}</Text>
-                  {pm.sub && <Text style={styles.pmSub}>{pm.sub}</Text>}
-                </View>
-              </TouchableOpacity>
-            ))}
+            {(() => {
+              const affirmEligible = total >= AFFIRM_MIN_TOTAL;
+              const methods: { id: PaymentMethod; icon: any; label: string; sub: string | null; disabled?: boolean }[] = [
+                { id: 'apple_pay', icon: 'logo-apple',    label: 'Apple Pay',           sub: 'Recommended' },
+                { id: 'card',      icon: 'card-outline',  label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
+                {
+                  id: 'affirm',
+                  icon: 'cash-outline',
+                  label: 'Affirm',
+                  // Do not display a per-month estimate: the actual figure
+                  // depends on Affirm underwriting (term, APR, down payment)
+                  // and is not known until the buyer is approved in Affirm's
+                  // flow. Showing total/12 here would be misleading.
+                  sub: affirmEligible
+                    ? 'Pay over time with Affirm'
+                    : `Available on orders over $${AFFIRM_MIN_TOTAL}`,
+                  disabled: !affirmEligible,
+                },
+              ];
+              return methods.map((pm, idx, arr) => (
+                <TouchableOpacity
+                  key={pm.id}
+                  style={[styles.pmRow, idx < arr.length - 1 && styles.pmRowBorder, pm.disabled && { opacity: 0.45 }]}
+                  onPress={() => { if (!pm.disabled) setPaymentMethod(pm.id); }}
+                  disabled={pm.disabled}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.pmRadio, paymentMethod === pm.id && styles.pmRadioSelected]}>
+                    {paymentMethod === pm.id && <View style={styles.pmRadioDot} />}
+                  </View>
+                  <Ionicons name={pm.icon} size={18} color={paymentMethod === pm.id ? '#CA8A04' : '#6B7280'} style={{ marginRight: 10 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.pmLabel, paymentMethod === pm.id && styles.pmLabelSelected]}>{pm.label}</Text>
+                    {pm.sub && <Text style={styles.pmSub}>{pm.sub}</Text>}
+                  </View>
+                </TouchableOpacity>
+              ));
+            })()}
           </View>
         </View>
 
@@ -788,7 +858,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
           <View style={styles.section}>
             <View style={styles.affirmCard}>
               <Text style={styles.affirmTitle}>Affirm</Text>
-              <Text style={styles.affirmSubtitle}>From ${Math.ceil(total / 12)}/mo · Subject to approval</Text>
+              <Text style={styles.affirmSubtitle}>Pay over time · Subject to approval</Text>
               {affirmError ? (
                 <Text style={styles.affirmError}>{affirmError}</Text>
               ) : (isInventoryFallback || isInventoryStale) ? (

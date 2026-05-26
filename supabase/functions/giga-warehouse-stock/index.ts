@@ -1,5 +1,12 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  loadSessionFromEnv,
+  resolveProductId as xhrResolveProductId,
+  fetchWarehouseRows as xhrFetchWarehouseRows,
+  type SessionContext as XhrSessionContext,
+  type NormalizedRow as XhrNormalizedRow,
+} from './_xhr.ts';
 
 const BASE_URL = Deno.env.get('SUPPLIER_API_BASE_URL') ?? '';
 const CLIENT_ID = Deno.env.get('SUPPLIER_CLIENT_ID') ?? '';
@@ -342,6 +349,77 @@ function supportsPickup(code: string): boolean {
   return warehouseState(code) === 'CA';
 }
 
+// ── Live XHR per-warehouse fetch ───────────────────────────────────────────────
+//
+// Calls the authenticated GIGA seller-portal XHR endpoint per SKU and returns
+// EXACT per-warehouse quantities. Unlike the HMAC /price/v1 path below, this
+// never synthesizes 999-across-all-warehouses placeholders — qty values are
+// real per-warehouse integers (or 0 when truly out).
+//
+// Returns null if the session secret is unset, the session expired, or any
+// upstream call failed for ANY of the requested SKUs (partial-success is not
+// returned because checkout needs all-or-nothing freshness for the cart).
+//
+// On success, writes results back to inventory_cache via the existing
+// (product_id, warehouse_code) upsert path with source_type='website_scrape'
+// so plan-fulfillment's existing fresh-window filter immediately picks them up.
+async function fetchLiveXhr(skus: string[]): Promise<SkuStockRow[] | null> {
+  const session: XhrSessionContext | null = loadSessionFromEnv();
+  if (!session) return null;
+
+  const allRows: XhrNormalizedRow[] = [];
+  const perSkuStock: SkuStockRow[] = [];
+
+  for (const sku of skus) {
+    const resolved = await xhrResolveProductId(sku, session);
+    if (!resolved) {
+      console.log(`[xhr] resolveProductId failed for "${sku}" — aborting live path`);
+      return null;
+    }
+    const { rows, supplierId, total } = await xhrFetchWarehouseRows(
+      resolved.productId,
+      resolved.sku ?? sku,
+      session,
+    );
+    if (!supplierId || rows.length === 0) {
+      console.log(`[xhr] no warehouse rows for "${sku}" (supplierId=${supplierId}, rows=${rows.length})`);
+      return null;
+    }
+    console.log(`[xhr] ${sku} resolved pid=${resolved.productId} rows=${rows.length} total=${total}`);
+    allRows.push(...rows);
+    perSkuStock.push({
+      sku,
+      warehouseStockList: rows.map(r => ({
+        warehouseCode: r.warehouse_code,
+        availableQty: r.is_available ? r.quantity : 0,
+      })),
+    });
+  }
+
+  // Write back to inventory_cache so plan-fulfillment + future requests benefit.
+  // Fire and forget; failures are non-fatal because we still return live data.
+  writeXhrRowsToCacheAsync(allRows).catch(e =>
+    console.log('[xhr] cache writeback failed (non-fatal):', (e as Error).message),
+  );
+
+  return perSkuStock;
+}
+
+async function writeXhrRowsToCacheAsync(rows: XhrNormalizedRow[]): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || rows.length === 0) return;
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { error } = await supabase
+    .from('inventory_cache')
+    .upsert(rows, { onConflict: 'product_id,warehouse_code' });
+  if (error) {
+    console.log('[xhr] inventory_cache upsert error:', error.message);
+  } else {
+    console.log(`[xhr] wrote ${rows.length} inventory_cache row(s) from live XHR`);
+  }
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────────
 
 serve(async (req: Request) => {
@@ -366,21 +444,21 @@ serve(async (req: Request) => {
     if (freshCache) {
       console.log('[GIGA] Returning fresh cache for', freshCache.length, 'SKU(s)');
       return new Response(
-        JSON.stringify({ data: freshCache }),
+        JSON.stringify({ data: freshCache, source: 'fresh_cache' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // ── 2. Live GIGA price API ─────────────────────────────────────────────────
-    const apiResult = await fetchFromGigaApi(skus);
-    if (apiResult) {
-      console.log('[GIGA] Returning live API result for', apiResult.length, 'SKU(s)');
-      // Write to cache server-side (service role — bypasses RLS). Fire and forget.
-      writeToCacheAsync(apiResult).catch(e =>
-        console.log('[Cache] Background write failed:', (e as Error).message),
-      );
+    // ── 2. Live XHR fetch — exact per-warehouse quantities ─────────────────────
+    // Authoritative source for plan-fulfillment warehouse selection. Returns
+    // real per-warehouse integer quantities; writes them back to inventory_cache
+    // so subsequent requests (and plan-fulfillment's own .from('inventory_cache')
+    // query) see fresh rows without a Playwright run.
+    const xhrResult = await fetchLiveXhr(skus);
+    if (xhrResult) {
+      console.log('[GIGA] Returning live XHR result for', xhrResult.length, 'SKU(s)');
       return new Response(
-        JSON.stringify({ data: apiResult }),
+        JSON.stringify({ data: xhrResult, source: 'live_xhr' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
@@ -388,18 +466,38 @@ serve(async (req: Request) => {
     // ── 3. Stale cache fallback (accept up to 24 h old) ────────────────────────
     const staleCache = await tryInventoryCache(skus, STALE_TTL_MINUTES);
     if (staleCache) {
-      console.log('[GIGA] Returning stale cache (API failed) for', staleCache.length, 'SKU(s)');
+      console.log('[GIGA] Returning stale cache for', staleCache.length, 'SKU(s)');
       return new Response(
-        JSON.stringify({ data: staleCache, stale: true }),
+        JSON.stringify({ data: staleCache, source: 'stale_cache', stale: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // ── 4. Complete failure ────────────────────────────────────────────────────
+    // ── 4. HMAC binary fallback — BINARY ONLY, NOT per-warehouse truth ─────────
+    // The /price/v1 endpoint only signals "available somewhere"; the
+    // warehouseStockList here is a SYNTHETIC fan-out used solely so legacy
+    // callers don't choke on a missing field. Marked binary_only:true so
+    // warehouse-selection callers (plan-fulfillment) know to ignore per-warehouse
+    // numbers from this branch and treat the response as "any in-stock signal".
+    const apiResult = await fetchFromGigaApi(skus);
+    if (apiResult) {
+      console.log('[GIGA] Returning HMAC binary fallback for', apiResult.length, 'SKU(s)');
+      // Write to cache with source_type='price_synthesis' — already segregated
+      // from the website_scrape rows plan-fulfillment reads.
+      writeToCacheAsync(apiResult).catch(e =>
+        console.log('[Cache] Background write failed:', (e as Error).message),
+      );
+      return new Response(
+        JSON.stringify({ data: apiResult, source: 'hmac_binary', binaryOnly: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // ── 5. Complete failure ────────────────────────────────────────────────────
     console.log('[GIGA] All sources failed for SKUs:', skus.join(', '));
     return new Response(
       JSON.stringify({
-        error: 'Inventory data unavailable — live API failed and no cached data found',
+        error: 'Inventory data unavailable — all sources failed (cache, XHR, HMAC)',
         errorType: 'inventory_failed',
       }),
       { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },

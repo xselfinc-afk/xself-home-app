@@ -243,33 +243,19 @@ serve(async (req: Request) => {
       return invalidResponse('inventory_unavailable', 'No per-warehouse inventory data available');
     }
 
-    // Determine freshness from the oldest row we'll rely on. Used for the
-    // server log (admin signal) and surfaced to the client so the UI can show
-    // the "Live inventory unavailable" banner instead of a misleading
-    // address error.
-    const oldestSync = inventoryRows.reduce<string | null>((min, row) => {
-      const t = (row.last_synced_at as string | null) ?? null;
-      if (!t) return min;
-      return min === null || t < min ? t : min;
-    }, null);
-    const inventoryFreshness: 'fresh' | 'stale' | 'unknown' =
-      oldestSync === null ? 'unknown' :
-      oldestSync >= staleThreshold ? 'fresh' : 'stale';
-    if (inventoryFreshness !== 'fresh') {
-      console.warn(
-        `[plan-fulfillment] STALE INVENTORY (freshness=${inventoryFreshness}, oldestSync=${oldestSync ?? 'unknown'}) — ` +
-        `serving with isFallback so ops can manually verify warehouse stock before shipment.`,
-      );
-    }
-
-    // productId → warehouseCode → qty
-    const productWarehouseMap = new Map<string, Map<string, number>>();
+    // productId → warehouseCode → { qty, syncedAt }. syncedAt is per-row so we
+    // can compute freshness against ONLY the rows tied to the warehouse we end
+    // up selecting — using an aggregate "oldest across all rows" overweights
+    // far-away warehouses that the scraper barely re-touches and produces
+    // false-positive fallback banners.
+    const productWarehouseMap = new Map<string, Map<string, { qty: number; syncedAt: string | null }>>();
     for (const row of inventoryRows) {
       const pid = row.product_id as string;
       const wh = row.warehouse_code as string;
       const qty = Math.max(0, Number(row.quantity ?? 0));
+      const syncedAt = (row.last_synced_at as string | null) ?? null;
       if (!productWarehouseMap.has(pid)) productWarehouseMap.set(pid, new Map());
-      productWarehouseMap.get(pid)!.set(wh, qty);
+      productWarehouseMap.get(pid)!.set(wh, { qty, syncedAt });
     }
 
     // Each item must have a fresh per-warehouse row AND sufficient aggregate
@@ -279,7 +265,7 @@ serve(async (req: Request) => {
       if (!whMap) {
         return invalidResponse('inventory_unavailable', 'One or more items have no fresh inventory data');
       }
-      const totalAvailable = Array.from(whMap.values()).reduce((sum, q) => sum + q, 0);
+      const totalAvailable = Array.from(whMap.values()).reduce((sum, v) => sum + v.qty, 0);
       if (totalAvailable < item.qty) {
         return invalidResponse('insufficient_qty', 'One or more items have insufficient available stock');
       }
@@ -361,19 +347,29 @@ serve(async (req: Request) => {
       ranked.slice(0, 5).map((r) => `${r.warehouse.code}(${r.distanceMiles.toFixed(0)}mi)`).join(', '),
     );
 
-    // ── 6. Helpers for stock checks ──────────────────────────────────────────
+    // ── 6. Helpers for stock + freshness checks ──────────────────────────────
     function warehouseHasAllStock(warehouseCode: string): boolean {
       for (const item of items) {
         const whMap = productWarehouseMap.get(item.productId);
-        const qty = whMap?.get(warehouseCode) ?? 0;
+        const qty = whMap?.get(warehouseCode)?.qty ?? 0;
         if (qty < item.qty) return false;
+      }
+      return true;
+    }
+
+    function warehouseHasAllFreshStock(warehouseCode: string): boolean {
+      for (const item of items) {
+        const row = productWarehouseMap.get(item.productId)?.get(warehouseCode);
+        if (!row) return false;
+        if (row.qty < item.qty) return false;
+        if (!row.syncedAt || row.syncedAt < staleThreshold) return false;
       }
       return true;
     }
 
     function totalAvailableAtWarehouse(warehouseCode: string): number {
       return items.reduce((sum, item) => {
-        const qty = productWarehouseMap.get(item.productId)?.get(warehouseCode) ?? 0;
+        const qty = productWarehouseMap.get(item.productId)?.get(warehouseCode)?.qty ?? 0;
         return sum + qty;
       }, 0);
     }
@@ -386,30 +382,69 @@ serve(async (req: Request) => {
     const shippingCandidates = ranked.filter(
       (r) => !(r.distanceMiles <= PICKUP_THRESHOLD_MILES && r.warehouse.supports_pickup) && r.warehouse.supports_shipping,
     );
+    const orderedCandidates = [...pickupCandidates, ...shippingCandidates];
 
     let selectedEntry: (typeof ranked)[0] | null = null;
-    for (const candidate of [...pickupCandidates, ...shippingCandidates]) {
-      if (warehouseHasAllStock(candidate.warehouse.code)) {
+    let selectionPath: 'fresh-single' | 'stale-single' | 'fresh-split' | 'stale-split' | null = null;
+
+    // Pass 1: nearest warehouse with FRESH per-warehouse inventory for every item.
+    // We prefer fresh rows over proximity so a stale near-warehouse never blocks
+    // a fresh farther-warehouse — fixes the case where checkout shows a stale
+    // banner despite a fresh alternative existing.
+    for (const candidate of orderedCandidates) {
+      if (warehouseHasAllFreshStock(candidate.warehouse.code)) {
         selectedEntry = candidate;
-        console.log(`[plan-fulfillment] Single-warehouse: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
+        selectionPath = 'fresh-single';
+        console.log(`[plan-fulfillment] Single-warehouse FRESH: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
         break;
+      }
+    }
+
+    // Pass 2: nearest warehouse with any sufficient stock (rows may be stale).
+    // Only reached when no fresh warehouse exists; the banner stays on.
+    if (!selectedEntry) {
+      for (const candidate of orderedCandidates) {
+        if (warehouseHasAllStock(candidate.warehouse.code)) {
+          selectedEntry = candidate;
+          selectionPath = 'stale-single';
+          console.log(`[plan-fulfillment] Single-warehouse STALE fallback: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
+          break;
+        }
       }
     }
 
     // ── 8. Multi-warehouse split if no single warehouse ──────────────────────
     if (!selectedEntry) {
       console.log('[plan-fulfillment] No single warehouse — attempting multi-warehouse split');
-      // For now: use nearest warehouse that has stock for at least one item.
-      // Full multi-warehouse response format TBD in Phase 3.1.
+      // Pass 3a: prefer split candidate whose row for the first matching item is fresh
+      for (const candidate of ranked) {
+        if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > PICKUP_THRESHOLD_MILES) continue;
+        const freshAny = items.some((item) => {
+          const row = productWarehouseMap.get(item.productId)?.get(candidate.warehouse.code);
+          return !!row && row.qty >= item.qty && !!row.syncedAt && row.syncedAt >= staleThreshold;
+        });
+        if (freshAny) {
+          selectedEntry = candidate;
+          selectionPath = 'fresh-split';
+          console.log(`[plan-fulfillment] Split FRESH best-effort: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
+          break;
+        }
+      }
+    }
+
+    if (!selectedEntry) {
+      // Pass 3b: any stock, freshness-blind. Last resort to keep checkout open
+      // when the scraper has lapsed entirely.
       for (const candidate of ranked) {
         if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > PICKUP_THRESHOLD_MILES) continue;
         const anyStock = items.some((item) => {
-          const qty = productWarehouseMap.get(item.productId)?.get(candidate.warehouse.code) ?? 0;
+          const qty = productWarehouseMap.get(item.productId)?.get(candidate.warehouse.code)?.qty ?? 0;
           return qty >= item.qty;
         });
         if (anyStock) {
           selectedEntry = candidate;
-          console.log(`[plan-fulfillment] Split best-effort: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
+          selectionPath = 'stale-split';
+          console.log(`[plan-fulfillment] Split STALE fallback: ${candidate.warehouse.code} (${candidate.distanceMiles.toFixed(1)}mi)`);
           break;
         }
       }
@@ -417,6 +452,67 @@ serve(async (req: Request) => {
 
     if (!selectedEntry) {
       return invalidResponse('no_eligible_warehouse', 'No warehouse has sufficient stock to fulfill this order');
+    }
+
+    // Compute freshness against the rows tied to the chosen warehouse for the
+    // items in this cart. With prefer-fresh-first selection above, this should
+    // only flag 'stale' when no fresh warehouse was available anywhere.
+    const selectedWarehouseSyncTimes: string[] = [];
+    for (const item of items) {
+      const row = productWarehouseMap.get(item.productId)?.get(selectedEntry.warehouse.code);
+      if (row?.syncedAt) selectedWarehouseSyncTimes.push(row.syncedAt);
+    }
+    const oldestSelectedSync = selectedWarehouseSyncTimes.length === 0
+      ? null
+      : selectedWarehouseSyncTimes.reduce((min, t) => (t < min ? t : min));
+    const inventoryFreshness: 'fresh' | 'stale' | 'unknown' =
+      oldestSelectedSync === null ? 'unknown' :
+      oldestSelectedSync >= staleThreshold ? 'fresh' : 'stale';
+
+    // Per-item diagnostic — surfaces exactly why each item's selected-warehouse
+    // row is fresh or stale. Real-device QA logs cross-reference this when the
+    // banner appears unexpectedly.
+    for (const item of items) {
+      const row = productWarehouseMap.get(item.productId)?.get(selectedEntry.warehouse.code);
+      const syncedAt = row?.syncedAt ?? null;
+      const isFresh = !!syncedAt && syncedAt >= staleThreshold;
+      const reason = !row
+        ? 'no-row-for-warehouse'
+        : row.qty < item.qty
+          ? 'insufficient-qty'
+          : !syncedAt
+            ? 'null-synced-at'
+            : isFresh
+              ? 'within-24h'
+              : 'older-than-24h';
+      console.log(
+        `[plan-fulfillment] diag product_id=${item.productId} ` +
+        `selected_warehouse=${selectedEntry.warehouse.code} ` +
+        `selected_row_synced_at=${syncedAt ?? 'null'} ` +
+        `qty_at_warehouse=${row?.qty ?? 0} requested_qty=${item.qty} ` +
+        `freshness=${isFresh ? 'fresh' : 'stale'} reason=${reason}`,
+      );
+    }
+
+    const freshnessReason =
+      selectionPath === 'fresh-single' ? 'fresh-single-warehouse' :
+      selectionPath === 'fresh-split'  ? 'fresh-split-warehouse'  :
+      selectionPath === 'stale-single' ? 'no-fresh-warehouse-available' :
+      selectionPath === 'stale-split'  ? 'no-fresh-warehouse-available-split' :
+      'unknown';
+
+    console.log(
+      `[plan-fulfillment] freshness decision: warehouse=${selectedEntry.warehouse.code} ` +
+      `oldest_synced_at=${oldestSelectedSync ?? 'unknown'} threshold=${staleThreshold} ` +
+      `freshness=${inventoryFreshness} reason=${freshnessReason} selection_path=${selectionPath}`,
+    );
+
+    if (inventoryFreshness !== 'fresh') {
+      console.warn(
+        `[plan-fulfillment] STALE INVENTORY for selected warehouse ${selectedEntry.warehouse.code} ` +
+        `(freshness=${inventoryFreshness}, oldestSync=${oldestSelectedSync ?? 'unknown'}, reason=${freshnessReason}) — ` +
+        `no fresh alternative existed; serving with isFallback so ops can verify before shipment.`,
+      );
     }
 
     // ── 9. Determine pickup / delivery eligibility ───────────────────────────
@@ -454,7 +550,7 @@ serve(async (req: Request) => {
       pickupWindow,
       availableQty: totalAvailableAtWarehouse(selectedEntry.warehouse.code),
       inventoryFreshness,
-      inventoryTimestamp: oldestSync ?? new Date().toISOString(),
+      inventoryTimestamp: oldestSelectedSync ?? new Date().toISOString(),
     };
 
     console.log(
