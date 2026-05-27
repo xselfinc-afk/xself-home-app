@@ -1346,7 +1346,33 @@ function ProductDetailScreen({ route, navigation }) {
     ? diversify([...relatedSource].sort((a, b) => scoreProduct(b) - scoreProduct(a))).slice(0, 8)
     : [];
   const recommendations = relatedProducts.slice(0, 4);
-  const fbt = relatedProducts.slice(0, 2);
+  // FBT (Frequently Bought Together) needs complementary, category-anchored
+  // matches — NOT the cross-category diversification used by "You May Also
+  // Like". We require:
+  //   • Same category (level1 or shared room tag) — anchors to "goes with"
+  //   • Different product_family_key — never recommend the same SKU/family
+  //   • Price within ±30% of current — keeps the bundle realistic
+  //   • Only emit when we have at least 2 valid candidates; otherwise hide
+  //     the section entirely rather than fall back to a random pool slice.
+  const currentFamilyKey = product.product_family_key;
+  const currentRooms = new Set(product.tags?.room ?? []);
+  const priceFloor  = displayPrice * 0.7;
+  const priceCeil   = displayPrice * 1.3;
+  const fbtCandidates = poolReady
+    ? pool
+        .filter(p => {
+          if (currentFamilyKey && p.product_family_key === currentFamilyKey) return false;
+          const sameLevel1Cat =
+            !!product.categoryPath?.level1 &&
+            p.categoryPath?.level1 === product.categoryPath!.level1;
+          const sharedRoom = (p.tags?.room ?? []).some(r => currentRooms.has(r));
+          if (!sameLevel1Cat && !sharedRoom) return false;
+          if (p.price < priceFloor || p.price > priceCeil) return false;
+          return true;
+        })
+        .sort((a, b) => scoreProduct(b) - scoreProduct(a))
+    : [];
+  const fbt = fbtCandidates.length >= 2 ? fbtCandidates.slice(0, 2) : [];
 
   if (__DEV__) {
     console.log('[ProductDetail] recommendation pool ready:', poolReady);
@@ -1370,7 +1396,7 @@ function ProductDetailScreen({ route, navigation }) {
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 130 }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}
         scrollEventThrottle={16}
         onContentSizeChange={(_, h) => { contentHeightRef.current = h; }}
         onScroll={e => {
@@ -1753,6 +1779,7 @@ function ProductDetailScreen({ route, navigation }) {
         style={[
           styles.floatCta,
           {
+            bottom: insets.bottom + 16,
             opacity: floatCtaAnim,
             transform: [{ translateY: floatCtaAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }],
           },
@@ -1781,12 +1808,17 @@ function ProductDetailScreen({ route, navigation }) {
       </Animated.View>
 
       {/* Messages FAB label — fades out after 2.5s */}
-      <Animated.View style={[styles.msgFabLabel, { opacity: msgLabelAnim }]} pointerEvents="none">
+      <Animated.View
+        style={[styles.msgFabLabel, { bottom: insets.bottom + 130, opacity: msgLabelAnim }]}
+        pointerEvents="none"
+      >
         <Text style={styles.msgFabLabelText}>Need Help?</Text>
       </Animated.View>
 
       {/* Messages FAB — bottom-right, above Add to Cart */}
-      <Animated.View style={[styles.msgFabWrap, { transform: [{ scale: msgFabScale }] }]}>
+      <Animated.View
+        style={[styles.msgFabWrap, { bottom: insets.bottom + 72, transform: [{ scale: msgFabScale }] }]}
+      >
         <TouchableOpacity
           style={styles.msgFabBtn}
           activeOpacity={1}

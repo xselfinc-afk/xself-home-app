@@ -181,17 +181,31 @@ export default function ReviewSection({ product }: { product: any }) {
     return () => { active = false; };
   }, [product.id, refreshKey]);
 
-  // Hard switch: show ONLY real reviews when any exist; ONLY generated when none do.
+  // Display strategy (restored after earlier suppression pass):
+  //   realCount === 0                      → show generated as sample insights
+  //   1 ≤ realCount < REAL_SUFFICIENT       → real reviews + up to GENERATED_APPEND
+  //                                            generated appended below
+  //   realCount >= REAL_SUFFICIENT         → real reviews only
+  // Generated rows are never presented as customer reviews: per-row "Sample
+  // Review" badge + section-level disclosure + neutered "Customer" display name.
+  // Summary stats (avg, breakdown, tag highlights, customer photos) reflect
+  // REAL reviews when any exist; generated rows are visual content only.
+  const REAL_SUFFICIENT = 3;
+  const GENERATED_APPEND = 2;
   const realReviews = useMemo(() => reviews.filter(r => !r.is_generated), [reviews]);
   const generatedReviews = useMemo(() => reviews.filter(r => r.is_generated).slice(0, 5), [reviews]);
   const realCount = realReviews.length;
   const generatedCount = generatedReviews.length;
-  const showingGenerated = realCount === 0;
-  const displayedReviews = useMemo(
-    () => (realCount === 0 ? generatedReviews : realReviews),
+  const displayedReviews = useMemo(() => {
+    if (realCount === 0) return generatedReviews;
+    if (realCount >= REAL_SUFFICIENT) return realReviews;
+    return [...realReviews, ...generatedReviews.slice(0, GENERATED_APPEND)];
+  }, [realReviews, generatedReviews, realCount]);
+  const showingGenerated = displayedReviews.some(r => r.is_generated);
+  const summary = useMemo(
+    () => computeSummary(realCount > 0 ? realReviews : generatedReviews),
     [realReviews, generatedReviews, realCount],
   );
-  const summary = useMemo(() => computeSummary(displayedReviews), [displayedReviews]);
   const sorted = useMemo(() => sortReviews(displayedReviews, sort), [displayedReviews, sort]);
   const visibleReviews = showAllReviews ? sorted : sorted.slice(0, 2);
 
@@ -395,8 +409,11 @@ export default function ReviewSection({ product }: { product: any }) {
   }
 
   // ── Empty state ──────────────────────────────────────────────────────────────
+  // Only when BOTH real and generated rows are absent. When real reviews exist,
+  // we render the populated branch with real-only data. When only generated rows
+  // exist, we render the populated branch with sample insights + disclosure.
 
-  if (reviews.length === 0) {
+  if (realCount === 0 && generatedCount === 0) {
     return (
       <View style={[styles.section, styles.centered]}>
         <Ionicons name="chatbubble-outline" size={28} color={colors.border} />
@@ -414,9 +431,13 @@ export default function ReviewSection({ product }: { product: any }) {
 
   return (
     <View style={styles.section}>
-      {/* Section header */}
+      {/* Section header — title shifts to "Product Insights" when only
+          generated rows are available, so the header does not implicitly
+          present samples as real customer reviews. */}
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionTitle}>Customer Reviews</Text>
+        <Text style={styles.sectionTitle}>
+          {realCount === 0 ? 'Product Insights' : 'Customer Reviews'}
+        </Text>
         <TouchableOpacity style={styles.writeReviewBtn} onPress={openWriteModal}>
           <Ionicons name="create-outline" size={14} color={colors.amber} />
           <Text style={styles.writeReviewBtnText}>Write a Review</Text>
@@ -431,7 +452,9 @@ export default function ReviewSection({ product }: { product: any }) {
               <Text style={styles.bigRating}>{summary.avg.toFixed(1)}</Text>
               <Stars value={summary.avg} size={18} />
               <Text style={styles.totalReviews}>
-                {showingGenerated ? 'Based on sample reviews' : `out of 5 · ${summary.total} reviews`}
+                {realCount === 0
+                  ? 'Based on sample insights'
+                  : `out of 5 · ${summary.total} ${summary.total === 1 ? 'review' : 'reviews'}`}
               </Text>
             </View>
             <View style={styles.summaryRight}>
@@ -499,10 +522,13 @@ export default function ReviewSection({ product }: { product: any }) {
         </TouchableOpacity>
       </View>
 
-      {/* Disclosure — only shown when displaying sample reviews */}
+      {/* Disclosure — fires whenever any generated row is in the list,
+          including the mixed-mode case (real reviews + appended samples). */}
       {showingGenerated && (
         <Text style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>
-          Some reviews are examples to help illustrate product experience.
+          {realCount === 0
+            ? 'Sample feedback generated from product details — be the first to share your own.'
+            : 'Entries marked “Sample Review” are AI-generated insights based on product details.'}
         </Text>
       )}
 

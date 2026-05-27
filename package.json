@@ -18,6 +18,9 @@
     "inventory:sync": "bash scripts/runGigaInventorySync.sh",
     "inventory:sync:dry": "DRY_RUN=1 INVENTORY_LIMIT=2 bash scripts/runGigaInventorySync.sh",
     "inventory:sync:full": "INVENTORY_FULL_SYNC=1 bash scripts/runGigaInventorySync.sh",
+    "inventory:repair-env": "bash scripts/repairInventorySyncEnvironment.sh",
+    "inventory:health": "bash scripts/inventoryHealthReport.sh",
+    "inventory:doctor": "npm run inventory:status-local && npm run inventory:repair-env",
     "inventory:verify": "tsx scripts/verifyInventoryFreshness.ts",
     "inventory:curl:import": "tsx scripts/importGigaInventoryCurl.ts",
     "inventory:curl:fetch": "tsx scripts/fetchGigaWarehouseInventoryFromCurl.ts",
@@ -28,7 +31,10 @@
     "inventory:xhr:fetch": "tsx scripts/fetchGigaWarehouseInventoryFromXhr.ts",
     "inventory:xhr:probe": "tsx scripts/probeGigaProductXhr.ts",
     "inventory:xhr:sync": "tsx scripts/syncGigaInventoryXhr.ts",
-    "inventory:xhr:sync:dry": "DRY_RUN=1 INVENTORY_LIMIT=5 tsx scripts/syncGigaInventoryXhr.ts"
+    "inventory:xhr:sync:dry": "DRY_RUN=1 INVENTORY_LIMIT=5 tsx scripts/syncGigaInventoryXhr.ts",
+    "sync:ios-version": "node scripts/syncIosNativeVersion.js",
+    "version:bump": "node scripts/bumpReleaseVersion.js",
+    "release:ios:submit": "bash scripts/releaseIosProduction.sh"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.0.2",

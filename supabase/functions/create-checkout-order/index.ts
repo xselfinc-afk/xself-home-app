@@ -84,6 +84,12 @@ interface RequestBody {
   /** 'card' | 'affirm' | '' (auto) */
   paymentMethodSelected?: string;
   /**
+   * Customer full name ("First Last"). Used as shipping[name] on Affirm
+   * PaymentIntents so risk underwriting receives a real human name rather
+   * than an email local-part. Falls back to email-derived value when absent.
+   */
+  customerName?: string;
+  /**
    * Optional custom-quote redeem token. When present, the line price is
    * replaced by the server-stored quoted_price_cents, and the request must
    * include a Bearer JWT whose `email` claim matches the quote's
@@ -123,6 +129,7 @@ serve(async (req: Request) => {
       userId,
       guestToken: providedGuestToken,
       paymentMethodSelected = '',
+      customerName,
       quoteToken,
     } = body;
 
@@ -333,6 +340,13 @@ serve(async (req: Request) => {
       return jsonResponse({ error: 'Order total is below the minimum charge amount ($0.50)' }, 400);
     }
 
+    // Affirm requires a minimum order of $50 USD. Reject before we create a
+    // PaymentIntent so the client receives a typed error rather than a Stripe
+    // confirm-time failure that's hard to diagnose.
+    if (paymentMethodSelected === 'affirm' && totalCents < 5000) {
+      return jsonResponse({ error: 'affirm_minimum_amount' }, 400);
+    }
+
     // ── Generate IDs ──────────────────────────────────────────────────────────
     const orderId    = crypto.randomUUID();
     const guestToken = userId ? null : (providedGuestToken ?? crypto.randomUUID());
@@ -471,15 +485,15 @@ serve(async (req: Request) => {
       stripeParams.append('payment_method_types[]', 'affirm');
 
       // Affirm requires a shipping block on the PaymentIntent for risk
-      // underwriting. We use the address the client already passed plus a
-      // shipping name derived from customer.email (no name field is currently
-      // sent in the body — use the email's local part with punctuation
-      // softened, falling back to the full email or a generic label). The
-      // address shape on the body is { line1, city, state, zip, country };
-      // line2 is optional and only appended when present.
+      // underwriting. Prefer the explicit `customerName` the client now sends
+      // (selectedAddress.first_name + last_name) so Affirm receives a real
+      // human name. Fall back to deriving from customer.email only when no
+      // name was provided.
+      const trimmedCustomerName = (customerName ?? '').trim();
       const email = (customer.email ?? '').trim();
       const emailLocal = email.includes('@') ? email.slice(0, email.indexOf('@')) : email;
-      const shippingName = (emailLocal.replace(/[._+\-]+/g, ' ').trim() || email || 'Xself Home Customer').slice(0, 200);
+      const emailFallback = (emailLocal.replace(/[._+\-]+/g, ' ').trim() || email || 'Xself Home Customer');
+      const shippingName = (trimmedCustomerName || emailFallback).slice(0, 200);
 
       stripeParams.append('shipping[name]',                shippingName);
       stripeParams.append('shipping[address][line1]',      String(address.line1));

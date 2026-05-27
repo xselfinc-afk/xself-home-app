@@ -284,40 +284,156 @@ async function extractWarehouseRows(page: Page): Promise<{
   return { rows };
 }
 
-// ── URL resolver — same logic as scrapeGigaInventory.ts ──────────────────────
-// giga_products stores URLs like ?route=product/product&sku=N725S412541K,
-// but the new GIGA portal requires ?product_id=1315793 (numeric).
-async function resolveProductUrl(page: Page, rawUrl: string): Promise<string> {
-  let parsed: URL;
-  try { parsed = new URL(rawUrl); } catch { return rawUrl; }
+// ── URL resolver ──────────────────────────────────────────────────────────────
+// giga_products stores URLs like ?route=product/product&sku=N725S412541K, but
+// the GIGA portal serves warehouse data only from ?product_id=1315793 (numeric).
+// This resolver does the SKU → product_id hop and surfaces a precise failure
+// reason so the caller can distinguish anti-bot blocks from HTML drift from a
+// legitimately-missing product.
+//
+// Failure reasons (consumed by scrapeProductOnce as the outcome.reason):
+//   no_sku                  — input URL has neither ?sku= nor ?itemNo=
+//   navigation_failed       — search page never finished loading
+//   captcha_blocked         — Aliyun "Safe Checker" interstitial intercepted us
+//   product_url_unresolved  — search succeeded but no product_id appears anywhere
+type ResolveResult =
+  | { ok: true; url: string; productId: string }
+  | { ok: false; reason: 'no_sku' | 'navigation_failed' | 'captcha_blocked' | 'product_url_unresolved' };
 
-  if (parsed.searchParams.has('product_id')) return rawUrl;
+async function resolveProductUrl(
+  page: Page,
+  rawUrl: string,
+  opts: { titleHint?: string | null } = {},
+): Promise<ResolveResult> {
+  let parsed: URL;
+  try { parsed = new URL(rawUrl); } catch {
+    return { ok: false, reason: 'navigation_failed' };
+  }
+
+  // Fast path — caller already has the canonical product_id URL.
+  const existingPid = parsed.searchParams.get('product_id');
+  if (existingPid) return { ok: true, url: rawUrl, productId: existingPid };
 
   const sku = parsed.searchParams.get('sku') ?? parsed.searchParams.get('itemNo');
-  if (!sku) return rawUrl;
+  if (!sku) return { ok: false, reason: 'no_sku' };
 
   const searchUrl = `https://www.gigab2b.com/index.php?route=product/search&search=${encodeURIComponent(sku)}`;
-  console.log(`  [resolve] SKU ${sku} → searching portal...`);
+  console.log(`  [resolve] SKU ${sku} → ${searchUrl}`);
 
   try {
     await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 30_000 });
   } catch {
-    console.log(`  [resolve] Search page timeout — using original URL`);
-    return rawUrl;
+    console.log(`  [resolve] search navigation failed (timeout/network)`);
+    return { ok: false, reason: 'navigation_failed' };
   }
 
-  const links: string[] = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('a[href*="product_id"]'))
-      .map(a => (a as HTMLAnchorElement).href)
-  );
+  const currentUrl = page.url();
+  console.log(`  [resolve] current URL: ${currentUrl}`);
 
-  if (links.length === 0) {
-    console.log(`  [resolve] No product_id link found for SKU ${sku} — using original URL`);
-    return rawUrl;
+  // (A) Search may have redirected directly to a product page.
+  try {
+    const directPid = new URL(currentUrl).searchParams.get('product_id');
+    if (directPid) {
+      console.log(`  [resolve] direct redirect → product_id=${directPid}`);
+      return { ok: true, url: currentUrl, productId: directPid };
+    }
+  } catch { /* ignore */ }
+
+  // (B) Aliyun anti-bot wall. GIGA serves this as <title>Safe Checker</title>
+  //     with /captcha-frontend/ and aliyun-{captcha,puzzle,zoom} signals. If we
+  //     hit it, no product anchors will exist — surface a precise reason so
+  //     the operator doesn't go chasing HTML-drift ghosts.
+  const interstitial = await page.evaluate(() => {
+    const title = (document.querySelector('title')?.textContent ?? '').trim();
+    const html  = document.documentElement?.outerHTML ?? '';
+    const captchaHit =
+      /Safe\s*Checker/i.test(title) ||
+      /aliyun-(?:captcha|puzzle|zoom)/i.test(html) ||
+      /\/captcha-frontend\//i.test(html) ||
+      /safe\/captcha\.css/i.test(html);
+    return { title, captchaHit };
+  });
+  if (interstitial.captchaHit) {
+    console.log(`  [resolve] captcha interstitial detected (title="${interstitial.title}")`);
+    return { ok: false, reason: 'captcha_blocked' };
   }
 
-  console.log(`  [resolve] → ${links[0]}`);
-  return links[0];
+  // (C) Look for product_id everywhere it might live: anchor href, onclick,
+  //     data-href/data-url, and (last-resort) the raw HTML. The old resolver
+  //     only matched a[href*="product_id"], which silently misses links that
+  //     stash the id in onclick handlers or JSON blobs.
+  // IMPORTANT: this callback runs inside the browser. Do NOT declare named
+  // function expressions (`const fn = (...) => {...}` or `const fn = function`)
+  // — tsx/esbuild's keepNames pass wraps them with `__name(fn, "fn")`, and the
+  // `__name` helper does not exist in the page context (it lives in the Node
+  // module preamble). All helper logic is inlined below for that reason. No
+  // closed-over Node-side helpers, regex objects, or imports either.
+  const candidates: Array<{ pid: string; href: string; title: string }> = await page.evaluate(() => {
+    const seen: Record<string, true> = {};
+    const out: Array<{ pid: string; href: string; title: string }> = [];
+
+    const anchors = document.querySelectorAll('a');
+    for (let i = 0; i < anchors.length; i++) {
+      const el = anchors[i] as HTMLAnchorElement;
+      const sources = [
+        el.href || '',
+        el.getAttribute('href') || '',
+        el.getAttribute('onclick') || '',
+        el.getAttribute('data-href') || '',
+        el.getAttribute('data-url') || '',
+      ];
+      for (let j = 0; j < sources.length; j++) {
+        const m = sources[j].match(/product_id=(\d+)/);
+        if (m) {
+          const pid = m[1];
+          if (pid && !seen[pid]) {
+            seen[pid] = true;
+            const label = (el.innerText || el.textContent || '').trim().slice(0, 240);
+            out.push({ pid, href: el.href || sources[j], title: label });
+          }
+          break;
+        }
+      }
+    }
+
+    // Last-resort: pull from raw HTML (covers JSON blobs / inline scripts).
+    const html = document.documentElement ? document.documentElement.outerHTML : '';
+    const re = /product_id=(\d+)/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = re.exec(html)) !== null) {
+      const pid = mm[1];
+      if (pid && !seen[pid]) {
+        seen[pid] = true;
+        out.push({
+          pid,
+          href: 'https://www.gigab2b.com/index.php?route=product/product&product_id=' + pid,
+          title: '',
+        });
+      }
+    }
+    return out;
+  });
+
+  console.log(`  [resolve] candidate product_id links found: ${candidates.length}`);
+
+  if (candidates.length === 0) {
+    return { ok: false, reason: 'product_url_unresolved' };
+  }
+
+  // (D) Prefer a candidate whose visible label matches the SKU exactly, then
+  //     one that matches the first ~24 chars of the supplier title, then the
+  //     first candidate. Numeric product_id alone doesn't disambiguate when a
+  //     search returns multiple SKUs.
+  const skuLower  = sku.toLowerCase();
+  const hintLower = (opts.titleHint ?? '').toLowerCase();
+  const titleHead = hintLower.slice(0, 24);
+  const chosen =
+    candidates.find(c => c.title.toLowerCase().includes(skuLower)) ??
+    (titleHead ? candidates.find(c => c.title.toLowerCase().includes(titleHead)) : undefined) ??
+    candidates[0];
+
+  console.log(`  [resolve] selected product_id: ${chosen.pid} (of ${candidates.length} candidate(s))`);
+  return { ok: true, url: chosen.href, productId: chosen.pid };
 }
 
 // ── Supabase write ─────────────────────────────────────────────────────────────
@@ -404,7 +520,15 @@ async function scrapeProductOnce(
 ): Promise<ScrapeOutcome> {
   let resolvedUrl = product.product_url;
   try {
-    resolvedUrl = await resolveProductUrl(page, product.product_url);
+    const resolved: ResolveResult = await resolveProductUrl(page, product.product_url, { titleHint: product.title });
+    if (resolved.ok === false) {
+      // Surface the precise resolver failure instead of letting flow continue
+      // to the warehouse-radio probe (which would always report
+      // 'no_warehouse_radio' for a captcha/empty page and obscure the cause).
+      warnings.push(`resolveProductUrl: ${resolved.reason}`);
+      return { kind: 'retriable_failure', reason: resolved.reason, resolvedUrl };
+    }
+    resolvedUrl = resolved.url;
 
     try {
       await page.goto(resolvedUrl, { waitUntil: 'networkidle', timeout: 30_000 });

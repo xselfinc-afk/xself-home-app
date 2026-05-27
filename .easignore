@@ -1,0 +1,38 @@
+# .easignore — files excluded from the EAS Build archive upload.
+#
+# Goal: keep the upload under a few hundred MB and never include scraper
+# session tokens or local logs. Anything required by the iOS build (xcodeproj,
+# xcworkspace, app sources, native config, supabase function code) is left
+# intact.
+
+# Logs and diagnostic artifacts
+logs/
+*.log
+logs/giga-debug-*.html
+logs/giga-debug-*.png
+
+# Local temp / scratch
+tmp/
+backups/
+exports/
+
+# Tool caches / IDE local state
+.claude/
+.opencode/
+.DS_Store
+
+# Node + cocoapods caches
+node_modules/
+ios/Pods/
+ios/build/
+
+# Android build artifacts (iOS release does not need them)
+android/
+
+# Scraper local state — never ship these to a remote builder
+scripts/.giga-chrome-profile/
+scripts/.giga-session.json
+
+# Local archives
+*.tar
+*.zip
