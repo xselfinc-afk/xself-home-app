@@ -295,60 +295,6 @@ async function fetchFromGigaApi(skus: string[]): Promise<SkuStockRow[] | null> {
   return synthesized;
 }
 
-// ── Server-side cache write (service role — bypasses RLS) ──────────────────────
-//
-// Called fire-and-forget after a successful GIGA API response.
-// Writes one row per (sku, warehouseCode) so future requests are served from
-// cache without hitting the upstream API.
-//
-async function writeToCacheAsync(rows: SkuStockRow[]): Promise<void> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || rows.length === 0) return;
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const now = new Date().toISOString();
-  const cacheRows = rows.flatMap(row =>
-    row.warehouseStockList.map(ws => ({
-      product_id:          row.sku,
-      supplier_product_id: row.sku,
-      warehouse_code:      ws.warehouseCode,
-      warehouse_state:     warehouseState(ws.warehouseCode),
-      quantity:            ws.availableQty,
-      is_available:        ws.availableQty > 0,
-      supports_pickup:     supportsPickup(ws.warehouseCode),
-      supports_shipping:   true,
-      last_synced_at:      now,
-      sync_status:         'ok',
-      source_type:         'price_synthesis',
-    }))
-  );
-
-  const { error } = await supabase
-    .from('inventory_cache')
-    .upsert(cacheRows, { onConflict: 'product_id,warehouse_code' });
-
-  if (error) {
-    console.log('[Cache] Write error (non-fatal):', error.message);
-  } else {
-    console.log('[Cache] Wrote', cacheRows.length, 'row(s) for', rows.length, 'SKU(s)');
-  }
-}
-
-function warehouseState(code: string): string | null {
-  if (/^CA/i.test(code)) return 'CA';
-  if (/^NJX/i.test(code)) return 'MD';
-  if (/^NJ/i.test(code)) return 'NJ';
-  if (/^AT/i.test(code)) return 'GA';
-  if (/^TX/i.test(code)) return 'TX';
-  return null;
-}
-
-function supportsPickup(code: string): boolean {
-  return warehouseState(code) === 'CA';
-}
-
 // ── Live XHR per-warehouse fetch ───────────────────────────────────────────────
 //
 // Calls the authenticated GIGA seller-portal XHR endpoint per SKU and returns
@@ -479,14 +425,13 @@ serve(async (req: Request) => {
     // callers don't choke on a missing field. Marked binary_only:true so
     // warehouse-selection callers (plan-fulfillment) know to ignore per-warehouse
     // numbers from this branch and treat the response as "any in-stock signal".
+    //
+    // Not persisted: inventory_cache UNIQUE(product_id, warehouse_code) excludes
+    // source_type, so writing price_synthesis would UPSERT-overwrite real
+    // website_scrape rows. Response is returned to the client only.
     const apiResult = await fetchFromGigaApi(skus);
     if (apiResult) {
       console.log('[GIGA] Returning HMAC binary fallback for', apiResult.length, 'SKU(s)');
-      // Write to cache with source_type='price_synthesis' — already segregated
-      // from the website_scrape rows plan-fulfillment reads.
-      writeToCacheAsync(apiResult).catch(e =>
-        console.log('[Cache] Background write failed:', (e as Error).message),
-      );
       return new Response(
         JSON.stringify({ data: apiResult, source: 'hmac_binary', binaryOnly: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
