@@ -994,7 +994,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.reserveText}>🔒 Your price is reserved for {reserveTimeLeft}</Text>
             ) : null}
           </View>
-          {!deliveryLoading && selectedAddress && !fulfillmentPlan && (
+          {!deliveryLoading && selectedAddress && !fulfillmentPlan && !isInventoryStale && (
             <View style={styles.placeOrderErrorNote}>
               <Text style={styles.placeOrderErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
