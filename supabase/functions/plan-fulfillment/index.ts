@@ -229,7 +229,7 @@ serve(async (req: Request) => {
       .from('inventory_cache')
       .select('product_id, warehouse_code, quantity, last_synced_at')
       .in('product_id', productIds)
-      .eq('source_type', 'website_scrape')
+      .in('source_type', ['website_scrape', 'official_api'])
       .eq('sync_status', 'ok');
 
     if (inventoryErr) {
