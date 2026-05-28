@@ -629,6 +629,20 @@ export default function CheckoutScreen({ route, navigation }: any) {
     DEBUG_FLAGS.forceOrderSaveFailure
   );
 
+  // Single source of truth for the Place Order CTA label. Disabled-state logic
+  // is unchanged and lives on the button itself; this only labels the button.
+  const ctaLabel = (() => {
+    if (deliveryLoading) return fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…';
+    if (rechecking) return 'Verifying inventory…';
+    if (placing) return 'Processing…';
+    // Hard blocks: server gave us no usable plan (covers isInventoryStale,
+    // geocode failures, and any other valid:false response). Pre-flight gaps
+    // (no address, no fulfillment choice, incomplete card) fall through so
+    // the price stays visible and the inline form guides the customer.
+    if (selectedAddress && !fulfillmentPlan) return 'Currently Unavailable';
+    return `Place Order · $${formatPrice(total)}`;
+  })();
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {anyDebugActive && (
@@ -1128,12 +1142,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               });
             }}
           >
-            <Text style={styles.placeOrderText}>
-              {deliveryLoading
-                ? (fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…')
-                : rechecking ? 'Verifying inventory…'
-                : `Place Order · $${formatPrice(total)}`}
-            </Text>
+            <Text style={styles.placeOrderText}>{ctaLabel}</Text>
           </TouchableOpacity>
           <Text style={styles.placeOrderTrust}>Secured by Stripe · Your payment info is encrypted</Text>
           </>)}
