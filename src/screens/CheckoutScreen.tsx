@@ -1009,8 +1009,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           {paymentMethod !== 'affirm' && (<><TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryFallback || isInventoryStale}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale}
             onPress={async () => {
               console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
               if (!selectedAddress) {
@@ -1132,7 +1132,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
               {deliveryLoading
                 ? (fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…')
                 : rechecking ? 'Verifying inventory…'
-                : isInventoryFallback ? 'Inventory Unavailable — Try Again'
                 : `Place Order · $${formatPrice(total)}`}
             </Text>
           </TouchableOpacity>
