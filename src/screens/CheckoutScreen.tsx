@@ -766,10 +766,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
           {!deliveryLoading && isInventoryFallback && (
             <View style={styles.fulfillFallbackBanner}>
-              <Ionicons name="warning-outline" size={13} color="#92660A" />
+              <Ionicons name="information-circle-outline" size={13} color="#92660A" />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.fulfillFallbackText, { flex: 0 }]}>
-                  Live inventory unavailable — delivery estimate is based on location only
+                  We'll confirm availability after you place your order. Delivery dates are based on your shipping address.
                 </Text>
                 <TouchableOpacity
                   onPress={() => setFulfillRetryKey(k => k + 1)}
@@ -985,7 +985,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.placeOrderErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
                   ? "We couldn't verify this address. Please check the address and try again."
-                  : 'Unable to verify inventory. Please try again later.'}
+                  : "We're having trouble checking this item right now. Please try again in a moment."}
               </Text>
             </View>
           )}
@@ -997,7 +997,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
           {isInventoryStale && !deliveryLoading && (
             <View style={styles.placeOrderErrorNote}>
               <Text style={styles.placeOrderErrorText}>
-                Inventory data is temporarily outdated. Please try again in a few minutes.
+                Availability is being updated. Please try again in a moment.
               </Text>
               <TouchableOpacity
                 onPress={() => { setIsInventoryStale(false); setFulfillRetryKey(k => k + 1); }}
