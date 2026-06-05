@@ -609,8 +609,8 @@
 <body>
 <div class="container">
   <h1>Xself Home — Admin Orders</h1>
-  <p class="sub">Read-only MVP · Phase 5.0 · View customer orders. No writes.</p>
-  <div class="read-only-banner">READ-ONLY · No status updates · No refund actions · Stripe edits happen in the Stripe dashboard.</div>
+  <p class="sub">Admin operations console · Status updates, custom payment links, admin approval, BOL upload</p>
+  <div class="read-only-banner">Refunds happen in the Stripe dashboard. Approvals are NOT reversible from this UI yet. All actions are audit-logged.</div>
 
   <!-- SETUP CARD -->
   <div id="setup-card" class="card">
@@ -677,6 +677,14 @@
         <span class="kpi-label">Pickup</span>
         <span class="kpi-value" id="kpiPickup">—</span>
       </div>
+      <div class="kpi-card" data-kpi="pendingReview">
+        <span class="kpi-label">Pending review</span>
+        <span class="kpi-value" id="kpiPendingReview">—</span>
+      </div>
+      <div class="kpi-card" data-kpi="approvedAwaitingSubmit">
+        <span class="kpi-label">Approved · awaiting submit</span>
+        <span class="kpi-value" id="kpiApprovedAwaitingSubmit">—</span>
+      </div>
     </section>
 
     <!-- Premium filter toolbar -->
@@ -701,6 +709,13 @@
         <option value="">All fulfillment</option>
         <option value="pickup">Pickup</option>
         <option value="delivery">Delivery</option>
+      </select>
+      <select id="filterApproval" class="filter-select" title="Admin approval status">
+        <option value="">All approvals</option>
+        <option value="pending">Pending review</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+        <option value="not_required">Not required</option>
       </select>
       <input id="filterDateFrom"  type="date" class="filter-input" title="From date" />
       <input id="filterDateTo"    type="date" class="filter-input" title="To date" />
@@ -940,7 +955,10 @@
   // dataset that drives the table) so KPIs reflect the full result set, not
   // just the currently-filtered subset.
   function renderKPIs() {
-    const counts = { total: 0, pending: 0, paid: 0, delivery: 0, pickup: 0 };
+    const counts = {
+      total: 0, pending: 0, paid: 0, delivery: 0, pickup: 0,
+      pendingReview: 0, approvedAwaitingSubmit: 0,
+    };
     for (const o of allOrders) {
       counts.total++;
       const ps = String(o.payment_status || '').toLowerCase();
@@ -953,25 +971,38 @@
       const fm = String(o.fulfillment_method || '').toLowerCase();
       if (fm === 'pickup')   counts.pickup++;
       if (fm === 'delivery') counts.delivery++;
+      // Phase 2b.2 — admin-approval KPI buckets.
+      const aas = String(o.admin_approval_status || '').toLowerCase();
+      const sss = String(o.supplier_sync_status  || '').toLowerCase();
+      if (ps === 'paid' && aas === 'pending') {
+        counts.pendingReview++;
+      }
+      if (aas === 'approved' && sss === 'not_submitted' && !o.supplier_order_id) {
+        counts.approvedAwaitingSubmit++;
+      }
     }
     const set = (id, n) => {
       const el = document.getElementById(id);
       if (el) el.textContent = String(n);
     };
-    set('kpiTotal',    counts.total);
-    set('kpiPending',  counts.pending);
-    set('kpiPaid',     counts.paid);
-    set('kpiDelivery', counts.delivery);
-    set('kpiPickup',   counts.pickup);
+    set('kpiTotal',                  counts.total);
+    set('kpiPending',                counts.pending);
+    set('kpiPaid',                   counts.paid);
+    set('kpiDelivery',               counts.delivery);
+    set('kpiPickup',                 counts.pickup);
+    set('kpiPendingReview',          counts.pendingReview);
+    set('kpiApprovedAwaitingSubmit', counts.approvedAwaitingSubmit);
   }
 
   function renderOrders() {
     const statusSel    = document.getElementById('filterStatus');
     const fulfillSel   = document.getElementById('filterFulfillment');
+    const approvalSel  = document.getElementById('filterApproval');
     const dateFromInp  = document.getElementById('filterDateFrom');
     const dateToInp    = document.getElementById('filterDateTo');
     const status       = (statusSel?.value    || '').trim().toLowerCase();
     const fulfillment  = (fulfillSel?.value   || '').trim().toLowerCase();
+    const approval     = (approvalSel?.value  || '').trim().toLowerCase();
     const dateFrom     = (dateFromInp?.value  || '').trim();
     const dateTo       = (dateToInp?.value    || '').trim();
     const q            = (document.getElementById('searchBox')?.value || '').trim().toLowerCase();
@@ -989,6 +1020,10 @@
       if (fulfillment) {
         const fm = String(o.fulfillment_method || '').toLowerCase();
         if (fm !== fulfillment) return false;
+      }
+      if (approval) {
+        const aas = String(o.admin_approval_status || '').toLowerCase();
+        if (aas !== approval) return false;
       }
       if (fromTs != null || toTs != null) {
         const created = o.created_at ? new Date(o.created_at).getTime() : NaN;
@@ -1172,6 +1207,7 @@
       </div>
 
       <!-- Phase Admin 1.0B — Order action panel (rendered async after detail loads) -->
+      <div id="approvalActionPanel"></div>
       <div id="orderActionPanel"></div>
 
       <div class="section">
@@ -1303,6 +1339,8 @@
     // panel above. Fire-and-forget so the rest of the detail card paints
     // immediately; the panel slot stays empty until the history resolves.
     loadOrderStatusEvents(o.order_id).then(events => renderOrderActionPanel(o, events));
+    // Phase 2b.2 — admin approval audit + approve button.
+    loadApprovalAuditLog(o.order_id).then(logs => renderApprovalActionPanel(o, logs));
   }
 
   // ── Phase Admin 1.0B — Order status state machine (client mirror) ───────
@@ -1705,6 +1743,246 @@
   // admin-create-payment-link Edge Function with the signed-in user's
   // JWT. NEVER touches Stripe secret keys or service-role keys; those
   // live only on the server.
+  // ── Phase 2b.2 — Admin Approval workflow ─────────────────────────────────
+  // Reads from admin_orders_summary / admin_order_detail (extended in Phase
+  // 2b.0) and supplier_purchase_log (admin SELECT policy added in Phase 2b.0).
+  // Mutations go through admin-approve-order (auth-swapped in Phase 2b.1 to
+  // require an admin Supabase Auth JWT). All mutations are server-validated
+  // against the same 4 invariants we check client-side here — this UI is
+  // ergonomic; the server's atomic WHERE-belt is the source of truth.
+
+  function approvalStatusPill(status) {
+    const v = String(status || '').toLowerCase();
+    const map = {
+      pending:      { label: 'Pending review', bg: 'rgba(202,138,4,0.10)',  fg: '#CA8A04' },
+      approved:     { label: 'Approved',       bg: 'rgba(5,150,105,0.10)',  fg: '#059669' },
+      rejected:     { label: 'Rejected',       bg: 'rgba(220,38,38,0.10)',  fg: '#DC2626' },
+      not_required: { label: 'Not required',   bg: 'rgba(107,114,128,0.10)', fg: '#6B7280' },
+    };
+    const conf = map[v] || { label: v || '—', bg: 'rgba(107,114,128,0.10)', fg: '#6B7280' };
+    return `<span class="pill" style="background:${conf.bg};color:${conf.fg};border-color:${conf.fg}33">${escapeHtml(conf.label)}</span>`;
+  }
+
+  function supplierSyncPill(status) {
+    const v = String(status || '').toLowerCase();
+    const map = {
+      not_submitted: { label: 'Not submitted', fg: '#6B7280' },
+      submitting:    { label: 'Submitting…',   fg: '#CA8A04' },
+      submitted:     { label: 'Submitted',     fg: '#2563EB' },
+      confirmed:     { label: 'Confirmed',     fg: '#059669' },
+      failed:        { label: 'Failed',        fg: '#DC2626' },
+      cancelled:     { label: 'Cancelled',     fg: '#6B7280' },
+    };
+    const conf = map[v] || { label: v || '—', fg: '#6B7280' };
+    return `<span class="pill" style="background:${conf.fg}1A;color:${conf.fg};border-color:${conf.fg}33">${escapeHtml(conf.label)}</span>`;
+  }
+
+  async function loadApprovalAuditLog(orderId) {
+    if (!orderId) return [];
+    const { data, error } = await supabase
+      .from('supplier_purchase_log')
+      .select('id, event, caller, http_status, response_json, created_at')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) {
+      console.warn('[supplier-purchase-log] load failed:', error.message);
+      return [];
+    }
+    return data || [];
+  }
+
+  function renderApprovalAuditTable(logs) {
+    if (!logs || logs.length === 0) {
+      return '<p class="sub" style="margin:0">No approval / supplier-sync events recorded yet.</p>';
+    }
+    const rows = logs.map(e => {
+      const rj = (e.response_json && typeof e.response_json === 'object') ? e.response_json : {};
+      const approved = rj.approved == null
+        ? '—'
+        : (rj.approved
+            ? '<span style="color:#059669;font-weight:600">true</span>'
+            : '<span style="color:#DC2626;font-weight:600">false</span>');
+      const note    = (rj.note ? String(rj.note) : '') || '—';
+      const failure = (rj.failure_reason ? String(rj.failure_reason) : '') || '—';
+      const http    = e.http_status == null ? '—' : String(e.http_status);
+      return `
+        <tr>
+          <td>${escapeHtml(fmtDate(e.created_at))}</td>
+          <td><code>${escapeHtml(e.event || '')}</code></td>
+          <td>${escapeHtml(e.caller || '—')}</td>
+          <td class="right">${escapeHtml(http)}</td>
+          <td>${approved}</td>
+          <td>${escapeHtml(note)}</td>
+          <td>${escapeHtml(failure)}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <div class="order-action-history">
+        <table>
+          <thead><tr>
+            <th>When</th><th>Event</th><th>Caller</th><th class="right">HTTP</th>
+            <th>Approved</th><th>Note</th><th>Failure reason</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function renderApprovalActionPanel(order, logs) {
+    const panel = document.getElementById('approvalActionPanel');
+    if (!panel) return;
+
+    const ps  = String(order.payment_status        || '').toLowerCase();
+    const aas = String(order.admin_approval_status || '').toLowerCase();
+    const sss = String(order.supplier_sync_status  || '').toLowerCase();
+    const sid = order.supplier_order_id || null;
+
+    // Approve button is shown ONLY when all 4 invariants hold. The server
+    // re-validates them — this gate is purely ergonomic.
+    const canApprove =
+      ps  === 'paid' &&
+      aas === 'pending' &&
+      sss === 'not_submitted' &&
+      !sid;
+
+    let buttonsHtml = '';
+    let hintHtml    = '';
+    if (canApprove) {
+      buttonsHtml = `
+        <div class="order-action-btn-row">
+          <button class="order-action-btn primary" data-action="approve-open">Approve order</button>
+        </div>`;
+    } else {
+      const reasons = [];
+      if (ps  !== 'paid')          reasons.push(`payment_status is "${ps || '—'}"`);
+      if (aas !== 'pending')       reasons.push(`admin_approval_status is "${aas || 'not_required'}"`);
+      if (sss !== 'not_submitted') reasons.push(`supplier_sync_status is "${sss || '—'}"`);
+      if (sid)                     reasons.push(`supplier_order_id is already set (${sid})`);
+      hintHtml = `<p class="muted" style="margin-top:6px">Approve unavailable — ${escapeHtml(reasons.join(' · '))}.</p>`;
+    }
+
+    panel.innerHTML = `
+      <div class="section order-action-card">
+        <p class="eyebrow">Admin approval</p>
+        <div class="kv-grid">
+          <div><span class="kv-label">Approval status</span><span class="kv-value">${approvalStatusPill(aas || 'not_required')}</span></div>
+          <div><span class="kv-label">Approved by</span><span class="kv-value">${escapeHtml(order.admin_approved_by || '—')}</span></div>
+          <div><span class="kv-label">Approved at</span><span class="kv-value">${escapeHtml(fmtDate(order.admin_approved_at))}</span></div>
+          <div><span class="kv-label">Supplier sync</span><span class="kv-value">${supplierSyncPill(sss || 'not_submitted')}</span></div>
+          <div><span class="kv-label">Supplier order id</span><span class="kv-value"><code>${escapeHtml(order.supplier_order_id || '—')}</code></span></div>
+          <div><span class="kv-label">Submit attempts</span><span class="kv-value">${escapeHtml(String(order.supplier_purchase_attempt_count ?? 0))}</span></div>
+        </div>
+        ${buttonsHtml}
+        ${hintHtml}
+        <div id="approvalConfirmForm" class="order-action-cancel-form hidden">
+          <p class="kv-label" style="margin-bottom:8px">Confirm approval — this action is NOT reversible from the dashboard.</p>
+          <table class="confirm-table" style="margin:0 0 10px;font-size:12px;color:var(--ink)">
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Order #</td><td><strong>${escapeHtml(order.order_number || '—')}</strong></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Order id</td><td><code>${escapeHtml(order.order_id || '—')}</code></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Contact</td><td>${escapeHtml(order.contact_email || '—')}</td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Total</td><td>${escapeHtml(fmtPrice(order.total))}</td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Current approval</td><td>${approvalStatusPill(aas || 'not_required')}</td></tr>
+          </table>
+          <label class="kv-label" style="margin-bottom:6px">Approval note (optional)</label>
+          <input id="approvalNoteInput" type="text" placeholder="e.g. inventory verified — ok to submit" maxlength="500" />
+          <div style="display:flex; gap:8px; margin-top:8px">
+            <button class="order-action-btn primary" data-action="approve-confirm">Confirm approve</button>
+            <button class="order-action-btn"         data-action="approve-abort">Back</button>
+          </div>
+        </div>
+        <p id="approvalActionStatus" class="order-action-status"></p>
+        <p class="eyebrow" style="margin-top:16px">Approval / supplier-sync audit</p>
+        ${renderApprovalAuditTable(logs)}
+      </div>`;
+
+    wireApprovalActionHandlers(order);
+  }
+
+  async function callAdminApproveOrder(orderId, noteText) {
+    const setup = loadSetup();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      return { ok: false, error: 'session_expired', detail: 'Session expired — sign in again.' };
+    }
+    try {
+      const resp = await fetch(`${setup.supabaseUrl}/functions/v1/admin-approve-order`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+          'apikey':        setup.anonKey,
+        },
+        body: JSON.stringify({
+          order_id: orderId,
+          note:     (noteText && noteText.trim()) || undefined,
+        }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok || body.success === false) {
+        return {
+          ok:     false,
+          error:  body.error  || ('http_' + resp.status),
+          detail: body.detail || body.hint || body.message || 'unknown error',
+        };
+      }
+      return { ok: true, body };
+    } catch (e) {
+      return { ok: false, error: 'network_error', detail: (e && e.message) ? e.message : String(e) };
+    }
+  }
+
+  function wireApprovalActionHandlers(order) {
+    const panel = document.getElementById('approvalActionPanel');
+    if (!panel) return;
+    const status = panel.querySelector('#approvalActionStatus');
+    const form   = panel.querySelector('#approvalConfirmForm');
+    const note   = panel.querySelector('#approvalNoteInput');
+
+    function setMsg(msg, isErr) {
+      if (!status) return;
+      status.textContent = msg || '';
+      status.classList.toggle('err', !!isErr);
+    }
+
+    async function performApprove(noteText, triggerBtn) {
+      const buttons = panel.querySelectorAll('button.order-action-btn');
+      buttons.forEach(b => { b.disabled = true; });
+      setMsg('Approving order…');
+      const result = await callAdminApproveOrder(order.order_id, noteText);
+      if (!result.ok) {
+        // 409 not_in_pending_state lands here as { ok:false, error:'not_in_pending_state', detail:'…' }
+        setMsg(`Failed (${result.error}): ${result.detail}`, true);
+        buttons.forEach(b => { b.disabled = false; });
+        if (triggerBtn) triggerBtn.disabled = false;
+        return;
+      }
+      setMsg('Approved. Refreshing…');
+      try {
+        await Promise.all([openDetail(order.order_id), loadOrders()]);
+      } catch (e) {
+        setMsg(`Approved, but refresh failed: ${(e && e.message) || e}`, true);
+      }
+    }
+
+    panel.querySelectorAll('button.order-action-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.action;
+        if (action === 'approve-open') {
+          if (form) form.classList.remove('hidden');
+          setMsg('');
+          if (note) { note.value = ''; note.focus(); }
+        } else if (action === 'approve-abort') {
+          if (form) form.classList.add('hidden');
+          setMsg('');
+        } else if (action === 'approve-confirm') {
+          const noteText = note ? note.value.trim() : '';
+          await performApprove(noteText, btn);
+        }
+      });
+    });
+  }
+
   function wirePaymentLinkHandlers(order, items) {
     const createBtn = document.getElementById('paylinkCreate');
     const copyBtn   = document.getElementById('paylinkCopy');
@@ -1898,6 +2176,7 @@
   document.getElementById('searchBox').addEventListener('input', renderOrders);
   // Phase 6.2 — new filter controls + Apply/Clear buttons.
   document.getElementById('filterFulfillment')?.addEventListener('change', renderOrders);
+  document.getElementById('filterApproval')   ?.addEventListener('change', renderOrders);
   document.getElementById('filterDateFrom')   ?.addEventListener('change', renderOrders);
   document.getElementById('filterDateTo')     ?.addEventListener('change', renderOrders);
   document.getElementById('filterApply')      ?.addEventListener('click',  renderOrders);
@@ -1905,11 +2184,13 @@
     const sb = document.getElementById('searchBox');
     const fs = document.getElementById('filterStatus');
     const ff = document.getElementById('filterFulfillment');
+    const fa = document.getElementById('filterApproval');
     const df = document.getElementById('filterDateFrom');
     const dt = document.getElementById('filterDateTo');
     if (sb) sb.value = '';
     if (fs) fs.value = '';
     if (ff) ff.value = '';
+    if (fa) fa.value = '';
     if (df) df.value = '';
     if (dt) dt.value = '';
     renderOrders();
