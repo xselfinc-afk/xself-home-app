@@ -1798,22 +1798,35 @@
     }
     const rows = logs.map(e => {
       const rj = (e.response_json && typeof e.response_json === 'object') ? e.response_json : {};
+      // Phase 2b.3 — response_json.action disambiguates Approve vs Reject.
+      // Legacy rows from Phase 2a/2b.1 have no .action — those were all
+      // approve attempts.
+      const rawAction = rj.action ? String(rj.action).toLowerCase() : '';
+      const isReject  = rawAction === 'rejected';
+      const actionLabel = isReject
+        ? '<span style="color:#DC2626;font-weight:600">Reject</span>'
+        : '<span style="color:#CA8A04;font-weight:600">Approve</span>';
       const approved = rj.approved == null
         ? '—'
         : (rj.approved
             ? '<span style="color:#059669;font-weight:600">true</span>'
             : '<span style="color:#DC2626;font-weight:600">false</span>');
-      const note    = (rj.note ? String(rj.note) : '') || '—';
+      // Reject rows store operator text in .reason; approve rows in .note.
+      const detailText = isReject
+        ? (rj.reason ? String(rj.reason) : '')
+        : (rj.note   ? String(rj.note)   : '');
+      const detail  = detailText || '—';
       const failure = (rj.failure_reason ? String(rj.failure_reason) : '') || '—';
       const http    = e.http_status == null ? '—' : String(e.http_status);
       return `
         <tr>
           <td>${escapeHtml(fmtDate(e.created_at))}</td>
+          <td>${actionLabel}</td>
           <td><code>${escapeHtml(e.event || '')}</code></td>
           <td>${escapeHtml(e.caller || '—')}</td>
           <td class="right">${escapeHtml(http)}</td>
           <td>${approved}</td>
-          <td>${escapeHtml(note)}</td>
+          <td>${escapeHtml(detail)}</td>
           <td>${escapeHtml(failure)}</td>
         </tr>`;
     }).join('');
@@ -1821,8 +1834,8 @@
       <div class="order-action-history">
         <table>
           <thead><tr>
-            <th>When</th><th>Event</th><th>Caller</th><th class="right">HTTP</th>
-            <th>Approved</th><th>Note</th><th>Failure reason</th>
+            <th>When</th><th>Action</th><th>Event</th><th>Caller</th><th class="right">HTTP</th>
+            <th>Approved</th><th>Detail</th><th>Failure reason</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1852,6 +1865,7 @@
       buttonsHtml = `
         <div class="order-action-btn-row">
           <button class="order-action-btn primary" data-action="approve-open">Approve order</button>
+          <button class="order-action-btn danger"  data-action="reject-open">Reject order</button>
         </div>`;
     } else {
       const reasons = [];
@@ -1889,6 +1903,22 @@
           <div style="display:flex; gap:8px; margin-top:8px">
             <button class="order-action-btn primary" data-action="approve-confirm">Confirm approve</button>
             <button class="order-action-btn"         data-action="approve-abort">Back</button>
+          </div>
+        </div>
+        <div id="rejectConfirmForm" class="order-action-cancel-form hidden">
+          <p class="kv-label" style="margin-bottom:8px">Confirm rejection — this action is NOT reversible from the dashboard. Refunds must be issued in Stripe separately; customer-facing cancellation is a separate action via order status.</p>
+          <table class="confirm-table" style="margin:0 0 10px;font-size:12px;color:var(--ink)">
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Order #</td><td><strong>${escapeHtml(order.order_number || '—')}</strong></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Order id</td><td><code>${escapeHtml(order.order_id || '—')}</code></td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Contact</td><td>${escapeHtml(order.contact_email || '—')}</td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Total</td><td>${escapeHtml(fmtPrice(order.total))}</td></tr>
+            <tr><td style="padding:4px 12px 4px 0;color:var(--muted)">Current approval</td><td>${approvalStatusPill(aas || 'not_required')}</td></tr>
+          </table>
+          <label class="kv-label" style="margin-bottom:6px">Rejection reason (required, 5–500 chars)</label>
+          <textarea id="rejectReasonInput" rows="3" maxlength="500" placeholder="e.g. inventory unavailable at supplier — refund to be issued in Stripe" style="width:100%; padding:10px 12px; border:1px solid var(--hairline); border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; resize:vertical;"></textarea>
+          <div style="display:flex; gap:8px; margin-top:8px">
+            <button class="order-action-btn danger" data-action="reject-confirm">Confirm reject</button>
+            <button class="order-action-btn"        data-action="reject-abort">Back</button>
           </div>
         </div>
         <p id="approvalActionStatus" class="order-action-status"></p>
@@ -1932,17 +1962,57 @@
     }
   }
 
+  async function callAdminRejectOrder(orderId, reasonText) {
+    const setup = loadSetup();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      return { ok: false, error: 'session_expired', detail: 'Session expired — sign in again.' };
+    }
+    try {
+      const resp = await fetch(`${setup.supabaseUrl}/functions/v1/admin-reject-order`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type':  'application/json',
+          'apikey':        setup.anonKey,
+        },
+        body: JSON.stringify({
+          order_id: orderId,
+          reason:   reasonText,
+        }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok || body.success === false) {
+        return {
+          ok:     false,
+          error:  body.error  || ('http_' + resp.status),
+          detail: body.detail || body.hint || body.message || 'unknown error',
+        };
+      }
+      return { ok: true, body };
+    } catch (e) {
+      return { ok: false, error: 'network_error', detail: (e && e.message) ? e.message : String(e) };
+    }
+  }
+
   function wireApprovalActionHandlers(order) {
     const panel = document.getElementById('approvalActionPanel');
     if (!panel) return;
-    const status = panel.querySelector('#approvalActionStatus');
-    const form   = panel.querySelector('#approvalConfirmForm');
-    const note   = panel.querySelector('#approvalNoteInput');
+    const status       = panel.querySelector('#approvalActionStatus');
+    const approveForm  = panel.querySelector('#approvalConfirmForm');
+    const note         = panel.querySelector('#approvalNoteInput');
+    const rejectForm   = panel.querySelector('#rejectConfirmForm');
+    const rejectReason = panel.querySelector('#rejectReasonInput');
 
     function setMsg(msg, isErr) {
       if (!status) return;
       status.textContent = msg || '';
       status.classList.toggle('err', !!isErr);
+    }
+
+    function closeBothForms() {
+      if (approveForm) approveForm.classList.add('hidden');
+      if (rejectForm)  rejectForm.classList.add('hidden');
     }
 
     async function performApprove(noteText, triggerBtn) {
@@ -1965,19 +2035,56 @@
       }
     }
 
+    async function performReject(reasonText, triggerBtn) {
+      // Client-side guard mirrors the server's 5-char minimum.
+      if (!reasonText || reasonText.length < 5) {
+        setMsg('Rejection reason is required (at least 5 characters).', true);
+        if (rejectReason) rejectReason.focus();
+        return;
+      }
+      const buttons = panel.querySelectorAll('button.order-action-btn');
+      buttons.forEach(b => { b.disabled = true; });
+      setMsg('Rejecting order…');
+      const result = await callAdminRejectOrder(order.order_id, reasonText);
+      if (!result.ok) {
+        setMsg(`Failed (${result.error}): ${result.detail}`, true);
+        buttons.forEach(b => { b.disabled = false; });
+        if (triggerBtn) triggerBtn.disabled = false;
+        return;
+      }
+      setMsg('Rejected. Refreshing… Remember to issue the refund in Stripe.');
+      try {
+        await Promise.all([openDetail(order.order_id), loadOrders()]);
+      } catch (e) {
+        setMsg(`Rejected, but refresh failed: ${(e && e.message) || e}`, true);
+      }
+    }
+
     panel.querySelectorAll('button.order-action-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
         if (action === 'approve-open') {
-          if (form) form.classList.remove('hidden');
+          closeBothForms();
+          if (approveForm) approveForm.classList.remove('hidden');
           setMsg('');
           if (note) { note.value = ''; note.focus(); }
         } else if (action === 'approve-abort') {
-          if (form) form.classList.add('hidden');
+          if (approveForm) approveForm.classList.add('hidden');
           setMsg('');
         } else if (action === 'approve-confirm') {
           const noteText = note ? note.value.trim() : '';
           await performApprove(noteText, btn);
+        } else if (action === 'reject-open') {
+          closeBothForms();
+          if (rejectForm) rejectForm.classList.remove('hidden');
+          setMsg('');
+          if (rejectReason) { rejectReason.value = ''; rejectReason.focus(); }
+        } else if (action === 'reject-abort') {
+          if (rejectForm) rejectForm.classList.add('hidden');
+          setMsg('');
+        } else if (action === 'reject-confirm') {
+          const reasonText = rejectReason ? rejectReason.value.trim() : '';
+          await performReject(reasonText, btn);
         }
       });
     });
