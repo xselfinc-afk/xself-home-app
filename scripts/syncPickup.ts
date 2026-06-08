@@ -12,9 +12,17 @@
  *   SUPPLIER_API_BASE_URL     — GIGA API base URL
  */
 
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { syncPickupProducts } from '../src/services/supplierPickupService';
+
+// GIGA Open API env: load .env.giga-alt.local first (correct openapi.gigab2b.com
+// host + Production credentials), then .env.local as fallback — matching
+// scripts/syncInventoryFromOfficialApi.ts. dotenv does not override already-set
+// vars, so the alt file's SUPPLIER_* values win. This MUST run before
+// supplierPickupService is imported (gigaApiClient reads SUPPLIER_* at module
+// load), which is why that service is imported dynamically inside run().
+loadEnv({ path: '.env.giga-alt.local' });
+loadEnv({ path: '.env.local' });
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
@@ -43,6 +51,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 async function run() {
   console.log('[syncPickup] Starting GIGA Open API → Supabase product sync');
 
+  // Imported here (not at top) so the env files above are loaded before
+  // gigaApiClient reads SUPPLIER_* at module-evaluation time.
+  const { syncPickupProducts } = await import('../src/services/supplierPickupService');
   const result = await syncPickupProducts(supabase);
 
   console.log(
