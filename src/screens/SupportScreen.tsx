@@ -451,6 +451,10 @@ export default function SupportScreen({ navigation, route }: any) {
       qty,
       selectedVariant: selectedVariant ?? null,
       quoteToken: quote?.redeem_token,
+      // Forward the negotiated quoted unit price so Checkout displays the same
+      // price the server will charge. The server still re-validates the token
+      // and overrides the line price authoritatively (create-checkout-order).
+      quotedPrice: quote ? quote.quoted_price_cents / 100 : undefined,
     });
   };
 

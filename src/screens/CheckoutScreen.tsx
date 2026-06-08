@@ -76,7 +76,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [reserveExpiry]);
-  const { mode, product, qty: buyQty, selectedVariant, quoteToken } = route?.params ?? {};
+  const { mode, product, qty: buyQty, selectedVariant, quoteToken, quotedPrice } = route?.params ?? {};
 
 
   // ── Order items based on mode ──────────────────────────────────────────────
@@ -101,7 +101,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
         productId: product?.id ?? '',
         name: product?.name ?? '',
         img: selectedVariant?.images?.[0] ?? product?.images?.[0] ?? '',
-        price: selectedVariant?.price ?? product?.price ?? 0,
+        // Quote-based Buy Now: the negotiated quoted price (when present) is the
+        // price the server will charge, so display it here in preference to the
+        // catalog list price. quoteToken is still forwarded for server override.
+        price: quotedPrice ?? selectedVariant?.price ?? product?.price ?? 0,
         qty: buyQty ?? 1,
         color: selectedVariant?.color,
         size: selectedVariant?.size,
