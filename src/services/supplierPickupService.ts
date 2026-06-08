@@ -195,82 +195,101 @@ export async function upsertPickupProducts(
   };
 }
 
+// GIGA "Product List Query" — returns the buyer's full "My Saved Items" list.
+// Note: this endpoint exposes NO favorite filter (only time/sort params), so it
+// returns ALL saved items, not the website's "Favorite" sub-tab.
+const SAVED_ITEMS_PATH = '/b2b-overseas-api/v1/buyer/product/skus/v1';
+
+// Documented pageSize range for the list query is min 100 / max 10000
+// (default 5000 when blank). 500 keeps each page reasonable while we paginate.
+const SAVED_ITEMS_PAGE_SIZE = 500;
+
+// The detail + price endpoints cap each request at 200 SKUs (OpenAPI doc).
+// Enrichment is therefore chunked so a large saved-items list never exceeds it.
+const ENRICH_BATCH_SIZE = 200;
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 export async function syncPickupProducts(
   supabase: SupabaseClient,
 ): Promise<SyncResult> {
-  console.log('[SupplierSync] Fetching products from GIGA Product List Query');
+  console.log('[SupplierSync] Fetching products from GIGA Product List Query (My Saved Items — all pages)');
 
-  const res = await gigaRequest(
-    '/b2b-overseas-api/v1/buyer/product/skus/v1',
-    {
-      page: 1,
-      pageSize: 100,
-    },
-  );
+  // ── 1. Page through ALL saved items (previously capped at the first 100) ──
+  const items: SupplierApiItem[] = [];
+  let page = 1;
+  let totalPages = 1;
+  let serverTotal: number | null = null;
 
-  console.log(
-    '[SupplierSync] Raw GIGA response preview:',
-    JSON.stringify(res)?.slice(0, 500),
-  );
-
-  const items: SupplierApiItem[] = res?.data?.records || [];
-
-  if (!Array.isArray(items)) {
-    throw new Error('[SupplierSync] Unexpected GIGA response shape');
-  }
-
-  console.log(`[SupplierSync] Fetched ${items.length} products`);
-
-  const skuList = items
-    .map(item => item.sku)
-    .filter(Boolean)
-    .map(String);
-
-  console.log('[SupplierSync] Fetching details for', skuList.length, 'SKUs');
-
-  const detailRes = await fetchProductDetails(skuList);
-  const detailItems =
-    detailRes?.data?.records ||
-    detailRes?.data?.list ||
-    detailRes?.data?.items ||
-    detailRes?.data ||
-    [];
+  do {
+    const res = await gigaRequest(SAVED_ITEMS_PATH, { page, pageSize: SAVED_ITEMS_PAGE_SIZE });
+    const data = (res && res.data) ? res.data : {};
+    const pageInfo = data.pageInfo ?? {};
+    totalPages = Number(pageInfo.totalPage ?? pageInfo.totalPages ?? 1) || 1;
+    const reported = Number(pageInfo.total ?? pageInfo.totalCount ?? data.total ?? data.totalCount);
+    if (Number.isFinite(reported)) serverTotal = reported;
+    const records: SupplierApiItem[] = Array.isArray(data.records)
+      ? data.records
+      : (Array.isArray(data.list) ? data.list : []);
+    items.push(...records);
+    console.log(
+      `[SupplierSync] Page ${page}/${totalPages} — pageSize=${SAVED_ITEMS_PAGE_SIZE} — ${records.length} records ` +
+      `(cumulative ${items.length}${serverTotal != null ? '/' + serverTotal : ''})`,
+    );
+    page += 1;
+  } while (page <= totalPages);
 
   console.log(
-    '[SupplierSync] Got detail items:',
-    Array.isArray(detailItems) ? detailItems.length : 'non-array',
+    `[SupplierSync] Saved-items list complete — fetched ${items.length} SKUs across ${totalPages} page(s)` +
+    `${serverTotal != null ? ` (server total=${serverTotal})` : ''}`,
   );
 
-  if (!Array.isArray(detailItems)) {
-    throw new Error('[SupplierSync] Detail API returned invalid data');
+  const skuList = items.map(item => item.sku).filter(Boolean).map(String);
+
+  // ── 2. Enrich with detail + price in ≤200-SKU batches (per-call API cap) ──
+  const batches = chunk(skuList, ENRICH_BATCH_SIZE);
+  console.log(`[SupplierSync] Enriching ${skuList.length} SKUs in ${batches.length} batch(es) of ≤${ENRICH_BATCH_SIZE}`);
+
+  const detailItems: SupplierApiItem[] = [];
+  const priceItems: SupplierApiItem[] = [];
+
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
+
+    const detailRes = await fetchProductDetails(batch);
+    const dItems =
+      detailRes?.data?.records ||
+      detailRes?.data?.list ||
+      detailRes?.data?.items ||
+      detailRes?.data ||
+      [];
+    if (Array.isArray(dItems)) detailItems.push(...dItems);
+
+    const priceRes = await fetchProductPrices(batch);
+    const pItems =
+      priceRes?.data?.records ||
+      priceRes?.data?.list ||
+      priceRes?.data?.items ||
+      priceRes?.data ||
+      [];
+    if (Array.isArray(pItems)) priceItems.push(...pItems);
+
+    console.log(
+      `[SupplierSync] Batch ${b + 1}/${batches.length} — skus=${batch.length} ` +
+      `details=${Array.isArray(dItems) ? dItems.length : 'non-array'} ` +
+      `prices=${Array.isArray(pItems) ? pItems.length : 'non-array'}`,
+    );
   }
 
-  console.log('[SupplierSync] Fetching prices for', skuList.length, 'SKUs');
-
-  const priceRes = await fetchProductPrices(skuList);
-  const priceItems =
-    priceRes?.data?.records ||
-    priceRes?.data?.list ||
-    priceRes?.data?.items ||
-    priceRes?.data ||
-    [];
-
-  console.log(
-    '[SupplierSync] Got price items:',
-    Array.isArray(priceItems) ? priceItems.length : 'non-array',
-  );
-
-  if (!Array.isArray(priceItems)) {
-    throw new Error('[SupplierSync] Price API returned invalid data');
-  }
-
+  // ── 3. Merge listing + detail + price by SKU (semantics unchanged) ────────
   const priceMap = new Map<string, SupplierApiItem>();
-
   for (const item of priceItems) {
     const key = String(item.sku ?? item.skuId ?? item.id ?? '');
-    if (key) {
-      priceMap.set(key, item);
-    }
+    if (key) priceMap.set(key, item);
   }
 
   // Build SKU list map so firstArrivalDate/addedTime/updateTime are preserved in raw_payload
@@ -289,8 +308,8 @@ export async function syncPickupProducts(
   });
 
   console.log(
-    '[SupplierSync] First normalized item:',
-    mergedItems[0] ? normalizeSupplierItem(mergedItems[0]) : null,
+    `[SupplierSync] Merged ${mergedItems.length} items ready for upsert ` +
+    `(saved-items fetched=${items.length}, detail records=${detailItems.length}, price records=${priceItems.length})`,
   );
 
   return upsertPickupProducts(supabase, mergedItems);
