@@ -175,6 +175,10 @@ async function runDryRun() {
 
   const passing = units.filter(u => !u.held);
   const passSkus = passing.flatMap(u => u.skus);
+  // App cards = DISTINCT predicted product_family_key among passing SKUs (matches planner fix 6a855baa):
+  // dedupes both -vg- families and title-derived color pairs. (u.per[s].key is the per-SKU family key;
+  // a singleton unit's own .key is its SKU id, so always read the per-SKU key here.)
+  const passCards = new Set(passing.flatMap(u => u.skus.map(s => u.per[s]?.key)).filter(Boolean)).size;
   const heldUnits = units.filter(u => u.held), heldSkus = heldUnits.flatMap(u => u.skus);
   const reasonCounts: Record<string, number> = {}; heldUnits.forEach(u => u.reasons.forEach(r => reasonCounts[r] = (reasonCounts[r] ?? 0) + 1));
   const stageFail: Record<string, number> = {}; heldUnits.forEach(u => { if (u.heldAt) stageFail[u.heldAt] = (stageFail[u.heldAt] ?? 0) + 1; });
@@ -186,16 +190,16 @@ async function runDryRun() {
   fs.writeFileSync(DRY_JSON, JSON.stringify({
     note: 'DRY-RUN simulation; no DB writes. Stage 7 read-only GIGA stock probe.', plan_file: PLAN_FILE,
     requested: { skus: planned.length, cards: requestedCards },
-    result: { dry_run_pass_skus: passSkus.length, dry_run_pass_cards: passing.length, hold_skus: heldSkus.length, hold_families: heldUnits.filter(u => u.kind === 'family').length },
-    deltas: { sellable: passSkus.length, app_cards: passing.length, reviews: passSkus.length * 5 },
+    result: { dry_run_pass_skus: passSkus.length, dry_run_pass_cards: passCards, hold_skus: heldSkus.length, hold_families: heldUnits.filter(u => u.kind === 'family').length },
+    deltas: { sellable: passSkus.length, app_cards: passCards, reviews: passSkus.length * 5 },
     stage_failures: stageFail, hold_reasons: reasonCounts, inventory_limited: invLimited,
     units: units.map(u => ({ kind: u.kind, key: u.key, skus: u.skus, held: u.held, heldAt: u.heldAt, reasons: u.reasons, per: u.per })),
   }, null, 2));
   fs.writeFileSync(DRY_MD, [
     '# GIGA Auto-Publish DRY-RUN', '', `- plan: ${PLAN_FILE}`, '',
     `## Result`, `- requested: ${planned.length} skus / ${requestedCards} cards`,
-    `- dry_run_pass: ${passSkus.length} skus / ${passing.length} cards`, `- held: ${heldSkus.length} skus`,
-    `- deltas: sellable +${passSkus.length}, cards +${passing.length}, reviews +${passSkus.length * 5}`, '',
+    `- dry_run_pass: ${passSkus.length} skus / ${passCards} cards`, `- held: ${heldSkus.length} skus`,
+    `- deltas: sellable +${passSkus.length}, cards +${passCards}, reviews +${passSkus.length * 5}`, '',
     '## Units', '', '| kind | key | skus | held | heldAt | reasons |', '|---|---|---|---|---|---|',
     ...units.map(u => `| ${u.kind} | ${u.key} | ${u.skus.join(',')} | ${u.held} | ${u.heldAt ?? ''} | ${u.reasons.join(';')} |`),
   ].join('\n'));
@@ -206,12 +210,12 @@ async function runDryRun() {
     console.log(`requested_skus=${planned.length}`);
     console.log(`requested_cards=${requestedCards}`);
     console.log(`dry_run_pass_skus=${passSkus.length}`);
-    console.log(`dry_run_pass_cards=${passing.length}`);
+    console.log(`dry_run_pass_cards=${passCards}`);
     console.log(`hold_skus=${heldSkus.length}`);
     console.log(`hold_families=${heldUnits.filter(u => u.kind === 'family').length}`);
     console.log(`hold_reasons=${Object.entries(reasonCounts).map(([r, n]) => `${r}:${n}`).join(',') || 'none'}`);
     console.log(`expected_sellable_delta=${passSkus.length}`);
-    console.log(`expected_app_card_delta=${passing.length}`);
+    console.log(`expected_app_card_delta=${passCards}`);
     console.log(`expected_review_delta=${passSkus.length * 5}`);
     console.log(`stage_failures=${Object.entries(stageFail).map(([s, n]) => `${s}:${n}`).join(',') || 'none'}`);
     console.log(`report_json=${rel(DRY_JSON)}`);
