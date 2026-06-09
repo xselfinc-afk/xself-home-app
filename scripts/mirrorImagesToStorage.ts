@@ -56,6 +56,9 @@ const CONCURRENCY = process.env.CONCURRENCY ? Math.max(1, parseInt(process.env.C
 const FORCE       = process.env.FORCE === '1';
 // 50 MiB — Supabase Storage hard limit on free / Pro plans for single objects.
 const MAX_BYTES   = process.env.MAX_BYTES ? parseInt(process.env.MAX_BYTES, 10) : 52_428_800;
+// Scope + preview controls.
+const ONLY_SKUS   = (process.env.ONLY_SKUS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const DRY_RUN     = /^(1|true|yes)$/i.test(process.env.DRY_RUN ?? '');
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -147,29 +150,61 @@ async function main() {
     process.exit(1);
   }
 
-  // Pre-flight: confirm bucket exists.
-  const bk = await sb.storage.getBucket(BUCKET);
-  if (bk.error) {
-    console.error(`\n❌  Bucket "${BUCKET}" does not exist or is not visible to the service role.`);
-    console.error('    In Supabase Studio → Storage → Create bucket: name=product-images, Public=on.\n');
-    console.error(`    (Underlying error: ${bk.error.message})\n`);
-    process.exit(1);
+  // Pre-flight: confirm bucket exists (skipped in DRY_RUN — no uploads happen).
+  if (!DRY_RUN) {
+    const bk = await sb.storage.getBucket(BUCKET);
+    if (bk.error) {
+      console.error(`\n❌  Bucket "${BUCKET}" does not exist or is not visible to the service role.`);
+      console.error('    In Supabase Studio → Storage → Create bucket: name=product-images, Public=on.\n');
+      console.error(`    (Underlying error: ${bk.error.message})\n`);
+      process.exit(1);
+    }
   }
 
-  console.log(`[mirror] bucket=${BUCKET} concurrency=${CONCURRENCY} force=${FORCE} limit=${LIMIT ?? 'all'}`);
+  const mode = DRY_RUN ? 'DRY_RUN (no uploads/writes)' : ONLY_SKUS.length ? 'ONLY_SKUS' : 'DEFAULT';
+  console.log(`[mirror] mode=${mode} bucket=${BUCKET} concurrency=${CONCURRENCY} force=${FORCE} limit=${LIMIT ?? 'all'} only_skus=${ONLY_SKUS.length}`);
+  if (!ONLY_SKUS.length && !DRY_RUN) {
+    console.warn('[mirror] ⚠ no ONLY_SKUS — DEFAULT processes ALL pending rows (may include non-pilot products).');
+  }
 
   let q = sb
     .from('standardized_products')
     .select('supplier_product_id,primary_image,primary_image_mirror_path,primary_image_mirror_status')
     .not('primary_image', 'eq', '');
   if (!FORCE) q = q.is('primary_image_mirror_path', null);
+  if (ONLY_SKUS.length) q = q.in('supplier_product_id', ONLY_SKUS);
   if (LIMIT) q = q.limit(LIMIT);
 
   const { data, error } = await q;
   if (error) { console.error('query failed:', error); process.exit(1); }
   const rows = (data ?? []) as Row[];
+
+  if (ONLY_SKUS.length) {
+    const found = new Set(rows.map(r => r.supplier_product_id));
+    const missing = ONLY_SKUS.filter(s => !found.has(s));
+    if (missing.length) {
+      console.warn(`[mirror] ⚠ ${missing.length} requested SKU(s) not selected (no primary_image, already mirrored without FORCE, or absent): ${missing.join(', ')}`);
+    }
+  }
+
   console.log(`[mirror] ${rows.length} row(s) to process`);
   if (rows.length === 0) return;
+
+  // ── DRY_RUN: preview only — no fetch upload, no DB writes ────────────────
+  if (DRY_RUN) {
+    console.log('[mirror] ── DRY_RUN preview (no uploads, no DB writes) ──');
+    rows.forEach((r, i) => {
+      const wouldMirror = !!r.primary_image;
+      console.log(
+        `  ${i + 1}. ${r.supplier_product_id} | would_mirror=${wouldMirror} | ` +
+        `current_status=${r.primary_image_mirror_status ?? 'null'} mirror_path=${r.primary_image_mirror_path ?? 'null'}` +
+        (wouldMirror ? '' : ' | skip_reason=empty_primary') +
+        ` | src=${r.primary_image}`,
+      );
+    });
+    console.log(`[mirror] DRY_RUN — would process ${rows.length}; NO uploads, NO DB writes.`);
+    return;
+  }
 
   let mirrored = 0, reused = 0, oversize = 0, fetchFailed = 0, otherFailed = 0;
   const failures: string[] = [];

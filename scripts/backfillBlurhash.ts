@@ -48,6 +48,9 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const LIMIT       = process.env.LIMIT ? Math.max(1, parseInt(process.env.LIMIT, 10)) : null;
 const CONCURRENCY = process.env.CONCURRENCY ? Math.max(1, parseInt(process.env.CONCURRENCY, 10)) : 6;
 const FORCE       = process.env.FORCE === '1';
+// Scope + preview controls.
+const ONLY_SKUS   = (process.env.ONLY_SKUS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const DRY_RUN     = /^(1|true|yes)$/i.test(process.env.DRY_RUN ?? '');
 
 // Decode size: small enough to be fast, large enough for blurhash detail.
 const DECODE_WIDTH = 64;
@@ -81,7 +84,10 @@ async function fetchBuffer(url: string, timeoutMs = 20000): Promise<Buffer> {
   }
 }
 
-async function processOne(row: Row): Promise<{ ok: boolean; reason?: string }> {
+async function processOne(
+  row: Row,
+  dryRun = false,
+): Promise<{ ok: boolean; reason?: string; w?: number; h?: number; aspect?: number; blurhash?: string }> {
   const original = row.primary_image;
   if (!original) return { ok: false, reason: 'no_primary_image' };
 
@@ -118,6 +124,9 @@ async function processOne(row: Row): Promise<{ ok: boolean; reason?: string }> {
 
   const aspect = Math.round((w / h) * 1000) / 1000;
 
+  // DRY_RUN: return computed values for preview, write nothing.
+  if (dryRun) return { ok: true, w, h, aspect, blurhash };
+
   const { error } = await sb
     .from('standardized_products')
     .update({
@@ -129,23 +138,37 @@ async function processOne(row: Row): Promise<{ ok: boolean; reason?: string }> {
     .eq('supplier_product_id', row.supplier_product_id);
 
   if (error) return { ok: false, reason: `db:${error.message}` };
-  return { ok: true };
+  return { ok: true, w, h, aspect, blurhash };
 }
 
 async function main() {
-  console.log(`[blurhash] decode width=${DECODE_WIDTH}px concurrency=${CONCURRENCY} force=${FORCE} limit=${LIMIT ?? 'all'}`);
+  const mode = DRY_RUN ? 'DRY_RUN (no writes)' : ONLY_SKUS.length ? 'ONLY_SKUS' : 'DEFAULT';
+  console.log(`[blurhash] mode=${mode} decode width=${DECODE_WIDTH}px concurrency=${CONCURRENCY} force=${FORCE} limit=${LIMIT ?? 'all'} only_skus=${ONLY_SKUS.length}`);
+  if (!ONLY_SKUS.length && !DRY_RUN) {
+    console.warn('[blurhash] ⚠ no ONLY_SKUS — DEFAULT processes ALL pending rows (may include non-pilot products).');
+  }
 
   let q = sb
     .from('standardized_products')
     .select('supplier_product_id,primary_image,primary_image_blurhash')
     .not('primary_image', 'eq', '');
   if (!FORCE) q = q.is('primary_image_blurhash', null);
+  if (ONLY_SKUS.length) q = q.in('supplier_product_id', ONLY_SKUS);
   if (LIMIT) q = q.limit(LIMIT);
 
   const { data, error } = await q;
   if (error) { console.error('query failed:', error); process.exit(1); }
 
   const rows = (data ?? []) as Row[];
+
+  if (ONLY_SKUS.length) {
+    const found = new Set(rows.map(r => r.supplier_product_id));
+    const missing = ONLY_SKUS.filter(s => !found.has(s));
+    if (missing.length) {
+      console.warn(`[blurhash] ⚠ ${missing.length} requested SKU(s) not selected (no primary_image, already has blurhash without FORCE, or absent): ${missing.join(', ')}`);
+    }
+  }
+
   console.log(`[blurhash] ${rows.length} row(s) to process`);
   if (rows.length === 0) return;
 
@@ -160,10 +183,16 @@ async function main() {
       if (!row) return;
       const t0 = Date.now();
       try {
-        const res = await processOne(row);
+        const res = await processOne(row, DRY_RUN);
         if (res.ok) {
           done++;
-          if (done % 10 === 0 || done === rows.length) {
+          if (DRY_RUN) {
+            console.log(
+              `  [dry] ${row.supplier_product_id} | would_update=true | ` +
+              `proposed ${res.w}x${res.h} aspect=${res.aspect} | ` +
+              `current_blurhash=${row.primary_image_blurhash ? 'set' : 'null'} | ${Date.now() - t0}ms`,
+            );
+          } else if (done % 10 === 0 || done === rows.length) {
             console.log(`  [${done}/${rows.length}] ok ${row.supplier_product_id} (${Date.now() - t0}ms)`);
           }
         } else {
