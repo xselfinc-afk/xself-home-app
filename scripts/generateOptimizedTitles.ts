@@ -158,6 +158,7 @@ function buildOptimizedTitle(
       s = s
         .replace(/[\s,]+(with|and|for|of|the|a|in|on|to|&|by)\s*$/i, '')
         .replace(/\s+-\s*\d+\s*$/, '')
+        .replace(/,\s*\d+\s*$/, '')                              // trailing ", 8" comma+number truncation artifact (end-anchored only; never touches mid-title dims/counts; keeps `47"` since it ends in a quote, not a digit)
         .replace(/\s+\S*-(to|and|or|the|of|in|by|with|for|a|an|on)\s*$/i, '')
         .replace(/[\s]*[-–—,;:|/&]+\s*$/, '')
         .trim();
