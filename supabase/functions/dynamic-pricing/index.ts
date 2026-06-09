@@ -204,10 +204,30 @@ serve(async (req: Request) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const runAt    = new Date().toISOString();
-    console.log('[DynamicPricing] Run started at', runAt);
+
+    // ── Optional request body (cron posts {} → defaults preserved) ──────────
+    //   only_skus: string[]  → price only those supplier_product_ids
+    //   dry_run:   boolean   → compute + return preview, write NOTHING
+    let onlySkus: string[] = [];
+    let dryRun = false;
+    try {
+      const body = await req.json().catch(() => ({} as Record<string, unknown>));
+      if (Array.isArray((body as { only_skus?: unknown }).only_skus)) {
+        onlySkus = ((body as { only_skus: unknown[] }).only_skus)
+          .map((s) => String(s).trim())
+          .filter(Boolean);
+      }
+      const dr = (body as { dry_run?: unknown }).dry_run;
+      dryRun = dr === true || /^(1|true|yes)$/i.test(String(dr ?? ''));
+    } catch (_) {
+      /* no/invalid body → defaults (cron-compatible) */
+    }
+
+    const mode = dryRun ? 'DRY_RUN (no writes)' : onlySkus.length ? 'ONLY_SKUS' : 'DEFAULT (all priced)';
+    console.log(`[DynamicPricing] Run started at ${runAt} — mode=${mode} only_skus=${onlySkus.length} dry_run=${dryRun}`);
 
     // ── Fetch products ──────────────────────────────────────────────────────
-    const { data: products, error: prodError } = await supabase
+    let prodQuery = supabase
       .from('standardized_products')
       .select(
         'supplier_product_id, sku_custom, price, selling_price, original_price, ' +
@@ -215,6 +235,9 @@ serve(async (req: Request) => {
       )
       .eq('normalization_status', 'done')
       .gt('price', 0);
+    if (onlySkus.length) prodQuery = prodQuery.in('supplier_product_id', onlySkus);
+
+    const { data: products, error: prodError } = await prodQuery;
 
     if (prodError) throw new Error(`Products fetch failed: ${prodError.message}`);
     if (!products?.length) {
@@ -225,7 +248,18 @@ serve(async (req: Request) => {
       );
     }
 
-    console.log(`[DynamicPricing] Loaded ${products.length} products`);
+    // Strongly-typed view of the (non-null) result set.
+    const items = products as unknown as Product[];
+
+    if (onlySkus.length) {
+      const found = new Set(items.map((p) => p.supplier_product_id));
+      const missing = onlySkus.filter((s) => !found.has(s));
+      if (missing.length) {
+        console.warn(`[DynamicPricing] ⚠ ${missing.length} requested SKU(s) not selected (absent / not normalized / price<=0): ${missing.join(', ')}`);
+      }
+    }
+
+    console.log(`[DynamicPricing] selected ${items.length} product(s) to price`);
 
     // ── Fetch stock totals from inventory_cache ─────────────────────────────
     const { data: cacheRows } = await supabase
@@ -240,8 +274,21 @@ serve(async (req: Request) => {
 
     // ── Price each product ──────────────────────────────────────────────────
     const results: PricingResult[] = [];
+    const dryResults: Array<{
+      supplier_product_id: string;
+      sku: string;
+      current_cost: number;
+      current_selling_price: number | null;
+      proposed_selling_price: number;
+      proposed_original_price: number;
+      markup: number;
+      estimated_net_margin: number;
+      demand_state: DemandState;
+      stock_override: boolean;
+      margin_protected: boolean;
+    }> = [];
 
-    for (const p of products as Product[]) {
+    for (const p of items) {
       const cost  = p.price;
       const stock = stockMap.get(p.supplier_product_id) ?? 0;
 
@@ -276,6 +323,24 @@ serve(async (req: Request) => {
         (stockOverride   ? ' [stock<20]'   : '') +
         (marginProtected ? ' [hard-floor]' : ''),
       );
+
+      // DRY_RUN: collect a preview and never write.
+      if (dryRun) {
+        dryResults.push({
+          supplier_product_id:     p.supplier_product_id,
+          sku:                     p.sku_custom,
+          current_cost:            cost,
+          current_selling_price:   p.selling_price,
+          proposed_selling_price:  newPrice,
+          proposed_original_price: origPrice,
+          markup,
+          estimated_net_margin:    netMargin,
+          demand_state:            state,
+          stock_override:          stockOverride,
+          margin_protected:        marginProtected,
+        });
+        continue;
+      }
 
       // Skip write if nothing changed and already priced
       const priceChanged = Math.abs(newPrice   - (p.selling_price  ?? 0)) > 0.005;
@@ -322,6 +387,15 @@ serve(async (req: Request) => {
       });
     }
 
+    // ── DRY_RUN: return preview only — no standardized_products writes, no audit ─
+    if (dryRun) {
+      console.log(`[DynamicPricing] DRY_RUN complete — previewed ${dryResults.length}, NO DB writes`);
+      return new Response(
+        JSON.stringify({ mode, dry_run: true, processed: items.length, previewed: dryResults.length, results: dryResults, triggered_at: runAt }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     // ── Batch insert audit log ──────────────────────────────────────────────
     if (results.length > 0) {
       const { error: logError } = await supabase
@@ -352,7 +426,8 @@ serve(async (req: Request) => {
     );
 
     const summary = {
-      processed:    (products as Product[]).length,
+      mode,
+      processed:    items.length,
       updated:      results.length,
       states:       stateCounts,
       triggered_at: runAt,
