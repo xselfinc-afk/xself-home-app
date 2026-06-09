@@ -21,7 +21,7 @@ import { collectImages } from './imageSelector';
 import { cleanTitle, buildDisplayTitle } from './titleGenerator';
 import { buildDescription, buildBulletPoints, removeSpecDuplicates } from './featureGenerator';
 import { categoryCode, sceneCode, skuSuffix, fmtDimensions, fmtWeight } from './specFormatter';
-import { computeFamilyKey } from './familyKeyGenerator';
+import { resolveVariantGroupKey } from './familyKeyGenerator';
 import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
 
 // ── Output shape (maps directly to standardized_products columns) ─────────────
@@ -275,7 +275,7 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
     weight: weightStr,
     primary_image: primaryImage,
     gallery_images_json: galleryImages,
-    product_family_key: computeFamilyKey(productTitle, cc),
+    product_family_key: resolveVariantGroupKey(raw, supplierProductId, cc, productTitle),
     normalization_status: 'done',
     price,
     original_price: originalPrice,
