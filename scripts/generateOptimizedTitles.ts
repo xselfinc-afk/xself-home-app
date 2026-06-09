@@ -17,19 +17,32 @@ import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
 import { sanitizeSupplierName } from '../src/utils/supplierNameSanitizer';
 
-dotenv.config();
+// Load .env.local first (canonical home for SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+// for scripts) then .env as fallback — same pattern as scripts/normalizeProducts.ts.
+// dotenv does not override already-set vars, so .env.local wins.
+dotenv.config({ path: '.env.local' });
+dotenv.config({ path: '.env' });
 
 // ── Supabase client ───────────────────────────────────────────────────────────
 
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '';
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_KEY ??        // service-role key preferred for writes
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+
+// Service-role key is REQUIRED for writes (UPDATE standardized_products is
+// RLS-protected). The anon key is acceptable ONLY for a DRY_RUN read; a real
+// write without a service-role key is refused in main().
+const SERVICE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??   // preferred
+  process.env.SUPABASE_SERVICE_KEY ??        // legacy fallback
+  '';
+const ANON_KEY =
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
   process.env.SUPABASE_ANON_KEY ??
   '';
+const SUPABASE_KEY = SERVICE_KEY || ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('[generateOptimizedTitles] Missing SUPABASE_URL / key — check .env');
+  console.error('[generateOptimizedTitles] Missing SUPABASE_URL / key — check .env.local / .env');
   process.exit(1);
 }
 
@@ -142,14 +155,29 @@ function buildOptimizedTitle(
 
 async function main() {
   const args = process.argv.slice(2);
-  const dryRun   = args.includes('--dry-run');
+  const envDryRun = /^(1|true|yes)$/i.test(process.env.DRY_RUN ?? '');
+  const dryRun   = args.includes('--dry-run') || envDryRun;
   const overwrite = args.includes('--overwrite');
+  const ONLY_SKUS = (process.env.ONLY_SKUS ?? '').split(',').map(s => s.trim()).filter(Boolean);
   const limitArg = args.find(a => a.startsWith('--limit=') || a === '--limit');
   const limit = limitArg
     ? parseInt(limitArg.includes('=') ? limitArg.split('=')[1] : args[args.indexOf(limitArg) + 1], 10)
     : 500;
 
-  console.log(`[generateOptimizedTitles] mode=${dryRun ? 'DRY-RUN' : 'WRITE'} | limit=${limit} | overwrite=${overwrite}`);
+  const mode = dryRun ? 'DRY_RUN (no writes)' : ONLY_SKUS.length ? 'ONLY_SKUS' : 'DEFAULT (all missing optimized_title)';
+  console.log(`[generateOptimizedTitles] mode=${mode} | limit=${limit} | overwrite=${overwrite}`);
+  if (ONLY_SKUS.length) {
+    console.log(`[generateOptimizedTitles] ONLY_SKUS: ${ONLY_SKUS.length} SKU(s) requested`);
+  } else {
+    console.warn('[generateOptimizedTitles] ⚠ No ONLY_SKUS — DEFAULT mode may process ALL rows missing optimized_title (touches existing live products).');
+  }
+
+  // Writes require the service-role key (UPDATE is RLS-protected). Refuse to
+  // write with an anon key; DRY_RUN reads are still allowed.
+  if (!dryRun && !SERVICE_KEY) {
+    console.error('[generateOptimizedTitles] Refusing to write without a service-role key (SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SERVICE_KEY). Re-run with DRY_RUN=1 to preview, or provide the key.');
+    process.exit(1);
+  }
 
   // Fetch rows
   let query = supabase
@@ -161,6 +189,9 @@ async function main() {
   if (!overwrite) {
     query = query.is('optimized_title', null);
   }
+  if (ONLY_SKUS.length) {
+    query = query.in('supplier_product_id', ONLY_SKUS);
+  }
 
   const { data, error } = await query;
 
@@ -169,7 +200,17 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[generateOptimizedTitles] ${data?.length ?? 0} rows to process`);
+  // Warn if some requested SKUs were not selected (absent, not normalized, or
+  // already have optimized_title without --overwrite).
+  if (ONLY_SKUS.length) {
+    const found = new Set((data ?? []).map(r => String(r.supplier_product_id)));
+    const missing = ONLY_SKUS.filter(s => !found.has(s));
+    if (missing.length) {
+      console.warn(`[generateOptimizedTitles] ⚠ ${missing.length} requested SKU(s) not selected: ${missing.join(', ')}`);
+    }
+  }
+
+  console.log(`[generateOptimizedTitles] selected ${data?.length ?? 0} row(s) to process`);
 
   let updated = 0;
   let skipped = 0;
