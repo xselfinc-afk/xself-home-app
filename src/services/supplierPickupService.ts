@@ -65,6 +65,22 @@ type SupplierProductRow = {
 export type SyncResult = {
   fetched: number;
   upserted: number;
+  // Populated only when a pickup option flag (below) is used; omitted otherwise.
+  inserted?: number;
+  updated?: number;
+  skipped?: number;
+  dryRun?: boolean;
+  sampleNew?: Array<{ sku: string; title: string }>;
+};
+
+// Options for the pickup (Saved Items) import path. When omitted, behavior is
+// identical to before — so other callers (syncNewArrivalProducts via line ~383,
+// syncGigaVariants) are completely unaffected.
+export type UpsertOptions = {
+  /** Compute + log impact, but perform NO database writes. */
+  dryRun?: boolean;
+  /** Only INSERT new SKUs; never update rows that already exist. */
+  insertNewOnly?: boolean;
 };
 
 function cleanHtml(value: string): string {
@@ -161,6 +177,7 @@ function normalizeSupplierItem(item: SupplierApiItem): SupplierProductRow {
 export async function upsertPickupProducts(
   supabase: SupabaseClient,
   items: SupplierApiItem[],
+  opts: UpsertOptions = {},
 ): Promise<SyncResult> {
   const uniqueMap = new Map<string, SupplierApiItem>();
 
@@ -172,27 +189,66 @@ export async function upsertPickupProducts(
   }
 
   const uniqueItems = Array.from(uniqueMap.values());
-  const rows: SupplierProductRow[] = uniqueItems.map(normalizeSupplierItem);
+  let rows: SupplierProductRow[] = uniqueItems.map(normalizeSupplierItem);
 
-  const { error, count } = await supabase
-    .from('supplier_products')
-    .upsert(rows, {
-      onConflict: 'supplier_product_id',
-      count: 'exact',
-    });
+  const useFlags = !!opts.dryRun || !!opts.insertNewOnly;
 
-  if (error) {
-    throw new Error(`[SupplierSync] Upsert failed: ${error.message}`);
+  // Default path (no flags) — byte-for-byte identical to the original behavior,
+  // so syncNewArrivalProducts / syncGigaVariants are unaffected.
+  if (!useFlags) {
+    const { error, count } = await supabase
+      .from('supplier_products')
+      .upsert(rows, {
+        onConflict: 'supplier_product_id',
+        count: 'exact',
+      });
+    if (error) throw new Error(`[SupplierSync] Upsert failed: ${error.message}`);
+    const upserted = count ?? rows.length;
+    console.log(`[SupplierSync] Upserted ${upserted} products into supplier_products`);
+    return { fetched: items.length, upserted };
   }
 
-  const upserted = count ?? rows.length;
+  // ── Flag path: read existing rows to classify new vs existing (read-only) ──
+  const ids = rows.map(r => r.supplier_product_id);
+  const existing = new Set<string>();
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await supabase
+      .from('supplier_products')
+      .select('supplier_product_id')
+      .in('supplier_product_id', ids.slice(i, i + 150));
+    if (error) throw new Error(`[SupplierSync] Existing-row lookup failed: ${error.message}`);
+    for (const r of data ?? []) existing.add(String(r.supplier_product_id));
+  }
 
-  console.log(`[SupplierSync] Upserted ${upserted} products into supplier_products`);
+  const newRows = rows.filter(r => !existing.has(r.supplier_product_id));
+  const existingCount = rows.length - newRows.length;
+  const sampleNew = newRows.slice(0, 5).map(r => ({ sku: r.supplier_product_id, title: r.title }));
 
-  return {
-    fetched: items.length,
-    upserted,
-  };
+  // ── DRY_RUN: report only, never write ──
+  if (opts.dryRun) {
+    console.log('[SupplierSync] ── DRY_RUN (no database writes) ──');
+    console.log(`[SupplierSync]   total API SKUs (deduped) : ${rows.length}`);
+    console.log(`[SupplierSync]   already in supplier_products : ${existingCount}`);
+    console.log(`[SupplierSync]   NEW SKUs to insert         : ${newRows.length} (would be published=false)`);
+    console.log(`[SupplierSync]   existing rows updated       : 0 (existing rows are NOT touched)`);
+    console.log('[SupplierSync]   sample new SKUs:');
+    sampleNew.forEach((s, i) => console.log(`[SupplierSync]     ${i + 1}. ${s.sku} | ${String(s.title).slice(0, 55)}`));
+    return { fetched: items.length, upserted: 0, inserted: newRows.length, updated: 0, skipped: existingCount, dryRun: true, sampleNew };
+  }
+
+  // ── INSERT_NEW_ONLY: insert only new SKUs; never update existing rows ──
+  if (newRows.length === 0) {
+    console.log(`[SupplierSync] INSERT_NEW_ONLY — no new SKUs (all ${existingCount} already exist). Nothing written.`);
+    return { fetched: items.length, upserted: 0, inserted: 0, updated: 0, skipped: existingCount, sampleNew };
+  }
+  // .insert() (not .upsert()) guarantees existing rows can never be updated.
+  const { error, count } = await supabase
+    .from('supplier_products')
+    .insert(newRows, { count: 'exact' });
+  if (error) throw new Error(`[SupplierSync] Insert (new-only) failed: ${error.message}`);
+  const inserted = count ?? newRows.length;
+  console.log(`[SupplierSync] INSERT_NEW_ONLY — inserted ${inserted} new products (published=false); skipped ${existingCount} existing.`);
+  return { fetched: items.length, upserted: inserted, inserted, updated: 0, skipped: existingCount, sampleNew };
 }
 
 // GIGA "Product List Query" — returns the buyer's full "My Saved Items" list.
@@ -216,6 +272,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
 
 export async function syncPickupProducts(
   supabase: SupabaseClient,
+  opts: UpsertOptions = {},
 ): Promise<SyncResult> {
   console.log('[SupplierSync] Fetching products from GIGA Product List Query (My Saved Items — all pages)');
 
@@ -312,7 +369,7 @@ export async function syncPickupProducts(
     `(saved-items fetched=${items.length}, detail records=${detailItems.length}, price records=${priceItems.length})`,
   );
 
-  return upsertPickupProducts(supabase, mergedItems);
+  return upsertPickupProducts(supabase, mergedItems, opts);
 }
 
 /**
