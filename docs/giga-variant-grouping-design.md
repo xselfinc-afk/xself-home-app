@@ -95,6 +95,9 @@ When composing a batch, resolve each candidate's cluster (siblings sharing a ≥
 
 ## 7. Phase 2 (optional, not in scope here)
 
+> **Status:** Phase 1 grouping is **verified live** for clean color-only pairs — see *Verified Live Variant Test 1* (`docs/giga-saved-items-pipeline-runbook.md` §9): family `dr-vg-w409s00014` (Black `W409S00014` / White `W409S00015`) deduped to 1 feed card with a working Black/White selector. The **trigger** for the Phase 2 selector upgrade is the held same-color/different-config sibling `W409S00028` (White, 47.2", 8 drawers), which needs a color + size/config label to disambiguate the duplicate "White".
+
+- **Variant selector upgrade (color + size/config label)** for duplicate-color / different-configuration families — the primary Phase 2 item.
 - Card price = family **minimum** `selling_price` ("from $X") for multi-price families.
 - Disable out-of-stock variants in the selector (per-SKU inventory already available).
 - Family-aggregated review display (storage stays per-`supplier_product_id`).
@@ -104,4 +107,4 @@ When composing a batch, resolve each candidate's cluster (siblings sharing a ≥
 
 - `src/services/familyKeyGenerator.ts` — new `resolveVariantGroupKey()` + `sharedPrefixLength()` helper + `VARIANT_PREFIX_MIN_MATCH = 8` (kept in sync with `scripts/syncGigaVariants.ts`). `computeFamilyKey()` unchanged.
 - `src/services/normalizationPipeline.ts` — import swap + one call-site line.
-- `docs/giga-saved-items-pipeline-runbook.md` — §5 whole-cluster rule.
+- `docs/giga-saved-items-pipeline-runbook.md` — §5 whole-cluster rule; §9 *Verified Live Variant Test 1* result + clean color-variant acceptance checklist.

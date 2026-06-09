@@ -193,6 +193,45 @@ batch image host                    → supabase storage (mirror), HTTP 200, pro
 
 ---
 
+## 9. Verified Live Variant Test 1 — Clean Color Variant Pair
+
+First live, end-to-end validation of Phase 1 supplier-derived `product_family_key` grouping (see `docs/giga-variant-grouping-design.md`). Run as 8 gated stages, each with pre-check → dry-run → verify.
+
+**Family:** `dr-vg-w409s00014`
+**SKUs:** `W409S00014` = Black · `W409S00015` = White (both 9-drawer, 63", Particle Board, supplier cost $135)
+
+**Result (verified):**
+- Both SKUs normalized to `product_family_key='dr-vg-w409s00014'` (supplier-derived, contains `-vg-`).
+- Both became live and sellable; `sellable_products` **191 → 193** (2 underlying rows).
+- The App feed **deduped the 2 sellable rows into 1 product card** (dedupe by `product_family_key` in Home/Discover/Collection).
+- The detail page loaded **Black / White** variants correctly via `loadProductFamily('dr-vg-w409s00014')` (2 variants).
+- **User confirmed** the product appeared in the App after restarting/refetching (see cache note below).
+- Pricing **identical for both variants**: `selling_price=$289`, `original_price=$399` (same cost → same price).
+- Images mirrored (HTTP 206), blurhash + dims set, inventory seeded, reviews seeded — all for both rows.
+- Each SKU received **5 generated reviews**; `product_reviews` **1060 → 1070**.
+- **`W409S00028` intentionally excluded** — same series but a same-color, different-configuration variant (White, 47.2", 8 drawers, different supplier cost). Including it would put two "White" entries in the color-keyed selector; it needs **Phase 2** color + size/config labels first.
+
+**Conclusions:**
+- ✅ **Clean color-only variant clusters are safe to batch-onboard now** under Phase 1 supplier-derived `product_family_key`.
+- ⏸ **Same-color, different-size/configuration clusters must be held until the Phase 2 selector upgrade** (color + size/config label — see `docs/giga-variant-grouping-design.md` §7 and the Phase-2 design).
+- ⚠️ **App cache/refetch:** Home/Discover fetch `sellable_products` only on mount (Home also hydrates an AsyncStorage cache); newly exposed products may require an **app restart / screen remount** to appear. Future improvement: add **pull-to-refresh / refetch** to Home and Discover.
+
+### Acceptance checklist — future clean color-variant batches
+1. Same product family (supplier `associateProductList`, shared SKU prefix ≥ 8).
+2. Same category.
+3. Same dimensions / configuration (drawer count, width, etc.).
+4. Same or compatible pricing (same supplier cost → identical selling price expected).
+5. Distinct colors (one per variant).
+6. Shared supplier-derived `product_family_key` containing `-vg-`.
+7. No duplicate-color ambiguity (each color appears once → color selector unambiguous).
+8. Feed shows **1 card** (dedupe by `product_family_key`).
+9. Detail page shows **color variants** (Black / White swatches via `loadProductFamily`).
+10. Inventory exposure increases **underlying sellable rows**, not card count (N rows → 1 card).
+
+> If any of 3/4/7 fail (differing size/config or duplicate colors), **hold the cluster for Phase 2** — do not onboard it as a clean color batch.
+
+---
+
 ## File list (this runbook + proposed)
 - `docs/giga-saved-items-pipeline-runbook.md` — **this file (created)**.
 - `scripts/runGigaSavedItemsBatch.ts` — **proposed orchestrator (design above; not yet built — pending approval)**.
