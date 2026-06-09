@@ -109,8 +109,11 @@ function buildOptimizedTitle(
   shortDesc?: string | null,
   categoryLabel?: string | null,
 ): string {
-  // Prefer display title as starting point — it's already cleaner
-  let title = (displayTitle || rawTitle || '').trim();
+  // Prefer the fuller product_title (cleanTitle ≤80, word-boundary) over
+  // product_title_display, which buildDisplayTitle() caps at ≤55 chars and so
+  // truncates mid-phrase ("...with", "...2 Soft"). Fall back to display only
+  // when product_title is missing.
+  let title = (rawTitle || displayTitle || '').trim();
 
   // Centralised supplier-prefix removal (K&K, etc.). Mirrors the
   // normalization pipeline so optimized_title stays in lockstep with
@@ -127,6 +130,14 @@ function buildOptimizedTitle(
     title = title.replace(re, '');
   }
 
+  // Safe formatting cleanup
+  title = title
+    .replace(/\bshelgves\b/gi, 'shelves')   // known supplier typo
+    .replace(/(\d)(Soft\s+Close)/gi, '$1 $2') // "4Soft Close" -> "4 Soft Close" (digit glued to "Soft Close" only)
+    .replace(/\b1\s*pc\b/gi, '')            // drop "1pc" filler
+    .replace(/\b(\d+)\s*x\b/gi, '$1')       // "6x" -> "6"
+    .replace(/,(?=\S)/g, ', ');             // comma spacing: "Table,Kitchen" -> "Table, Kitchen"
+
   // Collapse multiple spaces / leading-trailing dashes or commas left by removal
   title = title
     .replace(/[-,;|–—]+\s*$/, '')       // trailing separators
@@ -135,18 +146,39 @@ function buildOptimizedTitle(
     .replace(/\(\s*\)/g, '')             // empty parens
     .trim();
 
+  // Remove dangling connector endings and orphan fragments (run until stable):
+  //   - trailing connector words (with/and/for/...)
+  //   - trailing " -4" style orphan numbers
+  //   - hyphenated tail cut mid-phrase ("Floor-to")
+  //   - trailing dangling punctuation
+  const trimEnds = (s: string): string => {
+    let prev: string;
+    do {
+      prev = s;
+      s = s
+        .replace(/[\s,]+(with|and|for|of|the|a|in|on|to|&|by)\s*$/i, '')
+        .replace(/\s+-\s*\d+\s*$/, '')
+        .replace(/\s+\S*-(to|and|or|the|of|in|by|with|for|a|an|on)\s*$/i, '')
+        .replace(/[\s]*[-–—,;:|/&]+\s*$/, '')
+        .trim();
+    } while (s !== prev);
+    return s;
+  };
+  title = trimEnds(title);
+
   // Fallback: if we stripped everything, use category label + "Furniture"
   if (title.length < 8 && categoryLabel) {
     title = `${categoryLabel} Furniture`;
   }
 
-  // Truncate to 110 chars at a word boundary
-  if (title.length > 110) {
-    title = title.slice(0, 107).replace(/\s+\S*$/, '') + '...';
+  // Word-boundary truncate to ≤80 (target 60–80), then re-run end cleanup so a
+  // cut never leaves a dangling word/fragment.
+  if (title.length > 80) {
+    const cut = title.slice(0, 80);
+    const sp = cut.lastIndexOf(' ');
+    title = (sp > 48 ? cut.slice(0, sp) : cut).trim();
   }
-
-  // Ensure consistent sentence-ish case (don't force title-case on all-caps tokens)
-  // We leave case as-is for readability; the data is already mixed-case from the pipeline.
+  title = trimEnds(title);
 
   return title;
 }
