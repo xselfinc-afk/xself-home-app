@@ -52,8 +52,14 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const BUCKET      = 'product-images';
 const LIMIT       = process.env.LIMIT ? Math.max(1, parseInt(process.env.LIMIT, 10)) : null;
-const CONCURRENCY = process.env.CONCURRENCY ? Math.max(1, parseInt(process.env.CONCURRENCY, 10)) : 4;
+// Default lowered to 2: 50-SKU batches with multi-MB originals overwhelmed the connection at 4
+// (uploads took 1–5 min each and concurrent upload fetches failed). Override via CONCURRENCY env.
+const CONCURRENCY = process.env.CONCURRENCY ? Math.max(1, parseInt(process.env.CONCURRENCY, 10)) : 2;
 const FORCE       = process.env.FORCE === '1';
+// Per-fetch download timeout (ms). Large supplier originals download slowly; default raised to 60s.
+const FETCH_TIMEOUT_MS = process.env.FETCH_TIMEOUT_MS ? Math.max(1000, parseInt(process.env.FETCH_TIMEOUT_MS, 10)) : 60_000;
+// Transient download/upload failures are retried with small backoff before giving up.
+const UPLOAD_RETRIES   = process.env.UPLOAD_RETRIES ? Math.max(0, parseInt(process.env.UPLOAD_RETRIES, 10)) : 3;
 // 50 MiB — Supabase Storage hard limit on free / Pro plans for single objects.
 const MAX_BYTES   = process.env.MAX_BYTES ? parseInt(process.env.MAX_BYTES, 10) : 52_428_800;
 // Scope + preview controls.
@@ -75,7 +81,7 @@ function pathFromSha(sha: string): string {
   return `images/${sha.slice(0, 2)}/${sha.slice(2, 4)}/${sha.slice(4)}.jpg`;
 }
 
-async function fetchBuffer(url: string, timeoutMs = 30_000): Promise<Buffer> {
+async function fetchBuffer(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Buffer> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -85,6 +91,16 @@ async function fetchBuffer(url: string, timeoutMs = 30_000): Promise<Buffer> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Retry a transient async op (download / upload) with small linear backoff.
+async function withRetry<T>(fn: () => Promise<T>, attempts = UPLOAD_RETRIES): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i <= attempts; i++) {
+    try { return await fn(); }
+    catch (e) { lastErr = e; if (i < attempts) await new Promise(r => setTimeout(r, 500 * (i + 1))); }
+  }
+  throw lastErr;
 }
 
 async function objectExists(p: string): Promise<boolean> {
@@ -106,7 +122,7 @@ async function processOne(row: Row): Promise<Result> {
   if (!row.primary_image) return { kind: 'err', status: 'skip', reason: 'empty_primary' };
 
   let buf: Buffer;
-  try { buf = await fetchBuffer(row.primary_image); }
+  try { buf = await withRetry(() => fetchBuffer(row.primary_image)); }
   catch (e) { return { kind: 'err', status: 'fetch_failed', reason: (e as Error).message }; }
 
   if (buf.length > MAX_BYTES) {
@@ -120,16 +136,21 @@ async function processOne(row: Row): Promise<Result> {
   if (await objectExists(objectPath)) {
     reused = true;
   } else {
-    const { error } = await sb.storage.from(BUCKET).upload(objectPath, buf, {
-      contentType: 'image/jpeg',
-      cacheControl: '31536000',
-      upsert: false,
-    });
-    // 'upsert: false' returns "Duplicate" on race; treat as reused.
-    if (error && !/duplicate/i.test(error.message)) {
-      return { kind: 'err', status: 'upload_failed', reason: error.message };
+    // Upload with retry; a content-addressed object that already exists (duplicate / "resource
+    // already exists" on a race) is benign → treat as reused, not a failure.
+    let uploadErr: { message: string } | null = null;
+    try {
+      uploadErr = await withRetry(async () => {
+        const { error } = await sb.storage.from(BUCKET).upload(objectPath, buf, {
+          contentType: 'image/jpeg', cacheControl: '31536000', upsert: false,
+        });
+        if (error && !/duplicate|already exists/i.test(error.message)) throw error; // transient → retry
+        return error ? { message: error.message } : null;
+      });
+    } catch (e) {
+      return { kind: 'err', status: 'upload_failed', reason: (e as Error).message };
     }
-    if (error) reused = true;
+    if (uploadErr) reused = true; // benign duplicate/already-exists
   }
 
   return { kind: 'ok', reused, path: objectPath, sha, bytes: buf.length, ms: Date.now() - t0 };
@@ -162,7 +183,7 @@ async function main() {
   }
 
   const mode = DRY_RUN ? 'DRY_RUN (no uploads/writes)' : ONLY_SKUS.length ? 'ONLY_SKUS' : 'DEFAULT';
-  console.log(`[mirror] mode=${mode} bucket=${BUCKET} concurrency=${CONCURRENCY} force=${FORCE} limit=${LIMIT ?? 'all'} only_skus=${ONLY_SKUS.length}`);
+  console.log(`[mirror] mode=${mode} bucket=${BUCKET} concurrency=${CONCURRENCY} timeout=${FETCH_TIMEOUT_MS}ms retries=${UPLOAD_RETRIES} force=${FORCE} limit=${LIMIT ?? 'all'} only_skus=${ONLY_SKUS.length}`);
   if (!ONLY_SKUS.length && !DRY_RUN) {
     console.warn('[mirror] ⚠ no ONLY_SKUS — DEFAULT processes ALL pending rows (may include non-pilot products).');
   }
