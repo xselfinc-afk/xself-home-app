@@ -33,3 +33,6 @@ logs/
 tmp/
 .env
 .env.*
+
+# Local planner report artifacts (regenerated; not source)
+reports/giga-auto-publish/
