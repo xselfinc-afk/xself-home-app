@@ -51,6 +51,9 @@ const FORCE       = process.env.FORCE === '1';
 // Scope + preview controls.
 const ONLY_SKUS   = (process.env.ONLY_SKUS ?? '').split(',').map(s => s.trim()).filter(Boolean);
 const DRY_RUN     = /^(1|true|yes)$/i.test(process.env.DRY_RUN ?? '');
+// Per-fetch timeout (ms). Large supplier originals (>10MB) can't be Cloudinary-resized
+// and download slowly; the old fixed 20s aborted them intermittently. Default 60s; override via env.
+const FETCH_TIMEOUT_MS = process.env.FETCH_TIMEOUT_MS ? Math.max(1000, parseInt(process.env.FETCH_TIMEOUT_MS, 10)) : 60000;
 
 // Decode size: small enough to be fast, large enough for blurhash detail.
 const DECODE_WIDTH = 64;
@@ -71,7 +74,7 @@ function variantUrl(src: string, width: number): string {
   return `${PROXY_BASE}/${t}/${encodeURIComponent(src)}`;
 }
 
-async function fetchBuffer(url: string, timeoutMs = 20000): Promise<Buffer> {
+async function fetchBuffer(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Buffer> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
