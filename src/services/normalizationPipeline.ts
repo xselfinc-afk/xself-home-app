@@ -65,11 +65,13 @@ const CATEGORY_PATTERNS: Array<{ patterns: string[]; label: string }> = [
   { patterns: ['tv stand', 'media console', 'entertainment center', 'media unit', 'media stand', 'tv console', 'media center'], label: 'TV Stand' },
   { patterns: ['dresser', 'chest of drawers', 'drawer dresser', 'chest drawer', '6 drawer', '5 drawer', '4 drawer', 'drawer chest'], label: 'Dresser' },
   { patterns: ['sideboard', 'buffet', 'credenza', 'server'], label: 'Sideboard' },
+  { patterns: ['reception desk', 'office desk', 'computer desk', 'writing desk', 'standing desk', 'work surface', 'workstation', 'desk'], label: 'Desk' },
   { patterns: ['bookshelf', 'bookcase', 'shelving unit', 'shelf', 'shelves'], label: 'Bookshelf' },
   { patterns: ['sofa', 'loveseat', 'sectional', 'couch', 'futon'], label: 'Sofa' },
   { patterns: ['bed frame', 'platform bed', 'upholstered bed', ' bed '], label: 'Bed' },
   { patterns: ['coffee table', 'console table', 'dining table', 'side table', 'end table', 'accent table', 'sofa table', 'kitchen table'], label: 'Table' },
   { patterns: ['dining chair', 'accent chair', 'armchair', 'vanity stool', 'bar stool', 'stool', 'chair'], label: 'Chair' },
+  { patterns: ['bathroom vanity', 'vanity', 'medicine cabinet', 'bathroom wall cabinet', 'bathroom cabinet', 'bathroom storage'], label: 'Bathroom' },
   { patterns: ['organizer', 'hall tree', 'shoe storage', 'storage bench', 'entryway storage', 'shoe rack', 'coat rack', 'storage unit'], label: 'Storage' },
   { patterns: ['cabinet', 'cupboard', 'pantry', 'linen cabinet', 'storage cabinet', 'bathroom cabinet', 'medicine cabinet', 'curio', 'display cabinet'], label: 'Cabinet' },
   { patterns: ['table'], label: 'Table' }, // broad fallback
@@ -77,7 +79,7 @@ const CATEGORY_PATTERNS: Array<{ patterns: string[]; label: string }> = [
 
 const CATEGORY_PRIORITY: Record<string, number> = {
   Dresser: 10, Cabinet: 20, Sideboard: 25, 'TV Stand': 30,
-  Nightstand: 35, Table: 40, Chair: 50, Bookshelf: 60,
+  Nightstand: 35, Table: 40, Desk: 45, Chair: 50, Bathroom: 55, Bookshelf: 60,
   Sofa: 70, Bed: 80, Storage: 90, Other: 999,
 };
 

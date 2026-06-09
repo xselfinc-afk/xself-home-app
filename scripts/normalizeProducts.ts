@@ -16,9 +16,17 @@
  *   SUPABASE_SERVICE_ROLE_KEY — service role key (bypasses RLS)
  */
 
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeProduct } from '../src/services/normalizationPipeline';
+
+// Load .env.local first (canonical home for SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+// for scripts) then .env as fallback — matches the safe GIGA scripts so the runner
+// doesn't need to source env files manually. dotenv does not override already-set
+// vars, so .env.local wins. (normalizationPipeline is a pure transform and reads no
+// env at module load, so simple top-level loading is safe here.)
+loadEnv({ path: '.env.local' });
+loadEnv({ path: '.env' });
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
