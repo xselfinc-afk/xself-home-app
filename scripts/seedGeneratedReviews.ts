@@ -23,13 +23,19 @@
  *   SUPABASE_SERVICE_ROLE_KEY — service role key (bypasses RLS)
  */
 
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import {
   generateReviewSet,
   type ReviewableProduct,
   type GeneratedReview,
 } from '../src/services/reviewGenerator';
+
+// Load .env.local first (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY for scripts),
+// then .env — matches the other pipeline scripts. dotenv does not override
+// already-set vars, so .env.local wins.
+loadEnv({ path: '.env.local' });
+loadEnv({ path: '.env' });
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
@@ -47,6 +53,8 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const limitArg = args.indexOf('--limit');
 const LIMIT = limitArg !== -1 ? parseInt(args[limitArg + 1], 10) : undefined;
+// Optional scope: when set, seed only these supplier_product_ids. Absent → all (unchanged).
+const ONLY_SKUS = (process.env.ONLY_SKUS ?? '').split(',').map(s => s.trim()).filter(Boolean);
 
 const BATCH_SIZE = 50;
 
@@ -74,6 +82,7 @@ async function run() {
     )
     .order('supplier_product_id', { ascending: true });
 
+  if (ONLY_SKUS.length) query = query.in('supplier_product_id', ONLY_SKUS);
   if (LIMIT) query = query.limit(LIMIT);
 
   const { data, error } = await query;
@@ -86,6 +95,13 @@ async function run() {
   if (!data || data.length === 0) {
     console.log('[seedReviews] No products found — nothing to do');
     return;
+  }
+
+  if (ONLY_SKUS.length) {
+    const found = new Set((data as unknown as Array<{ supplier_product_id: string }>).map(r => r.supplier_product_id));
+    const missing = ONLY_SKUS.filter(s => !found.has(s));
+    console.log(`[seedReviews] ONLY_SKUS scope: ${ONLY_SKUS.length} requested, ${data.length} selected`);
+    if (missing.length) console.warn(`[seedReviews] ⚠ ${missing.length} requested SKU(s) not found in standardized_products: ${missing.join(', ')}`);
   }
 
   console.log(`[seedReviews] Generating reviews for ${data.length} products`);
