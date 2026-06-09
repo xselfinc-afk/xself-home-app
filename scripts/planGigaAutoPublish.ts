@@ -182,21 +182,23 @@ type Cand = {
   // ── Propose first safe batch up to MAX_SKUS ───────────────────────────────
   // Strategy: variant families FIRST (up to MAX_FAMILIES, whole-family only — never
   // split a family across the cap), then fill remaining SKU capacity with singletons.
-  // Card accounting: each whole variant family = 1 card; each singleton SKU = 1 card.
   const MAX_FAMILIES = 5;
   const batch: string[] = [];
-  let cards = 0;
   let familiesPicked = 0;
   for (const f of safeVariantFamilies) {
     if (familiesPicked >= MAX_FAMILIES) break;
     if (batch.length + f.skus.length > MAX_SKUS) continue; // whole-family only; skip if it won't fit
-    batch.push(...f.skus); cards++; familiesPicked++;       // family = 1 card
+    batch.push(...f.skus); familiesPicked++;
   }
   for (const c of safeSingletons) {
     if (batch.length >= MAX_SKUS) break;
-    batch.push(c.id); cards++;                              // singleton = 1 card
+    batch.push(c.id);
   }
   const proposedFamilies = safeVariantFamilies.filter(f => f.skus.every(s => batch.includes(s)));
+  // App cards = DISTINCT predicted product_family_key across the batch. This dedupes BOTH
+  // supplier-derived -vg- families AND title-derived same-product color pairs among "singletons"
+  // (e.g. two color variants sharing computeFamilyKey collapse to one card in the app feed).
+  const cards = new Set(batch.map(id => byId.get(id)?.key).filter(Boolean)).size;
 
   // ── Top risks (compact) ────────────────────────────────────────────────────
   const risks: string[] = [];
