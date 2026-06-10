@@ -11,6 +11,7 @@
     "giga:saved:plan": "tsx scripts/planGigaSavedItems.ts",
     "giga:saved:baseline": "tsx scripts/giga-saved-baseline.ts",
     "giga:saved:delta": "tsx scripts/giga-saved-delta.ts",
+    "giga:newly-saved:plan": "tsx scripts/planGigaNewlySavedCandidates.ts",
     "guard:prod": "tsx scripts/productionGuardrails.ts",
     "verify:before-final": "npm run guard:prod",
     "ios:clean-rebuild": "bash scripts/iosCleanRebuild.sh",
