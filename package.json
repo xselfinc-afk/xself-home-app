@@ -8,6 +8,7 @@
     "ios": "expo run:ios",
     "inventory:save-session": "tsx scripts/saveGigaSession.ts",
     "giga:refresh-session": "tsx scripts/refreshGigaSession.ts",
+    "giga:saved:plan": "tsx scripts/planGigaSavedItems.ts",
     "guard:prod": "tsx scripts/productionGuardrails.ts",
     "verify:before-final": "npm run guard:prod",
     "ios:clean-rebuild": "bash scripts/iosCleanRebuild.sh",

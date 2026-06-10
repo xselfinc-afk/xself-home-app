@@ -105,3 +105,23 @@ export async function fetchNewArrivalSkuList(page = 1) {
     { page, pageSize: 100, isNewArrival: true },
   );
 }
+
+/**
+ * Read-only: fetch one page of the buyer's "My Saved Items" list.
+ *
+ * The GIGA Open API 2.0 "Product List Query" endpoint (/buyer/product/skus/v1) IS the
+ * account-scoped saved/favorited product list — its `queryTimeType=2` param is documented
+ * as "Added time: the latest time when a product was added to My Saved Items". There is no
+ * separate favorites endpoint and no favorite boolean filter. Calling it WITHOUT isNewArrival
+ * returns the full saved list. pageSize must be 100 (matches syncGigaFurnitureCatalog.ts).
+ *
+ * Returns the raw GIGA envelope; caller reads data.records[] (each has `sku`, `productName`,
+ * `updateTime`, `firstArrivalDate`, `addedTime`) and data.pageInfo { page, totalPage, totalNum }.
+ * Performs no writes.
+ */
+export async function fetchSavedSkuList(page = 1, pageSize = 100) {
+  return gigaRequest(
+    '/b2b-overseas-api/v1/buyer/product/skus/v1',
+    { page, pageSize },
+  );
+}
