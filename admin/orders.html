@@ -758,29 +758,6 @@
     <div id="detailContent"></div>
   </div>
 
-  <!-- GIGA AUTO PUBLISH (Phase 1: read-only viewer + Dry Run) -->
-  <section id="giga-auto-publish" class="card" style="margin-top:24px">
-    <h2 style="margin:0 0 4px">GIGA Auto Publish</h2>
-    <p class="eyebrow" style="margin:0 0 12px">Read-only status + Dry Run (no apply in this view). Served from the local admin server.</p>
-    <div id="gigaOffline" style="display:none;color:#b45309;font-size:13px;margin-bottom:10px">
-      Local admin server not reachable — open this page via the admin server URL (npm run admin:giga) to use GIGA controls.
-    </div>
-    <div class="kpi-grid" style="margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">Sellable Products</div><div id="gigaSellable" class="kpi-value">—</div></div>
-      <div class="kpi"><div class="kpi-label">Product Reviews</div><div id="gigaReviews" class="kpi-value">—</div></div>
-      <div class="kpi"><div class="kpi-label">Latest Planned SKUs</div><div id="gigaPlanned" class="kpi-value">—</div></div>
-      <div class="kpi"><div class="kpi-label">Held SKUs</div><div id="gigaHeld" class="kpi-value">—</div></div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-      <button id="gigaRefreshBtn" type="button">Refresh GIGA Status</button>
-      <button id="gigaDryRunBtn" type="button">Dry Run Only</button>
-      <button id="gigaHoldsBtn" type="button">View Hold Items</button>
-      <button id="gigaReportBtn" type="button">View Latest Report</button>
-      <span id="gigaSpinner" style="display:none;font-size:13px;color:#6b7280">⏳ running dry-run… (this can take a few minutes)</span>
-    </div>
-    <div id="gigaSummary" style="font:12px/1.5 ui-monospace,Menlo,monospace;background:#faf9f6;border:1px solid #e7e5e0;border-radius:8px;padding:10px;white-space:pre-wrap;display:none"></div>
-  </section>
-
   <!-- TOAST -->
   <div id="toast" class="toast hidden"></div>
 </div>
@@ -2332,85 +2309,6 @@
   });
 
   bootstrap();
-</script>
-
-<!-- GIGA Auto Publish controls (isolated module; talks ONLY to the local admin server at same origin) -->
-<script type="module">
-  const $ = (id) => document.getElementById(id);
-  const summaryEl = $('gigaSummary');
-  const spinner = $('gigaSpinner');
-  const offline = $('gigaOffline');
-
-  function showSummary(title, obj) {
-    const lines = Object.entries(obj).map(([k, v]) =>
-      `${k} = ${typeof v === 'object' ? JSON.stringify(v) : v}`);
-    summaryEl.textContent = `# ${title}\n` + lines.join('\n');
-    summaryEl.style.display = 'block';
-  }
-  async function api(method, path) {
-    const res = await fetch(path, { method });
-    if (!res.ok && res.status !== 423) throw new Error(`HTTP ${res.status}`);
-    return { status: res.status, body: await res.json().catch(() => ({})) };
-  }
-
-  async function refreshStatus() {
-    try {
-      const { body: s } = await api('GET', '/giga/status');
-      offline.style.display = 'none';
-      $('gigaSellable').textContent = s.sellable_products ?? '—';
-      $('gigaReviews').textContent  = s.product_reviews ?? '—';
-      $('gigaPlanned').textContent  = s.latest_plan ? `${s.latest_plan.planned_skus ?? '—'} / ${s.latest_plan.planned_cards ?? '—'} cards` : '—';
-      $('gigaHeld').textContent     = (s.held?.length ?? 0).toString();
-      showSummary('GIGA status', {
-        sellable_products: s.sellable_products, product_reviews: s.product_reviews,
-        latest_plan: s.latest_plan, latest_dry_run: s.latest_dry_run,
-        latest_orchestrator: s.latest_orchestrator, held_count: s.held?.length ?? 0,
-        job_running: s.job_running,
-      });
-    } catch (e) {
-      offline.style.display = 'block';
-    }
-  }
-
-  let polling = null;
-  async function pollJob(jobId) {
-    spinner.style.display = 'inline';
-    $('gigaDryRunBtn').disabled = true;
-    polling = setInterval(async () => {
-      try {
-        const { body: j } = await api('GET', `/giga/job/${jobId}`);
-        if (j.state === 'running') return;
-        clearInterval(polling); polling = null;
-        spinner.style.display = 'none'; $('gigaDryRunBtn').disabled = false;
-        showSummary(`Dry Run (${j.state})`, j.state === 'failed' ? { state: j.state, errorTail: j.errorTail } : j.summary);
-        refreshStatus();
-      } catch (e) {
-        clearInterval(polling); polling = null; spinner.style.display = 'none'; $('gigaDryRunBtn').disabled = false;
-        offline.style.display = 'block';
-      }
-    }, 3000);
-  }
-
-  $('gigaRefreshBtn')?.addEventListener('click', refreshStatus);
-  $('gigaDryRunBtn')?.addEventListener('click', async () => {
-    try {
-      const { status, body } = await api('POST', '/giga/dry-run');
-      if (status === 423) { showSummary('Dry Run', { error: body.error || 'a job is already running' }); return; }
-      summaryEl.textContent = `# Dry Run started (job ${body.jobId})…`; summaryEl.style.display = 'block';
-      pollJob(body.jobId);
-    } catch (e) { offline.style.display = 'block'; }
-  });
-  $('gigaHoldsBtn')?.addEventListener('click', async () => {
-    try { const { body } = await api('GET', '/giga/holds'); showSummary('Hold items', { held: body.held }); }
-    catch (e) { offline.style.display = 'block'; }
-  });
-  $('gigaReportBtn')?.addEventListener('click', async () => {
-    try { const { body } = await api('GET', '/giga/report?type=orchestrator'); showSummary('Latest orchestrator report', body); }
-    catch (e) { offline.style.display = 'block'; }
-  });
-
-  // Initial load (silently no-ops if not served from the local admin server).
-  refreshStatus();
 </script>
 </body>
 </html>
