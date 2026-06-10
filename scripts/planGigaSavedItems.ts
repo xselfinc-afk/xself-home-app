@@ -30,36 +30,21 @@
  * Fails loudly (exit 1) and writes no report if: the saved-items endpoint errors, the response
  * shape is unexpected, or the canonical SKU field is ambiguous/missing.
  */
-import { config as loadEnv } from 'dotenv';
 import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fetchAllSavedItems, GigaSavedItemsError, ENDPOINT_PATH, SKU_FIELD } from './lib/gigaSavedItems';
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
+// Saved-items fetch (creds, pagination, SKU extraction, dedupe, loud-fail) lives in the shared
+// helper scripts/lib/gigaSavedItems.ts — the single source of truth reused by baseline/delta.
 const argv = process.argv.slice(2);
 const SUMMARY = argv.includes('--summary');
 const NO_ENRICH = argv.includes('--no-enrich');
-// Credential source. The "My Saved Items" list is GIGA-account-scoped, so the SUPPLIER_*
-// credentials decide WHOSE saved list is read. The saved-items endpoint only works for the alt
-// account (.env.giga-alt.local); the default .env.local account returns a GIGA server error here.
-// So this script DEFAULTS to the alt credentials: it loads .env.giga-alt.local FIRST so its
-// SUPPLIER_* values win (dotenv never overrides already-set vars), while .env.local still supplies
-// the Supabase service-role key. Pass --default-creds (or GIGA_SAVED_USE_ALT_CREDS=0) to force the
-// plain .env.local → .env cascade instead.
-const ALT_CREDS_FILE = '.env.giga-alt.local';
 const FORCE_DEFAULT_CREDS = argv.includes('--default-creds') || process.env.GIGA_SAVED_USE_ALT_CREDS === '0';
-const USE_ALT_CREDS = !FORCE_DEFAULT_CREDS && fs.existsSync(ALT_CREDS_FILE);
-if (USE_ALT_CREDS) loadEnv({ path: ALT_CREDS_FILE });
-loadEnv({ path: '.env.local' });
-loadEnv({ path: '.env' });
-const CREDS_SOURCE = USE_ALT_CREDS ? ALT_CREDS_FILE : '.env.local';
 const maxPagesArg = argv.find(a => a.startsWith('--max-pages='));
 const MAX_PAGES = maxPagesArg ? Math.max(1, parseInt(maxPagesArg.split('=')[1], 10) || 0) : Infinity;
 
-const ENDPOINT_PATH = '/b2b-overseas-api/v1/buyer/product/skus/v1';
-const SKU_FIELD = 'sku';
-const TITLE_FIELD = 'productName';
-const PAGE_SIZE = 100;          // skus/v1 requires pageSize=100 (see syncGigaFurnitureCatalog.ts)
 const ENRICH_BATCH = 200;       // detailInfo/price accept up to 200 SKUs per call
 const PAGE_DELAY_MS = 400;      // be polite to the supplier API
 
@@ -98,64 +83,18 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   const RUN_ID = crypto.randomUUID();
   const TIMESTAMP = new Date().toISOString();
 
-  // ── 1. Read saved items from GIGA (paginated) ─────────────────────────────
-  const giga = await import('../src/services/gigaApiClient');
-  const fetchSavedSkuList = (giga as any).fetchSavedSkuList as (p: number, ps: number) => Promise<any>;
-  if (typeof fetchSavedSkuList !== 'function') die('fetchSavedSkuList not exported from gigaApiClient');
-
-  // gigaApiClient logs verbosely (headers/body/raw) — silence it while paging.
-  const realLog = console.log; console.log = () => {};
-
-  type SavedRecord = { sku: string; title: string };
-  const saved: SavedRecord[] = [];
-  let totalPage = 1;
-  let reportedTotal: number | null = null;
+  // ── 1. Read saved items from GIGA via the shared helper (paginated, deduped, loud-fail) ──
+  let fetched;
   try {
-    for (let page = 1; page <= totalPage && page <= MAX_PAGES; page++) {
-      const res = await fetchSavedSkuList(page, PAGE_SIZE);
-      const data = res?.data;
-      const records = data?.records;
-      if (!data || !Array.isArray(records)) {
-        console.log = realLog;
-        die('unexpected saved-items response shape (data.records[] missing)', {
-          endpoint_path: ENDPOINT_PATH, creds_source: CREDS_SOURCE, page,
-          api_success: res?.success, api_code: res?.code,
-          api_msg: res?.msg ?? res?.error ?? '', api_subMsg: res?.subMsg ?? '',
-          response_keys: res ? Object.keys(res) : 'null',
-          data_keys: data ? Object.keys(data) : 'null',
-        });
-      }
-      if (page === 1) {
-        reportedTotal = Number(data?.pageInfo?.totalNum ?? NaN);
-        totalPage = Number(data?.pageInfo?.totalPage ?? 1) || 1;
-        // SKU-field ambiguity guard: confirm the canonical field exists on the first record.
-        const first = records[0];
-        if (first && (first[SKU_FIELD] == null || first[SKU_FIELD] === '')) {
-          console.log = realLog;
-          die('canonical SKU field ambiguous on saved-items records', {
-            expected_sku_field: SKU_FIELD, candidate_fields: Object.keys(first),
-          });
-        }
-      }
-      for (const r of records) {
-        const sku = String(r?.[SKU_FIELD] ?? '').trim();
-        if (!sku) continue;
-        saved.push({ sku, title: String(r?.[TITLE_FIELD] ?? '').trim() });
-      }
-      if (page < totalPage && page < MAX_PAGES) await delay(PAGE_DELAY_MS);
-    }
+    fetched = await fetchAllSavedItems({ maxPages: MAX_PAGES, forceDefaultCreds: FORCE_DEFAULT_CREDS });
   } catch (e) {
-    console.log = realLog;
+    if (e instanceof GigaSavedItemsError) die(e.message, e.details);
     die(`saved-items fetch failed: ${e instanceof Error ? e.message : String(e)}`, { endpoint_path: ENDPOINT_PATH });
   }
-  console.log = realLog;
-
-  if (saved.length === 0) die('saved-items list returned zero records', { endpoint_path: ENDPOINT_PATH });
-
-  // Dedupe by SKU (keep first title seen).
-  const bySku = new Map<string, SavedRecord>();
-  for (const r of saved) if (!bySku.has(r.sku)) bySku.set(r.sku, r);
-  const items = [...bySku.values()];
+  const CREDS_SOURCE = fetched.credsSource;
+  const reportedTotal = fetched.reportedTotal;
+  const pagesFetched = fetched.pagesFetched;
+  const items = fetched.items.map(i => ({ sku: i.sku, title: i.title }));
   const skuList = items.map(i => i.sku);
 
   // ── 2. Read-only membership SELECTs against Supabase ──────────────────────
@@ -196,6 +135,8 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   let enrichFailures = 0;
   if (!NO_ENRICH) {
     enrichAttempted = true;
+    // Creds were already loaded by fetchAllSavedItems(); this import is module-cached.
+    const giga = await import('../src/services/gigaApiClient');
     const fetchProductDetails = (giga as any).fetchProductDetails as (s: string[]) => Promise<any>;
     const fetchProductPrices = (giga as any).fetchProductPrices as (s: string[]) => Promise<any>;
     const silent = console.log; console.log = () => {};
@@ -311,7 +252,7 @@ function die(msg: string, extra?: Record<string, unknown>): never {
     sku_field: SKU_FIELD,
     items_returned: reports.length,
     reported_total_num: reportedTotal,
-    pages_fetched: Math.min(totalPage, MAX_PAGES),
+    pages_fetched: pagesFetched,
     sellable_products_queryable: sellableQueryable,
     enrichment: { attempted: enrichAttempted, batch_failures: enrichFailures },
     totals,
