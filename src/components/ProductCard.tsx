@@ -201,7 +201,9 @@ export default function ProductCard({
 
           {/* Price row + cart icon */}
           <View style={styles.priceRow}>
-            <Text style={styles.price}>${product.price}</Text>
+            <Text style={styles.price}>
+              {product.familyHasPriceRange ? `From $${product.familyMinPrice ?? product.price}` : `$${product.price}`}
+            </Text>
             <View style={styles.spacer} />
             <Animated.View ref={cartBtnRef} style={{ transform: [{ scale: iconScale }] }}>
               <TouchableOpacity

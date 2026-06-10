@@ -562,6 +562,8 @@ function HomeScreen({ navigation }) {
       });
 
       const familySeen = new Map<string, { id: string; hasImage: boolean }>();
+      // Phase 2.1c — per-family price aggregate so a multi-price split family renders "From $X".
+      const familyPrices = new Map<string, number[]>();
       (rows as any[]).forEach((r: any) => {
         const key: string = r.product_family_key || r.supplier_product_id;
         const hasImage = !!r.primary_image;
@@ -569,9 +571,28 @@ function HomeScreen({ navigation }) {
         if (!existing || (!existing.hasImage && hasImage)) {
           familySeen.set(key, { id: r.supplier_product_id, hasImage });
         }
+        const price = Number(r.selling_price ?? r.price);
+        if (Number.isFinite(price) && price > 0) {
+          const arr = familyPrices.get(key) ?? [];
+          arr.push(price);
+          familyPrices.set(key, arr);
+        }
       });
       const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      return mapped.filter(p => representativeIds.has(p.id));
+      // Map representative id → its family key (to look up the aggregate).
+      const idToKey = new Map<string, string>();
+      (rows as any[]).forEach((r: any) => { idToKey.set(r.supplier_product_id, r.product_family_key || r.supplier_product_id); });
+      return mapped
+        .filter(p => representativeIds.has(p.id))
+        .map(p => {
+          const prices = familyPrices.get(idToKey.get(p.id) ?? '') ?? [];
+          if (prices.length > 1) {
+            const min = Math.min(...prices);
+            const max = Math.max(...prices);
+            if (max > min) return { ...p, familyMinPrice: min, familyHasPriceRange: true };
+          }
+          return p;
+        });
     }
 
     async function bootstrap() {

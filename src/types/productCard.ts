@@ -37,4 +37,9 @@ export type ProductCardModel = {
   /** Phase 2b — blurhash placeholder for the primary image */
   primaryImageBlurhash?: string;
   primaryImageAspect?: number;
+  /** Phase 2.1c — split-variant family pricing. When the card represents a family whose
+   *  variants have differing prices, familyMinPrice is the lowest and familyHasPriceRange
+   *  is true → the card renders "From $X" instead of a single price. */
+  familyMinPrice?: number;
+  familyHasPriceRange?: boolean;
 };

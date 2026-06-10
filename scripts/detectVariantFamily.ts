@@ -28,6 +28,10 @@ import * as fsForEnv from 'node:fs';
 import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { resolveVariantSplit } from '../src/services/familyKeyGenerator';
+
+const SIM_JSON = 'reports/giga-auto-publish/latest-variant-family-split-sim.json';
+const SIM_MD = 'reports/giga-auto-publish/latest-variant-family-split-sim.md';
 
 const argv = process.argv.slice(2);
 const skusArg = argv.find(a => a.startsWith('--skus='));
@@ -303,4 +307,73 @@ type Row = {
   for (const r of finalRows) console.log(`sku=${r.sku} src=${r.source} color=${r.color || '-'} width=${r.width ?? '-'} cfg=${r.config_label || '-'} cost=${r.supplier_cost} sell=${r.selling_price ?? '-'} primary=${r.primary_variant} label="${r.variant_display_label}"`);
   console.log(`report_json=${rel(OUT_JSON)}`);
   console.log(`report_md=${rel(OUT_MD)}`);
+
+  // ── Phase 2.1b: simulate the NEW split product_family_key (read-only; no DB writes) ──
+  const cc = FAMILY_KEY.split('-vg-')[0];
+  const bySkuFinal = new Map(finalRows.map(r => [r.sku, r]));
+  const sim = FAMILY_SKUS.map(sku => {
+    const sp = spById.get(sku); const det = gigaDetail.get(sku);
+    const raw = (sp?.raw_payload ?? det ?? {}) as any;
+    const fr = bySkuFinal.get(sku)!;
+    const title = String(raw.productName ?? sp?.title ?? fr.title ?? '');
+    const available = !!sp || !!det;
+    const split = resolveVariantSplit(raw, sku, cc, title);
+    return {
+      sku, available,
+      proposed_family_key: available ? split.key : null,
+      config_token: split.configToken, width: split.width, width_token: split.widthToken,
+      cfg_missing: available ? split.cfgMissing : false,
+      width_missing: available ? split.widthMissing : false,
+      color: fr.color, selling_price: fr.selling_price,
+      in_standardized: fr.in_standardized, in_sellable: fr.in_sellable,
+    };
+  });
+
+  // Group by proposed key (only available SKUs) and compute per-group flags.
+  const simGroups = new Map<string, typeof sim>();
+  for (const r of sim) { if (!r.proposed_family_key) continue; const k = r.proposed_family_key; if (!simGroups.has(k)) simGroups.set(k, []); simGroups.get(k)!.push(r); }
+  const groupFlags = [...simGroups.entries()].map(([key, members]) => {
+    const cl = members.map(m => m.color).filter(Boolean);
+    const widthsInGroup = members.map(m => m.width).filter((w): w is number => w != null);
+    const priceList = members.map(m => m.selling_price).filter((p): p is number => p != null);
+    return {
+      proposed_family_key: key, skus: members.map(m => m.sku), colors: cl,
+      duplicate_color_inside_split_group: cl.length !== new Set(cl).size,
+      width_collision: widthsInGroup.length > 1 && (Math.max(...widthsInGroup) - Math.min(...widthsInGroup) > 0.6),
+      price_range_inside_split_group: priceList.length > 1 && (Math.max(...priceList) !== Math.min(...priceList)),
+      live_sibling_reconciliation_needed: members.some(m => m.in_standardized || m.in_sellable) && members.some(m => !m.in_standardized && !m.in_sellable),
+    };
+  });
+  const anyCfgMissing = sim.filter(r => r.cfg_missing).map(r => r.sku);
+  const anyWidthMissing = sim.filter(r => r.width_missing).map(r => r.sku);
+  const unavailable = sim.filter(r => !r.available).map(r => r.sku);
+
+  fs.mkdirSync(path.dirname(SIM_JSON), { recursive: true });
+  fs.writeFileSync(SIM_JSON, JSON.stringify({
+    run_id: RUN_ID, timestamp: TIMESTAMP, family_key: FAMILY_KEY, cc,
+    note: 'READ-ONLY simulation of the NEW split product_family_key via resolveVariantSplit. No DB writes.',
+    flags: { cfg_missing: anyCfgMissing, width_missing: anyWidthMissing, unavailable,
+      width_collision: groupFlags.filter(g => g.width_collision).map(g => g.proposed_family_key),
+      duplicate_color_inside_split_group: groupFlags.filter(g => g.duplicate_color_inside_split_group).map(g => g.proposed_family_key),
+      price_range_inside_split_group: groupFlags.filter(g => g.price_range_inside_split_group).map(g => g.proposed_family_key),
+      live_sibling_reconciliation_needed: groupFlags.filter(g => g.live_sibling_reconciliation_needed).map(g => g.proposed_family_key) },
+    proposed_groups: groupFlags, skus: sim,
+  }, null, 2));
+
+  const sm: string[] = [];
+  sm.push('# Variant Family Split Simulation (read-only, Phase 2.1b)', '');
+  sm.push(`- run_id: ${RUN_ID}`, `- family_key: ${FAMILY_KEY}`, `- cc: ${cc}`, '');
+  sm.push('## Proposed split groups', '', '| proposed_family_key | skus | colors | dup_color | width_collision | price_range | live_reconcile |', '|---|---|---|---|---|---|---|');
+  for (const g of groupFlags) sm.push(`| ${g.proposed_family_key} | ${g.skus.join(',')} | ${g.colors.join('/') || '-'} | ${g.duplicate_color_inside_split_group} | ${g.width_collision} | ${g.price_range_inside_split_group} | ${g.live_sibling_reconciliation_needed} |`);
+  sm.push('', '## Per-SKU', '', '| SKU | available | proposed_family_key | config | width | cfg_missing | width_missing | color | sell$ | std | sell |', '|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const r of sim) sm.push(`| ${r.sku} | ${r.available} | ${r.proposed_family_key ?? '(unavailable)'} | ${r.config_token ?? '-'} | ${r.width ?? '-'} | ${r.cfg_missing} | ${r.width_missing} | ${r.color || '-'} | ${r.selling_price ?? '-'} | ${r.in_standardized} | ${r.in_sellable} |`);
+  fs.writeFileSync(SIM_MD, sm.join('\n'));
+
+  console.log('VARIANT_SPLIT_SIM');
+  for (const g of groupFlags) console.log(`group=${g.proposed_family_key} skus=${g.skus.join(',')} dup_color=${g.duplicate_color_inside_split_group} width_collision=${g.width_collision} price_range=${g.price_range_inside_split_group} live_reconcile=${g.live_sibling_reconciliation_needed}`);
+  console.log(`cfg_missing=${anyCfgMissing.join(',') || 'none'}`);
+  console.log(`width_missing=${anyWidthMissing.join(',') || 'none'}`);
+  console.log(`unavailable=${unavailable.join(',') || 'none'}`);
+  console.log(`sim_report_json=${SIM_JSON}`);
+  console.log(`sim_report_md=${SIM_MD}`);
 })().catch(e => { console.error('VARIANT_DETECTOR_ERROR'); console.error(`error=${e instanceof Error ? e.message : String(e)}`); process.exit(1); });

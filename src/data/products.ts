@@ -61,6 +61,9 @@ export interface Product {
   coverImage?: string;           // alias for images[0], used by some card renderers
   product_family_key?: string;   // groups same-style different-color products
   variants?: ProductVariant[];
+  /** Phase 2.1c — split-variant family pricing for the card "From $X" treatment. */
+  familyMinPrice?: number;
+  familyHasPriceRange?: boolean;
   bundleIds?: string[];
   createdAt?: string;
   sales?: number;
