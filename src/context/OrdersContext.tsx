@@ -156,6 +156,27 @@ function orderToRow(order: PlacedOrder, userId: string | null) {
   };
 }
 
+// ── Customer-facing visibility filter ──────────────────────────────────────
+// The customer "My Orders" list hides stale/abandoned checkout attempts so the
+// list only shows real, actionable orders. This is a CLIENT read-path filter only —
+// admin/orders.html is a separate read path and still sees every status for debugging.
+// No DB rows are modified; rows are simply not rendered to the buyer.
+const HIDDEN_FROM_CUSTOMER = new Set(['abandoned', 'canceled', 'payment_cancelled']);
+const PENDING_PAYMENT_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes
+
+function isCustomerVisibleOrder(row: Record<string, unknown>): boolean {
+  const status = String(row.status ?? '');
+  if (HIDDEN_FROM_CUSTOMER.has(status)) return false;
+  if (status === 'pending_payment') {
+    // Only show an in-progress checkout for the first 15 minutes; older ones are
+    // abandoned attempts (the reservation TTL has long expired) and are hidden.
+    const createdAt = row.created_at ? new Date(row.created_at as string).getTime() : NaN;
+    if (!Number.isFinite(createdAt)) return false;
+    return Date.now() - createdAt <= PENDING_PAYMENT_MAX_AGE_MS;
+  }
+  return true;
+}
+
 export function OrdersProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
@@ -172,7 +193,11 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
       console.log('[Orders] refreshOrders failed:', error.message);
       return;
     }
-    setOrders((data ?? []).map(row => rowToOrder(row as Record<string, unknown>)));
+    setOrders(
+      (data ?? [])
+        .filter(row => isCustomerVisibleOrder(row as Record<string, unknown>))
+        .map(row => rowToOrder(row as Record<string, unknown>)),
+    );
   };
 
   // ── Load orders on auth change ────────────────────────────────────────────

@@ -22,6 +22,12 @@ const STATUS_COLORS: Record<string, string> = {
   picked_up:        '#16A34A',
   cancelled:        '#9CA3AF',
   failed:           '#9CA3AF',
+  paid:             '#16A34A',
+  pending_payment:  '#CA8A04',
+  refunded:         '#9CA3AF',
+  canceled:         '#9CA3AF',
+  payment_cancelled:'#9CA3AF',
+  abandoned:        '#9CA3AF',
 };
 const STATUS_ICONS: Record<string, any> = {
   delivered:        'checkmark-circle',
@@ -32,6 +38,12 @@ const STATUS_ICONS: Record<string, any> = {
   picked_up:        'checkmark-circle',
   cancelled:        'close-circle-outline',
   failed:           'alert-circle-outline',
+  paid:             'checkmark-circle',
+  pending_payment:  'time-outline',
+  refunded:         'return-down-back-outline',
+  canceled:         'close-circle-outline',
+  payment_cancelled:'close-circle-outline',
+  abandoned:        'close-circle-outline',
 };
 const STATUS_LABELS: Record<string, string> = {
   delivered:        'Delivered',
@@ -41,7 +53,13 @@ const STATUS_LABELS: Record<string, string> = {
   ready_for_pickup: 'Ready for pickup',
   picked_up:        'Picked up',
   cancelled:        'Cancelled',
-  failed:           'Failed',
+  failed:           'Payment Failed',
+  pending_payment:  'Payment Pending',
+  paid:             'Confirmed',
+  canceled:         'Cancelled',
+  payment_cancelled:'Cancelled',
+  abandoned:        'Expired',
+  refunded:         'Refunded',
 };
 const STEP_ACTIVE: Record<string, number> = { processing: 0, shipped: 1, delivered: 2 };
 const PICKUP_STEP_ACTIVE: Record<string, number> = {

@@ -25,5 +25,8 @@ export const WAREHOUSES: Warehouse[] = [
 ];
 
 // Buyers within this radius of the nearest warehouse can use pickup.
-// Buyers beyond this radius are offered shipping instead.
-export const PICKUP_RADIUS_MILES = 30;
+// Buyers beyond this radius are offered shipping instead (shipping is never blocked
+// by distance). Customer-facing messaging/eligibility radius — kept in sync with the
+// authoritative checkout planner's PICKUP_THRESHOLD_MILES (100) in
+// supabase/functions/plan-fulfillment/index.ts.
+export const PICKUP_RADIUS_MILES = 100;
