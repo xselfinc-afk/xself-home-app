@@ -45,6 +45,11 @@ const argv = process.argv.slice(2);
 const SUMMARY = argv.includes('--summary');
 const maxArg = argv.find(a => a.startsWith('--max-skus='));
 const MAX_SKUS = maxArg ? Math.max(1, parseInt(maxArg.split('=')[1], 10) || 50) : 50;
+// Hard per-SKU scope: --only=SKU[,SKU2] restricts the candidate set to EXACTLY these supplier SKUs,
+// so the resulting plan (buckets, proposed_batch, candidates) covers only them. Used for controlled
+// single-SKU publishes — the downstream apply engine reads proposed_batch.skus + plan.candidates.
+const onlyArg = argv.find(a => a.startsWith('--only='));
+const ONLY_SKUS = onlyArg ? onlyArg.split('=')[1].split(',').map(s => s.trim()).filter(Boolean) : null;
 
 const REPORT_DIR = path.join(process.cwd(), 'reports', 'giga-auto-publish');
 const REPORT_JSON = path.join(REPORT_DIR, 'latest-plan.json');
@@ -96,7 +101,12 @@ type Cand = {
   const alreadySellable = supplier.filter(r => sellSet.has(r.supplier_product_id)).length;
 
   // Candidates = supplier rows NOT yet standardized (sellable ⊂ standardized).
-  const candidates = supplier.filter(r => !stdSet.has(r.supplier_product_id));
+  let candidates = supplier.filter(r => !stdSet.has(r.supplier_product_id));
+  // Hard --only scope: restrict to exactly the requested SKUs (controlled single-SKU publishes).
+  if (ONLY_SKUS) {
+    const onlySet = new Set(ONLY_SKUS);
+    candidates = candidates.filter(r => onlySet.has(r.supplier_product_id));
+  }
 
   // ── Per-SKU derivation via the real pipeline (pure, in-memory) ────────────
   const log = console.log; console.log = () => {};

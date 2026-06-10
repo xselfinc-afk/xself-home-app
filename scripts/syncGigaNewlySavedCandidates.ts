@@ -41,6 +41,10 @@ import * as path from 'node:path';
 const argv = process.argv.slice(2);
 const SUMMARY = argv.includes('--summary');
 const FORCE = argv.includes('--force');
+// Hard per-SKU scope: --only=SKU[,SKU2] restricts processing to EXACTLY these SKUs (intersected with
+// ready_for_sync). Used for controlled single-SKU publishes so other newly-saved SKUs are untouched.
+const onlyArg = argv.find(a => a.startsWith('--only='));
+const ONLY_SKUS = onlyArg ? onlyArg.split('=')[1].split(',').map(s => s.trim()).filter(Boolean) : null;
 // DRY_RUN=1 always forces dry (safer); real sync needs --sync or APPLY=1 AND no DRY_RUN=1.
 const FORCE_DRY = process.env.DRY_RUN === '1';
 const REAL_SYNC = !FORCE_DRY && (argv.includes('--sync') || process.env.APPLY === '1');
@@ -81,7 +85,15 @@ function die(msg: string, extra?: Record<string, unknown>): never {
       if (sku && !readyMap.has(sku)) readyMap.set(sku, String(c?.title ?? '').trim());
     }
   }
-  const readySkus = [...readyMap.keys()];
+  let readySkus = [...readyMap.keys()];
+  // Apply hard --only scope (intersect with ready_for_sync). Report any requested SKU that is NOT
+  // ready_for_sync rather than silently proceeding.
+  if (ONLY_SKUS) {
+    const readySet = new Set(readySkus);
+    const notReady = ONLY_SKUS.filter(s => !readySet.has(s));
+    if (notReady.length) die(`--only includes SKU(s) not in ready_for_sync: ${notReady.join(',')}`, { ready_for_sync: readySkus });
+    readySkus = readySkus.filter(s => ONLY_SKUS.includes(s));
+  }
 
   // ── Supabase (read-only here; writes only via upsertPickupProducts in sync mode) ──
   const { createClient } = await import('@supabase/supabase-js');
