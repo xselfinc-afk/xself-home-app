@@ -6,7 +6,8 @@ export function defaultCartItem(product: any): Omit<CartItem, 'qty'> {
   if (firstVariant) {
     return {
       sku: firstVariant.sku,
-      productId: product.id,
+      // Fulfillment key = that variant's supplier_product_id when known, else the product id.
+      productId: firstVariant.supplierProductId ?? product.id,
       name: product.name,
       price: firstVariant.price,
       img: firstVariant.images[0] ?? product.images[0],

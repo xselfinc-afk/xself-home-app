@@ -10,6 +10,10 @@ export interface MediaItem {
 
 export interface ProductVariant {
   sku: string;
+  /** Selected variant's supplier_product_id — the authoritative fulfillment key the
+   *  Edge Function validates inventory/orders against. Distinct from `sku` (sku_custom,
+   *  display only). Optional so list-card / mock variants without a sibling load still type-check. */
+  supplierProductId?: string;
   color: string;
   size: string;
   price: number;

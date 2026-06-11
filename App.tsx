@@ -1234,16 +1234,29 @@ function ProductDetailScreen({ route, navigation }) {
     loadProductFamily(familyKey).then(fullProduct => {
       if (!fullProduct) return;
       setProduct(fullProduct);
+      // Sync the selection to the tapped SKU (or the representative) so the initial
+      // selectedVariant resolves to that concrete sibling — not a stale color carried
+      // over from the list-card product, which would mismatch after the family load.
+      const tappedId = initialProduct?.id;
+      const match =
+        fullProduct.variants?.find((v: ProductVariant) => v.supplierProductId === tappedId) ??
+        fullProduct.variants?.find((v: ProductVariant) => v.supplierProductId === fullProduct.id) ??
+        fullProduct.variants?.[0];
+      if (match) { setSelectedColor(match.color); setSelectedSize(match.size); }
       setActiveImage(0);
       carouselRef.current?.scrollTo({ x: 0, animated: false });
     });
   }, [familyKey]);
 
   // Derived: resolved SKU
+  // Never leave a multi-variant product with a null selection: if the current
+  // color/size doesn't match (e.g. selectedColor hasn't synced yet right after the
+  // family load), fall back to the default variant so cart/checkout always carry a
+  // concrete variant supplier_product_id — never silently the representative.
   const selectedVariant: ProductVariant | null = hasVariants
     ? (product.variants.find((v: ProductVariant) =>
         v.color === selectedColor && v.size === selectedSize
-      ) ?? null)
+      ) ?? defaultVariant)
     : null;
 
   // Derived: gallery / price / savings
@@ -1312,7 +1325,10 @@ function ProductDetailScreen({ route, navigation }) {
     if (hasVariants && selectedVariant) {
       addItem({
         sku: selectedVariant.sku,
-        productId: product.id,
+        // Authoritative fulfillment key = the SELECTED variant's supplier_product_id,
+        // not the family representative (product.id). The order Edge Function validates
+        // inventory and ships by productId, so this must track the chosen color.
+        productId: selectedVariant.supplierProductId ?? product.id,
         name: product.name,
         price: selectedVariant.price,
         img: selectedVariant.images[0] ?? product.images[0],

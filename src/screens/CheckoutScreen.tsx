@@ -98,7 +98,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
     ? [{
         // Prefer variant SKU (sku_custom), then product-level skuCustom, then supplier_product_id
         sku: selectedVariant?.sku ?? product?.skuCustom ?? product?.id ?? '',
-        productId: product?.id ?? '',
+        // Fulfillment key = selected variant's supplier_product_id (the Edge Function
+        // validates inventory/ships by productId); fall back to the representative only
+        // when no variant is selected.
+        productId: selectedVariant?.supplierProductId ?? product?.id ?? '',
         name: product?.name ?? '',
         img: selectedVariant?.images?.[0] ?? product?.images?.[0] ?? '',
         // Quote-based Buy Now: the negotiated quoted price (when present) is the

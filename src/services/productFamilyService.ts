@@ -15,7 +15,8 @@ const FAMILY_SELECT =
   'key_features_json, specifications_json, sku_custom, ' +
   'category_code, scene_code, color, color_options_json, ' +
   'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-  'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status';
+  'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, ' +
+  'normalization_status, total_available_qty';
 
 /**
  * Builds the image array for a single standardized row, deduplicating primary
@@ -39,10 +40,12 @@ function rowImages(r: {
  * Returns null if the family cannot be loaded or has no rows.
  */
 export async function loadProductFamily(familyKey: string): Promise<Product | null> {
+  // Load from sellable_products so detail variants are actually sellable/in-stock
+  // (the view already enforces published + normalization_status=done + in_stock +
+  // qty>0 + image + price>0). Prevents offering a color the customer cannot buy.
   const { data, error } = await supabase
-    .from('standardized_products')
+    .from('sellable_products')
     .select(FAMILY_SELECT)
-    .eq('normalization_status', 'done')
     .eq('product_family_key', familyKey)
     .order('created_at', { ascending: true });
 
@@ -59,16 +62,23 @@ export async function loadProductFamily(familyKey: string): Promise<Product | nu
   const representative =
     (data.find((r: any) => !!r.primary_image) ?? data[0]) as any;
 
-  // Build one ProductVariant per family row
-  const variants: ProductVariant[] = (data as any[]).map(r => ({
-    sku: r.sku_custom as string,
-    color: (r.color as string) || 'Default',
-    size: '',
-    price: (r.selling_price ?? r.price) as number,
-    stock: 999,
-    images: rowImages(r),
-    enabled: true,
-  }));
+  // Build one ProductVariant per family row. supplierProductId is the authoritative
+  // fulfillment key (sku stays sku_custom for display). stock is the real per-variant
+  // availability so an out-of-stock color is reflected, not a hardcoded 999.
+  const variants: ProductVariant[] = (data as any[]).map(r => {
+    const qty = Number(r.total_available_qty ?? 0);
+    return {
+      sku: r.sku_custom as string,
+      supplierProductId: r.supplier_product_id as string,
+      color: (r.color as string) || 'Default',
+      size: '',
+      price: (r.selling_price ?? r.price) as number,
+      originalPrice: (r.original_price ?? undefined) as number | undefined,
+      stock: Number.isFinite(qty) && qty > 0 ? qty : 0,
+      images: rowImages(r),
+      enabled: Number.isFinite(qty) ? qty > 0 : true,
+    };
+  });
 
   const colors = variants.map(v => v.color);
   console.log('[ProductDetail] colors:', colors);
