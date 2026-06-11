@@ -72,7 +72,7 @@ type Cand = {
   id: string; title: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
-  isVg: boolean; bucket: string; reasons: string[];
+  isVg: boolean; hasLiveSibling: boolean; bucket: string; reasons: string[];
 };
 
 (async () => {
@@ -118,12 +118,20 @@ type Cand = {
     const dimArr = [raw.assembledLength, raw.assembledWidth, raw.assembledHeight]
       .map((v: any) => v === '' ? null : v).filter((v: any) => v != null).map((v: any) => Number(v).toFixed(2));
     const key = String(n.product_family_key ?? '');
+    // Does this SKU have a variant sibling that is ALREADY live (standardized/sellable)?
+    // Siblings = associateProductList entries sharing a >= PREFIX_MIN-char SKU prefix (same rule
+    // as syncGigaVariants / familyKeyGenerator). Used to decide whether a fragmented -vg- member
+    // can be published standalone (no live sibling) or must merge (has live sibling).
+    const assoc = Array.isArray(raw.associateProductList)
+      ? (raw.associateProductList as unknown[]).filter((s): s is string => typeof s === 'string').map(s => s.trim()).filter(Boolean)
+      : [];
+    const hasLiveSibling = assoc.some(s => s !== id && sharedPrefixLen(id, s) >= PREFIX_MIN && (stdSet.has(s) || sellSet.has(s)));
     return {
       id, title: String(r.title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
       img: !!n.primary_image, imgCount: Array.isArray(raw.imageUrls) ? raw.imageUrls.length : 0,
       dim: dimArr.length === 3 ? dimArr.join('x') : '', drawers: drawers(r.title), doors: doors(r.title),
-      isVg: key.includes('-vg-'), bucket: '', reasons: [],
+      isVg: key.includes('-vg-'), hasLiveSibling, bucket: '', reasons: [],
     };
   });
   console.log = log;
@@ -161,8 +169,16 @@ type Cand = {
     }
     // Supplier-derived variant family. Need ≥2 co-present clean members to evaluate as a family.
     if (members.length < 2) {
-      // Fragmented cluster: its siblings are not co-present (held / already live / not candidates).
-      members.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('fragmented_cluster'); });
+      // Fragmented cluster: only one clean co-present member. Split on live-sibling presence:
+      //  - NO live sibling → publishing it creates a brand-new card and touches no existing live
+      //    SKU. Safe as a standalone single-color card (it seeds the family key; any sibling
+      //    imported later computes the same key and auto-groups). Promote to SAFE_SINGLETON so it
+      //    flows through the unchanged apply runner (which accepts SAFE_SINGLETON).
+      //  - HAS live sibling → must go through the merge path (mergeGigaVariantFamily); keep HOLD_PHASE2.
+      members.forEach(m => {
+        if (m.hasLiveSibling) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('fragmented_cluster'); }
+        else { m.bucket = 'SAFE_SINGLETON'; m.reasons.push('no_live_sibling_standalone'); }
+      });
       continue;
     }
     const cats = new Set(members.map(m => m.cat));
