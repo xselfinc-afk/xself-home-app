@@ -63,6 +63,19 @@ const HARD_JUNK = /\b(pet|dog|cat|kitten|puppy|fish\s*tank|aquarium|litter|kenne
 // Brand prefixes / marketing text → HOLD_QUALITY (salvageable with title cleanup, not auto-safe).
 const BRAND_PREFIX = /^(trexm|vibe\s?haus|k&k|fch|gartoo|kepswin|woj|topmax|tomax|go\b)/i;
 const MARKETING = /(<\s*old\s*sku|made in usa|\[video\]|assembly video provided|\d-day)/i;
+// Categories with NO door/drawer configuration axis. For these, the `cfgmissing` sentinel is
+// HOMOGENEOUS across the whole family (no member can ever derive a door/drawer count), so the
+// family key is stable and a cfgmissing fragment is safe to seed as a standalone card — unlike
+// config-bearing types (cabinet/dresser/sideboard/nightstand/bookshelf), where a future sibling
+// might parse a count and split. Width still must be present (wmissing stays held). Compared
+// case-insensitively against the normalized category_label.
+const NO_CONFIG_AXIS_CATS = new Set(
+  ['sofa', 'bed', 'table', 'chair', 'mattress', 'rug', 'mirror', 'bench', 'ottoman', 'lighting'],
+);
+// Per-family cost tolerance: clean color families whose per-color cost differs only by rounding
+// noise (≤ $1 absolute OR ≤ 2% relative) are treated as same-cost and released, instead of holding.
+const COST_TOL_ABS = 1;     // dollars
+const COST_TOL_PCT = 0.02;  // 2%
 
 const sharedPrefixLen = (a: string, b: string) => { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i++; return i; };
 const drawers = (t: string) => { const m = String(t ?? '').match(/(\d+)\s*[- ]?drawers?/i); return m ? +m[1] : null; };
@@ -183,11 +196,14 @@ type Cand = {
       //    with a derivable config/width would compute a DIFFERENT key and never merge, fragmenting the
       //    family into separate cards. Hold it (HOLD_PHASE2) regardless of live-sibling presence.
       //  - HAS live sibling → must go through the merge path (mergeGigaVariantFamily); keep HOLD_PHASE2.
+      //  - cfgMissing BUT no-config-axis category (sofa/bed/table/chair…) AND width present → the
+      //    sentinel is homogeneous for the whole family, so the key is stable; release as standalone.
       members.forEach(m => {
+        const noConfigAxis = NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase());
         if (m.hasLiveSibling) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('fragmented_cluster'); }
-        else if (m.cfgMissing) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('cfgmissing_fragmented'); }
         else if (m.widthMissing) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('wmissing_fragmented'); }
-        else { m.bucket = 'SAFE_SINGLETON'; m.reasons.push('no_live_sibling_standalone'); }
+        else if (m.cfgMissing && !noConfigAxis) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('cfgmissing_fragmented'); }
+        else { m.bucket = 'SAFE_SINGLETON'; m.reasons.push(m.cfgMissing ? 'no_config_axis_standalone' : 'no_live_sibling_standalone'); }
       });
       continue;
     }
@@ -200,13 +216,18 @@ type Cand = {
     const dupColor = colors.length !== new Set(colors).size || colors.length !== members.length;
     const sameConfig = cats.size === 1 && dims.size <= 1 && draw.size <= 1 && door.size <= 1;
 
+    const minCost = Math.min(...costs), maxCost = Math.max(...costs);
+    const costWithinTol = (maxCost - minCost) <= COST_TOL_ABS || (minCost > 0 && (maxCost - minCost) / minCost <= COST_TOL_PCT);
+
     if (dupColor || !sameConfig) {
       members.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push(dupColor ? 'duplicate_color' : 'config_mismatch'); });
-    } else if (costs.size > 1) {
+    } else if (costs.size > 1 && !costWithinTol) {
       members.forEach(m => { m.bucket = 'HOLD_PRICE'; m.reasons.push('per_color_cost_mismatch'); });
     } else {
-      members.forEach(m => { m.bucket = 'SAFE_CLEAN_COLOR_VARIANT'; });
-      safeVariantFamilies.push({ key, skus: members.map(m => m.id).sort(), colors: members.map(m => m.color), cost: [...costs][0] });
+      // Same cost, or within the rounding-noise tolerance → release. Report the higher cost so any
+      // downstream single-price-per-card stays margin-safe (pricing itself is unchanged, per-SKU).
+      members.forEach(m => { m.bucket = 'SAFE_CLEAN_COLOR_VARIANT'; if (costs.size > 1) m.reasons.push('cost_within_tolerance'); });
+      safeVariantFamilies.push({ key, skus: members.map(m => m.id).sort(), colors: members.map(m => m.color), cost: maxCost });
     }
   }
 
