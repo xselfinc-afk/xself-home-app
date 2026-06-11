@@ -36,7 +36,11 @@
  */
 (globalThis as { __DEV__?: boolean }).__DEV__ = false;
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: '.env.local' }); loadEnv({ path: '.env' });
+// Env precedence MUST match runGigaAutoPublish.ts (+11 other GIGA scripts): .env.giga-alt.local holds
+// the working GIGA API creds (openapi.gigab2b.com host) and is loaded FIRST. dotenv is first-wins, so
+// omitting it made the planner sign the stock probe with the wrong .env.local creds (www.gigab2b.com)
+// → HTTP 500. Loading it first gives the planner the same working credentials as the runner.
+loadEnv({ path: '.env.giga-alt.local' }); loadEnv({ path: '.env.local' }); loadEnv({ path: '.env' });
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
