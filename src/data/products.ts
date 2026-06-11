@@ -65,6 +65,11 @@ export interface Product {
   coverImage?: string;           // alias for images[0], used by some card renderers
   product_family_key?: string;   // groups same-style different-color products
   variants?: ProductVariant[];
+  /** Fully-adapted Product for each sellable family sibling (one per variant), so the detail
+   *  page can render the SELECTED variant's own title/description/features/specs — not just the
+   *  representative's. Populated by loadProductFamily; matched to a variant via Product.id ===
+   *  ProductVariant.supplierProductId. */
+  variantProducts?: Product[];
   /** Phase 2.1c — split-variant family pricing for the card "From $X" treatment. */
   familyMinPrice?: number;
   familyHasPriceRange?: boolean;

@@ -16,7 +16,12 @@ const FAMILY_SELECT =
   'category_code, scene_code, color, color_options_json, ' +
   'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
   'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, ' +
-  'normalization_status, total_available_qty';
+  'normalization_status, total_available_qty, ' +
+  // extra fields so adaptStandardizedRow() can build a COMPLETE per-sibling Product (variant-
+  // specific title/specs/images), not just the thin variant used by the color selector.
+  'product_title_display, optimized_title, sku_search, category_label, category_priority, ' +
+  'is_new_arrival, new_arrival_added_at, new_arrival_source, ' +
+  'primary_image_blurhash, primary_image_w, primary_image_h, primary_image_aspect, primary_image_mirror_path';
 
 /**
  * Builds the image array for a single standardized row, deduplicating primary
@@ -83,7 +88,13 @@ export async function loadProductFamily(familyKey: string): Promise<Product | nu
   const colors = variants.map(v => v.color);
   console.log('[ProductDetail] colors:', colors);
 
+  // Full per-sibling Products so the detail page can render the SELECTED variant's own
+  // title/description/features/specs (matched by Product.id === variant.supplierProductId).
+  const variantProducts: Product[] = (data as any[])
+    .map(r => { try { return adaptStandardizedRow(r); } catch { return null; } })
+    .filter((p): p is Product => !!p);
+
   // Base product from the representative row; override variants with the full family set
   const base = adaptStandardizedRow(representative);
-  return { ...base, variants };
+  return { ...base, variants, variantProducts };
 }

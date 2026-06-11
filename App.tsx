@@ -1259,6 +1259,14 @@ function ProductDetailScreen({ route, navigation }) {
       ) ?? defaultVariant)
     : null;
 
+  // Full detail Product for the selected variant, so selecting a color switches CONTENT
+  // (title / description / features / specs / dimensions), not just price+images. Falls back
+  // to the family representative when the per-sibling Product isn't available.
+  const selectedSibling: Product =
+    (selectedVariant?.supplierProductId
+      ? product.variantProducts?.find(vp => vp.id === selectedVariant.supplierProductId)
+      : undefined) ?? product;
+
   // Derived: gallery / price / savings
   const displayImages: string[] = selectedVariant?.images ?? product.images;
   // Unified media list — use selected variant images when available so gallery updates on color change
@@ -1329,7 +1337,7 @@ function ProductDetailScreen({ route, navigation }) {
         // not the family representative (product.id). The order Edge Function validates
         // inventory and ships by productId, so this must track the chosen color.
         productId: selectedVariant.supplierProductId ?? product.id,
-        name: product.name,
+        name: selectedSibling.name,
         price: selectedVariant.price,
         img: selectedVariant.images[0] ?? product.images[0],
         color: selectedVariant.color,
@@ -1515,7 +1523,7 @@ function ProductDetailScreen({ route, navigation }) {
         {/* Product info */}
         <View style={styles.detailContent}>
           <View style={styles.detailNameRow}>
-            <Text style={[styles.detailName, { flex: 1 }]} numberOfLines={3} selectable>{product.displayTitle ?? product.name}</Text>
+            <Text style={[styles.detailName, { flex: 1 }]} numberOfLines={3} selectable>{selectedSibling.displayTitle ?? selectedSibling.name}</Text>
             <TouchableOpacity onPress={handleShare} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="share-outline" size={18} color="#9CA3AF" />
             </TouchableOpacity>
@@ -1579,10 +1587,10 @@ function ProductDetailScreen({ route, navigation }) {
 
           {/* Key Features */}
           {(() => {
-            const hasMigrated = !!(product.features?.length);
-            const safeDesc: string = product.desc ?? '';
+            const hasMigrated = !!(selectedSibling.features?.length);
+            const safeDesc: string = selectedSibling.desc ?? '';
             const fs: string[] = hasMigrated
-              ? product.features!
+              ? selectedSibling.features!
               : safeDesc.split(/\.\s+/).map((s: string) => s.replace(/\.$/, '').trim()).filter((s: string) => s.length > 8);
             return (
               <View style={styles.featuresSection}>
@@ -1605,10 +1613,10 @@ function ProductDetailScreen({ route, navigation }) {
           {/* Product Details */}
           <View style={styles.specsSection}>
             <Text style={styles.specsSectionLabel}>Product Details</Text>
-            {product.specs
+            {selectedSibling.specs
               ? (() => {
                   const groupMap = new Map<string, { label: string; value: string }[]>();
-                  product.specs!.forEach(spec => {
+                  selectedSibling.specs!.forEach(spec => {
                     const g = spec.group ?? 'Specifications';
                     if (!groupMap.has(g)) groupMap.set(g, []);
                     groupMap.get(g)!.push({ label: spec.label, value: spec.value });
@@ -1892,6 +1900,7 @@ function SearchScreen({ navigation, route }) {
   const [query, setQuery] = useState(String(initialQuery));
   const [imageUri, setImageUri] = useState<string | null>(initialImageUri);
   const [searchPool, setSearchPool] = useState<Product[]>([]);
+  const [familyRep, setFamilyRep] = useState<Record<string, string>>({});
   const [generatedQuery, setGeneratedQuery] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -1926,8 +1935,15 @@ function SearchScreen({ navigation, route }) {
           familySeen.set(key, { id: r.supplier_product_id, hasImage });
         }
       });
-      const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      if (active) setSearchPool(mapped.filter(p => representativeIds.has(p.id) && p.images.length > 0));
+      // Keep the per-family representative id, but DO NOT drop siblings from the pool — every
+      // sibling must remain matchable so searching any sibling SKU finds the family. Results are
+      // collapsed to one representative card per family at match time (see below).
+      const repByFamily: Record<string, string> = {};
+      for (const [key, v] of familySeen) repByFamily[key] = v.id;
+      if (active) {
+        setSearchPool(mapped.filter(p => p.images.length > 0));
+        setFamilyRep(repByFamily);
+      }
     }
     loadPool();
     return () => { active = false; };
@@ -1954,17 +1970,28 @@ function SearchScreen({ navigation, route }) {
   }, [imageUri]);
 
   const activeQuery = imageUri ? generatedQuery : query;
-  const textResults = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
+  const matchedRows = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
+  // Collapse matches to ONE card per family (the representative), preserving match order. Matching
+  // runs over the FULL pool, so any sibling SKU surfaces the family; the card shown is the
+  // representative, which on tap loads the whole family.
+  const byId = new Map(searchPool.map(p => [p.id, p] as const));
+  const seenFamilies = new Set<string>();
+  const results: Product[] = [];
+  for (const p of matchedRows) {
+    const key = p.product_family_key || p.id;
+    if (seenFamilies.has(key)) continue;
+    seenFamilies.add(key);
+    const repId = familyRep[key];
+    results.push((repId && byId.get(repId)) || p);
+  }
 
   if (__DEV__ && !imageUri) {
     const qNorm = normalizeForSkuMatch(query);
     console.log('[HomeSearch] raw query:', JSON.stringify(query));
     console.log('[HomeSearch] normalized query:', JSON.stringify(qNorm));
     console.log('[HomeSearch] shared search reused from Discover: true');
-    console.log('[HomeSearch] result count:', textResults.length);
+    console.log('[HomeSearch] result count:', results.length);
   }
-
-  const results = textResults;
 
   const onPressCamera = () => {
     Alert.alert('Search by photo', 'Choose a source', [
