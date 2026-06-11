@@ -55,6 +55,15 @@ if (WANT_DRY === WANT_APPLY) {
 const PAYMENT_FEE_RATE = 0.029;
 const markup = (c: number) => c <= 50 ? 2.20 : c <= 150 ? 1.80 : c <= 400 ? 1.55 : c <= 800 ? 1.40 : 1.28;
 const buffer = (c: number) => c <= 100 ? 20 : c <= 300 ? 30 : c <= 800 ? 50 : 80;
+// Within-family cost tolerance — MUST mirror planGigaAutoPublish.ts (COST_TOL_ABS / COST_TOL_PCT).
+// Clean color families whose per-color cost differs only by rounding noise (≤ $1 OR ≤ 2%) pass;
+// larger spreads still hold as within_family_cost_mismatch.
+const COST_TOL_ABS = 1;     // dollars
+const COST_TOL_PCT = 0.02;  // 2%
+const costWithinTol = (costs: number[]) => {
+  const minC = Math.min(...costs), maxC = Math.max(...costs);
+  return (maxC - minC) <= COST_TOL_ABS || (minC > 0 && (maxC - minC) / minC <= COST_TOL_PCT);
+};
 function psychRound(p: number): number {
   if (p < 100) return Math.floor(p) + 0.99;
   if (p < 300) { const d = Math.floor(p / 10) * 10 + 9; return d >= p ? d : d + 10; }
@@ -152,7 +161,7 @@ async function runDryRun() {
       if (pred < cost) { hold(u, 'pricing', 'below_cost'); break; }
       if (!imgReady) { hold(u, 'mirror', 'no_image_source'); break; }
     }
-    if (!u.held && u.kind === 'family' && new Set(costs).size > 1) hold(u, 'pricing', 'within_family_cost_mismatch');
+    if (!u.held && u.kind === 'family' && costs.length > 1 && !costWithinTol(costs)) hold(u, 'pricing', 'within_family_cost_mismatch');
   }
   console.log = silence;
 
