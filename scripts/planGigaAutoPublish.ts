@@ -72,7 +72,7 @@ type Cand = {
   id: string; title: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
-  isVg: boolean; hasLiveSibling: boolean; bucket: string; reasons: string[];
+  isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; bucket: string; reasons: string[];
 };
 
 (async () => {
@@ -131,7 +131,12 @@ type Cand = {
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
       img: !!n.primary_image, imgCount: Array.isArray(raw.imageUrls) ? raw.imageUrls.length : 0,
       dim: dimArr.length === 3 ? dimArr.join('x') : '', drawers: drawers(r.title), doors: doors(r.title),
-      isVg: key.includes('-vg-'), hasLiveSibling, bucket: '', reasons: [],
+      // cfg/width sentinels: resolveVariantSplit emits `cfgmissing` / `wmissing` tokens into the
+      // key when config or width could not be derived (familyKeyGenerator.ts). Such keys are
+      // unstable for future merges, so they must not seed a standalone Fast-Lane card.
+      isVg: key.includes('-vg-'), hasLiveSibling,
+      cfgMissing: key.includes('-cfgmissing-'), widthMissing: key.endsWith('-wmissing'),
+      bucket: '', reasons: [],
     };
   });
   console.log = log;
@@ -170,13 +175,18 @@ type Cand = {
     // Supplier-derived variant family. Need ≥2 co-present clean members to evaluate as a family.
     if (members.length < 2) {
       // Fragmented cluster: only one clean co-present member. Split on live-sibling presence:
-      //  - NO live sibling → publishing it creates a brand-new card and touches no existing live
-      //    SKU. Safe as a standalone single-color card (it seeds the family key; any sibling
-      //    imported later computes the same key and auto-groups). Promote to SAFE_SINGLETON so it
-      //    flows through the unchanged apply runner (which accepts SAFE_SINGLETON).
+      //  - NO live sibling AND fully-resolved key (real config + real width) → publishing it creates
+      //    a brand-new card and touches no existing live SKU. Safe as a standalone single-color card:
+      //    it seeds a STABLE family key, so any sibling imported later computes the same key and
+      //    auto-groups. Promote to SAFE_SINGLETON so it flows through the unchanged apply runner.
+      //  - cfg/width unresolved (cfgmissing/wmissing sentinel) → the key is unstable; a future sibling
+      //    with a derivable config/width would compute a DIFFERENT key and never merge, fragmenting the
+      //    family into separate cards. Hold it (HOLD_PHASE2) regardless of live-sibling presence.
       //  - HAS live sibling → must go through the merge path (mergeGigaVariantFamily); keep HOLD_PHASE2.
       members.forEach(m => {
         if (m.hasLiveSibling) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('fragmented_cluster'); }
+        else if (m.cfgMissing) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('cfgmissing_fragmented'); }
+        else if (m.widthMissing) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('wmissing_fragmented'); }
         else { m.bucket = 'SAFE_SINGLETON'; m.reasons.push('no_live_sibling_standalone'); }
       });
       continue;
