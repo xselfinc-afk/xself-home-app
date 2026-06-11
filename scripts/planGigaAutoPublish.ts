@@ -39,6 +39,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: '.env.local' }); loadEnv({ path: '.env' });
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -77,12 +78,47 @@ const NO_CONFIG_AXIS_CATS = new Set(
 const COST_TOL_ABS = 1;     // dollars
 const COST_TOL_PCT = 0.02;  // 2%
 
+// ── GIGA stock probe (read-only quantity; mirrors runGigaAutoPublish.ts stage 7) ──
+// The planner cannot know pre-publish stock from the DB (inventory_cache only covers already-seeded
+// SKUs), so it probes the live GIGA quantity API for would-be-safe candidates and demotes zero-stock
+// ones before proposing — preventing the propose→dry-run-hold→repeat loop. Requires GIGA creds; when
+// absent the probe is skipped and the runner's stage-7 stock gate remains authoritative.
+const GIGA_BASE = process.env.SUPPLIER_API_BASE_URL ?? '';
+const GIGA_CID = process.env.SUPPLIER_CLIENT_ID ?? '';
+const GIGA_SEC = process.env.SUPPLIER_CLIENT_SECRET ?? '';
+const QTY_PATH = '/b2b-overseas-api/v1/buyer/inventory/quantity/v2';
+const gigaReady = () => !!(GIGA_BASE && GIGA_CID && GIGA_SEC && /openapi\.gigab2b\.com/.test(GIGA_BASE));
+const gigaNonce = (n = 10) => { const c = 'abcdefghijklmnopqrstuvwxyz0123456789'; let r = ''; for (let i = 0; i < n; i++) r += c[Math.floor(Math.random() * c.length)]; return r; };
+const gigaSign = (p: string, ts: string, nc: string) => {
+  const msg = `${GIGA_CID}&${p}&${ts}&${nc}`, key = `${GIGA_CID}&${GIGA_SEC}&${nc}`;
+  return Buffer.from(crypto.createHmac('sha256', key).update(msg).digest('hex'), 'utf8').toString('base64');
+};
+async function gigaQuantity(skus: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (let i = 0; i < skus.length; i += 200) {
+    const batch = skus.slice(i, i + 200);
+    const ts = Date.now().toString(), nc = gigaNonce();
+    const res = await fetch(`${GIGA_BASE}${QTY_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'client-id': GIGA_CID, timestamp: ts, nonce: nc, sign: gigaSign(QTY_PATH, ts, nc) },
+      body: JSON.stringify({ skus: batch }),
+    });
+    const json: any = await res.json().catch(() => null);
+    if (res.status !== 200 || !json || json.success !== true) throw new Error(`giga_http_${res.status}`);
+    for (const ar of (json.data ?? [])) {
+      const dist = ar?.sellerInventoryInfo?.sellerInventoryDistribution ?? [];
+      out.set(ar.sku, dist.reduce((acc: number, w: any) => acc + Math.max(0, Number(w.availableQtyMin) || 0), 0));
+    }
+  }
+  return out;
+}
+
 const sharedPrefixLen = (a: string, b: string) => { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i++; return i; };
 const drawers = (t: string) => { const m = String(t ?? '').match(/(\d+)\s*[- ]?drawers?/i); return m ? +m[1] : null; };
 const doors = (t: string) => { const m = String(t ?? '').match(/(\d+)\s*[- ]?doors?/i); return m ? +m[1] : null; };
 
 type Cand = {
-  id: string; title: string; key: string; cat: string; color: string;
+  id: string; title: string; normTitle: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
   isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; bucket: string; reasons: string[];
@@ -140,7 +176,7 @@ type Cand = {
       : [];
     const hasLiveSibling = assoc.some(s => s !== id && sharedPrefixLen(id, s) >= PREFIX_MIN && (stdSet.has(s) || sellSet.has(s)));
     return {
-      id, title: String(r.title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
+      id, title: String(r.title ?? ''), normTitle: String(n.product_title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
       img: !!n.primary_image, imgCount: Array.isArray(raw.imageUrls) ? raw.imageUrls.length : 0,
       dim: dimArr.length === 3 ? dimArr.join('x') : '', drawers: drawers(r.title), doors: doors(r.title),
@@ -163,6 +199,9 @@ type Cand = {
     if (MARKETING.test(c.title)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('marketing_text'); continue; }
     if (c.normCost < LOW_PRICE) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('low_price'); continue; }
     if (c.title.length < 12) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('weak_title'); continue; }
+    // Match the runner's title gate: it holds when the NORMALIZED product_title (not the raw supplier
+    // title) is < 12 chars. Checking raw title alone let such SKUs pass here and re-hold at the runner.
+    if (c.normTitle.length < 12) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('title_not_ready'); continue; }
     if (c.cat === 'Other') { c.bucket = 'HOLD_QUALITY'; c.reasons.push('uncertain_category'); continue; }
     c.bucket = 'CLEAN'; // provisional — refined by grouping below
   }
@@ -176,7 +215,7 @@ type Cand = {
     cleanByKey.get(c.key)!.push(c);
   }
 
-  const safeVariantFamilies: { key: string; skus: string[]; colors: string[]; cost: number }[] = [];
+  let safeVariantFamilies: { key: string; skus: string[]; colors: string[]; cost: number }[] = [];
 
   for (const [key, members] of cleanByKey) {
     const isVg = key.includes('-vg-');
@@ -231,6 +270,31 @@ type Cand = {
     }
   }
 
+  // ── Current-stock gate (live GIGA probe; mirrors runGigaAutoPublish stage 7) ──
+  // Demote would-be-safe SKUs with no current GIGA stock to HOLD_INVENTORY so they never enter
+  // proposed_batch (the runner would otherwise hold them at 'inventory' on every cycle). Families
+  // are whole-or-nothing: if any member is out of stock the whole family is held (no partial card).
+  // Without GIGA creds the probe is skipped and the runner remains the authoritative stock gate.
+  let stockProbeNote = '';
+  const safeIdsForStock = cands.filter(c => c.bucket === 'SAFE_SINGLETON' || c.bucket === 'SAFE_CLEAN_COLOR_VARIANT').map(c => c.id);
+  if (safeIdsForStock.length && gigaReady()) {
+    try {
+      const qty = await gigaQuantity(safeIdsForStock);
+      const inStock = (s: string) => (qty.get(s) ?? 0) > 0;
+      for (const c of cands) {
+        if (c.bucket === 'SAFE_SINGLETON' && !inStock(c.id)) { c.bucket = 'HOLD_INVENTORY'; c.reasons.push('no_current_stock'); }
+      }
+      for (const f of safeVariantFamilies) {
+        if (!f.skus.every(inStock)) for (const s of f.skus) {
+          const c = byId.get(s); if (c && c.bucket === 'SAFE_CLEAN_COLOR_VARIANT') { c.bucket = 'HOLD_INVENTORY'; c.reasons.push('no_current_stock'); }
+        }
+      }
+      safeVariantFamilies = safeVariantFamilies.filter(f => f.skus.every(s => byId.get(s)?.bucket === 'SAFE_CLEAN_COLOR_VARIANT'));
+    } catch (e) { stockProbeNote = `stock_probe_failed:${e instanceof Error ? e.message : 'err'}(runner remains gate)`; }
+  } else if (safeIdsForStock.length) {
+    stockProbeNote = 'stock_not_probed:no_giga_creds(runner remains gate)';
+  }
+
   // ── Tally ──────────────────────────────────────────────────────────────────
   const tally = (b: string) => cands.filter(c => c.bucket === b).length;
   const safeSingletons = cands.filter(c => c.bucket === 'SAFE_SINGLETON');
@@ -261,8 +325,10 @@ type Cand = {
   const risks: string[] = [];
   if (tally('HOLD_PHASE2') > 0) risks.push(`phase2:${tally('HOLD_PHASE2')}(dup-color/size-config/fragmented)`);
   if (tally('HOLD_PRICE') > 0) risks.push(`price:${tally('HOLD_PRICE')}(per-color cost differs)`);
+  if (tally('HOLD_INVENTORY') > 0) risks.push(`inventory:${tally('HOLD_INVENTORY')}(no current stock)`);
   if (tally('HOLD_QUALITY') > 0) risks.push(`quality:${tally('HOLD_QUALITY')}(brand/marketing/lowprice/other)`);
   if (tally('REJECT') > 0) risks.push(`reject:${tally('REJECT')}(junk/no-image/no-price)`);
+  if (stockProbeNote) risks.push(stockProbeNote);
 
   // ── Write full reports ───────────────────────────────────────────────────
   fs.mkdirSync(REPORT_DIR, { recursive: true });
@@ -276,8 +342,10 @@ type Cand = {
       SAFE_CLEAN_COLOR_VARIANT: safeVariantSkus.length,
       SAFE_VARIANT_FAMILIES: safeVariantFamilies.length,
       HOLD_PRICE: tally('HOLD_PRICE'), HOLD_PHASE2: tally('HOLD_PHASE2'),
+      HOLD_INVENTORY: tally('HOLD_INVENTORY'),
       HOLD_QUALITY: tally('HOLD_QUALITY'), REJECT: tally('REJECT'),
     },
+    stock_probe: stockProbeNote || (gigaReady() ? 'probed' : 'skipped'),
     proposed_batch: { skus: batch, sku_count: batch.length, card_count: cards, families: proposedFamilies },
     safe_variant_families: safeVariantFamilies,
     candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title })),
@@ -292,6 +360,7 @@ type Cand = {
     `- SAFE_SINGLETON: ${safeSingletons.length}`,
     `- SAFE_CLEAN_COLOR_VARIANT: ${safeVariantSkus.length} skus / ${safeVariantFamilies.length} families`,
     `- HOLD_PRICE: ${tally('HOLD_PRICE')}`, `- HOLD_PHASE2: ${tally('HOLD_PHASE2')}`,
+    `- HOLD_INVENTORY: ${tally('HOLD_INVENTORY')}`,
     `- HOLD_QUALITY: ${tally('HOLD_QUALITY')}`, `- REJECT: ${tally('REJECT')}`, '');
   md.push('## Proposed batch', `- skus (${batch.length}): ${batch.join(',') || '(none)'}`, `- card delta: ${cards}`, '');
   md.push('## Safe variant families');
@@ -312,8 +381,10 @@ type Cand = {
     console.log(`safe_variant_skus=${safeVariantSkus.length}`);
     console.log(`hold_price=${tally('HOLD_PRICE')}`);
     console.log(`hold_phase2=${tally('HOLD_PHASE2')}`);
+    console.log(`hold_inventory=${tally('HOLD_INVENTORY')}`);
     console.log(`hold_quality=${tally('HOLD_QUALITY')}`);
     console.log(`reject=${tally('REJECT')}`);
+    console.log(`stock_probe=${stockProbeNote || (gigaReady() ? 'probed' : 'skipped')}`);
     console.log(`proposed_batch_skus=${batch.length}`);
     console.log(`expected_sellable_delta=${batch.length}`);
     console.log(`expected_app_card_delta=${cards}`);
