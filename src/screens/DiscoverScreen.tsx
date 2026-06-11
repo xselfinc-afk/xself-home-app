@@ -59,6 +59,10 @@ export default function DiscoverScreen({ navigation, route }: any) {
     if (cat) setSelectedLevel1(cat);
   }, [route?.params?.initialCategory]);
   const [products, setProducts] = useState<Product[]>([]);
+  // Full (non-deduped) sellable pool + per-family representative, used ONLY by search so that
+  // typing any sibling SKU finds the family. The browse grid still renders `products` (deduped).
+  const [searchAllItems, setSearchAllItems] = useState<Product[]>([]);
+  const [familyRep, setFamilyRep] = useState<Record<string, string>>({});
   const [caAvailableIds, setCaAvailableIds] = useState<Set<string>>(new Set());
   const [filterVisible, setFilterVisible] = useState(false);
   const [sortBy, setSortBy] = useState('Recommended');
@@ -131,6 +135,13 @@ export default function DiscoverScreen({ navigation, route }: any) {
       });
       const representativeIds = new Set([...familySeen.values()].map(v => v.id));
       const deduped = mapped.filter(p => representativeIds.has(p.id));
+
+      // Search pool = ALL siblings (so any sibling SKU is matchable); plus family→representative
+      // map to collapse search matches back to one card per family.
+      const repByFamily: Record<string, string> = {};
+      for (const [key, v] of familySeen) repByFamily[key] = v.id;
+      setSearchAllItems(mapped.filter(p => p.images.length > 0));
+      setFamilyRep(repByFamily);
 
       const first10FamilyKeys = [...familySeen.keys()].slice(0, 10);
       console.log('[Discover] after dedup:', deduped.length, 'families from', mapped.length, 'rows');
@@ -224,10 +235,24 @@ export default function DiscoverScreen({ navigation, route }: any) {
   };
 
   const filtered = useMemo(() => {
-    let f = products.filter(p => {
-      if (!search) return true;
-      return matchesSearch(p, search);
-    });
+    let f: Product[];
+    if (!search) {
+      f = products;
+    } else {
+      // Match over the FULL pool so any sibling SKU surfaces the family, then collapse matches to
+      // ONE representative card per family (preserving order). Mirrors the Home search fix.
+      const byId = new Map(searchAllItems.map(p => [p.id, p] as const));
+      const seen = new Set<string>();
+      f = [];
+      for (const p of searchAllItems) {
+        if (!matchesSearch(p, search)) continue;
+        const key = p.product_family_key || p.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const repId = familyRep[key];
+        f.push((repId && byId.get(repId)) || p);
+      }
+    }
 
     if (selectedLevel1 !== 'All') {
       f = f.filter(p => {
@@ -289,6 +314,8 @@ export default function DiscoverScreen({ navigation, route }: any) {
     return f;
   }, [
     products,
+    searchAllItems,
+    familyRep,
     search,
     selectedLevel1,
     selectedPriceRanges,
