@@ -20,7 +20,10 @@ const FAMILY_SELECT =
   // extra fields so adaptStandardizedRow() can build a COMPLETE per-sibling Product (variant-
   // specific title/specs/images), not just the thin variant used by the color selector.
   'product_title_display, optimized_title, sku_search, category_label, category_priority, ' +
-  'is_new_arrival, new_arrival_added_at, new_arrival_source, ' +
+  // NOTE: new_arrival_added_at is NOT a column on the sellable_products view — including it made
+  // the whole select 400 and loadProductDetail/loadProductFamily return null, so Home/Discover
+  // detail (whose list product has only the primary image) never upgraded to the full gallery.
+  'is_new_arrival, new_arrival_source, ' +
   'primary_image_blurhash, primary_image_w, primary_image_h, primary_image_aspect, primary_image_mirror_path';
 
 /**
