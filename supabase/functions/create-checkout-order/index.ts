@@ -511,14 +511,6 @@ serve(async (req: Request) => {
     stripeParams.append('metadata[order_id]',          orderId);
     stripeParams.append('metadata[fulfillment_method]', fulfillmentMethod);
     if (guestToken) stripeParams.append('metadata[guest_token]', guestToken);
-    // Carry the customer name on the PaymentIntent metadata (covers card + Affirm) so the
-    // paid-order Crisp notification can show who ordered — without persisting a new orders
-    // column. Only the explicitly-provided name is sent; when absent the notification renders
-    // "not available" rather than an email-derived guess.
-    {
-      const customerNameMeta = (customerName ?? '').trim();
-      if (customerNameMeta) stripeParams.append('metadata[customer_name]', customerNameMeta.slice(0, 200));
-    }
     if (customer.email) stripeParams.append('receipt_email', customer.email);
 
     const keyMode = STRIPE_SECRET_KEY.startsWith('sk_live') ? 'LIVE' : 'test';

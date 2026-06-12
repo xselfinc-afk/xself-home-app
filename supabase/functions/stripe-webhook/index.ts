@@ -20,7 +20,6 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { notifyPaidOrder } from './crispNotify.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -172,16 +171,6 @@ serve(async (req: Request) => {
 
     const paidAtIso = eventCreated ? new Date(eventCreated * 1000).toISOString() : new Date().toISOString();
 
-    // Idempotency for the Crisp notification only: this branch intentionally rewrites
-    // the paid fields on Stripe retries, so read the prior status to fire the
-    // notification on the FIRST paid transition exactly once.
-    const { data: priorLink } = await supabase
-      .from('admin_custom_payment_links')
-      .select('status')
-      .eq('stripe_payment_link_id', paymentLink)
-      .limit(1);
-    const linkWasPaid = priorLink?.[0]?.status === 'paid';
-
     const { data: updated, error: updErr } = await supabase
       .from('admin_custom_payment_links')
       .update({
@@ -208,15 +197,6 @@ serve(async (req: Request) => {
     }
 
     console.log('[Webhook] admin link paid:', paymentLink, '→ row', updated[0]?.id, '· session', sessionId);
-
-    // Internal Crisp notification on the first paid transition (non-fatal).
-    const adminOrderId = updated[0]?.order_id as string | undefined;
-    if (adminOrderId && !linkWasPaid) {
-      const sessionName = ((session?.customer_details as Record<string, unknown> | undefined)?.name as string | undefined) ?? null;
-      await notifyPaidOrder(supabase, adminOrderId, sessionName).catch((e) =>
-        console.error('[Webhook] Crisp order notify failed (non-fatal):', e instanceof Error ? e.message : e));
-    }
-
     return new Response(
       JSON.stringify({
         received:        true,
@@ -329,13 +309,6 @@ serve(async (req: Request) => {
     }
 
     console.log('[Webhook] Order confirmed:', orderId, '→', newStatus);
-
-    // Internal Crisp notification — fires exactly once because the already-paid
-    // guard above no-ops on any duplicate succeeded event. Non-fatal: a Crisp
-    // failure must never 500 the webhook (the order is already confirmed).
-    await notifyPaidOrder(supabase, orderId, metadata.customer_name ?? null).catch((e) =>
-      console.error('[Webhook] Crisp order notify failed (non-fatal):', e instanceof Error ? e.message : e));
-
     return new Response(
       JSON.stringify({ received: true, action: 'confirmed', orderId, status: newStatus }),
       { status: 200 },
