@@ -298,6 +298,14 @@ serve(async (req: Request) => {
         payment_status:            'paid',
         stripe_payment_intent_id:  paymentIntentId,
         payment_intent_id:         paymentIntentId,
+        // Admin-approval gate (Phase 1 of GIGA Auto-Purchase workflow):
+        // paid orders enter the admin review queue. supplier_sync_status is
+        // explicitly set to 'not_submitted' to guard against any pre-existing
+        // value on the row from prior writes. Neither field triggers a GIGA
+        // call here — the actual submission requires explicit admin approval
+        // in a separate Phase 2 edge function.
+        admin_approval_status:     'pending',
+        supplier_sync_status:      'not_submitted',
         updated_at:                new Date().toISOString(),
       })
       .eq('order_id', orderId);
