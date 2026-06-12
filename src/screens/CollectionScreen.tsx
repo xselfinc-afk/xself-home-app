@@ -65,18 +65,9 @@ export default function CollectionScreen({ route, navigation }: any) {
         catch { return []; }
       });
 
-      // Family dedup — same logic as Home / Discover / ProductDetail
-      const familySeen = new Map<string, { id: string; hasImage: boolean }>();
-      (data as any[]).forEach((r: any) => {
-        const fk: string = r.product_family_key || r.supplier_product_id;
-        const hasImage = !!r.primary_image;
-        const existing = familySeen.get(fk);
-        if (!existing || (!existing.hasImage && hasImage)) {
-          familySeen.set(fk, { id: r.supplier_product_id, hasImage });
-        }
-      });
-      const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      const deduped = mapped.filter(p => representativeIds.has(p.id));
+      // Independent-SKU mode: every sellable SKU is its own card — no family collapse.
+      // `deduped` is an alias for the full mapped list (downstream filter code unchanged).
+      const deduped = mapped;
 
       // Client-side: require originalPrice > price and a valid image
       const discounted = deduped.filter(

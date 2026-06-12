@@ -23,7 +23,7 @@ import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
-import { loadProductFamily } from './src/services/productFamilyService';
+import { loadProductDetail } from './src/services/productFamilyService';
 import { LIST_SELECT } from './src/services/detailProductAdapter';
 import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
@@ -578,21 +578,11 @@ function HomeScreen({ navigation }) {
           familyPrices.set(key, arr);
         }
       });
-      const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      // Map representative id → its family key (to look up the aggregate).
-      const idToKey = new Map<string, string>();
-      (rows as any[]).forEach((r: any) => { idToKey.set(r.supplier_product_id, r.product_family_key || r.supplier_product_id); });
-      return mapped
-        .filter(p => representativeIds.has(p.id))
-        .map(p => {
-          const prices = familyPrices.get(idToKey.get(p.id) ?? '') ?? [];
-          if (prices.length > 1) {
-            const min = Math.min(...prices);
-            const max = Math.max(...prices);
-            if (max > min) return { ...p, familyMinPrice: min, familyHasPriceRange: true };
-          }
-          return p;
-        });
+      // Independent-SKU mode: every sellable supplier_product_id is its own card — no family
+      // collapse. (familySeen / familyPrices above are now unused but left in place to keep the
+      // diff minimal; product_family_key remains in the data model for backend grouping.)
+      void familySeen; void familyPrices;
+      return mapped;
     }
 
     async function bootstrap() {
@@ -1229,24 +1219,23 @@ function ProductDetailScreen({ route, navigation }) {
   }, []);
 
   // Load full product family when navigated with a family key
+  // Independent-SKU detail: load the EXACT tapped supplier_product_id's full row (incl.
+  // gallery_images_json) so the carousel shows the complete gallery. No family collapse and
+  // no color selector — each SKU is its own product. The list-card product only carries the
+  // primary image (LIST_SELECT omits gallery_images_json), so this fetch is what restores the
+  // full gallery on detail.
   React.useEffect(() => {
-    if (!familyKey) return;
-    loadProductFamily(familyKey).then(fullProduct => {
+    const skuId = initialProduct?.id;
+    if (!skuId) return;
+    loadProductDetail(skuId).then(fullProduct => {
       if (!fullProduct) return;
       setProduct(fullProduct);
-      // Sync the selection to the tapped SKU (or the representative) so the initial
-      // selectedVariant resolves to that concrete sibling — not a stale color carried
-      // over from the list-card product, which would mismatch after the family load.
-      const tappedId = initialProduct?.id;
-      const match =
-        fullProduct.variants?.find((v: ProductVariant) => v.supplierProductId === tappedId) ??
-        fullProduct.variants?.find((v: ProductVariant) => v.supplierProductId === fullProduct.id) ??
-        fullProduct.variants?.[0];
-      if (match) { setSelectedColor(match.color); setSelectedSize(match.size); }
+      const v = fullProduct.variants?.[0];
+      if (v) { setSelectedColor(v.color); setSelectedSize(v.size); }
       setActiveImage(0);
       carouselRef.current?.scrollTo({ x: 0, animated: false });
     });
-  }, [familyKey]);
+  }, [initialProduct?.id]);
 
   // Derived: resolved SKU
   // Never leave a multi-variant product with a null selection: if the current
@@ -1970,20 +1959,10 @@ function SearchScreen({ navigation, route }) {
   }, [imageUri]);
 
   const activeQuery = imageUri ? generatedQuery : query;
-  const matchedRows = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
-  // Collapse matches to ONE card per family (the representative), preserving match order. Matching
-  // runs over the FULL pool, so any sibling SKU surfaces the family; the card shown is the
-  // representative, which on tap loads the whole family.
-  const byId = new Map(searchPool.map(p => [p.id, p] as const));
-  const seenFamilies = new Set<string>();
-  const results: Product[] = [];
-  for (const p of matchedRows) {
-    const key = p.product_family_key || p.id;
-    if (seenFamilies.has(key)) continue;
-    seenFamilies.add(key);
-    const repId = familyRep[key];
-    results.push((repId && byId.get(repId)) || p);
-  }
+  // Independent-SKU mode: every matching SKU is its own result — no family collapse. Searching
+  // any SKU returns that exact product. (familyRep retained but unused — backend grouping only.)
+  void familyRep;
+  const results: Product[] = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
 
   if (__DEV__ && !imageUri) {
     const qNorm = normalizeForSkuMatch(query);

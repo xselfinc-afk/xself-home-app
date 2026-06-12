@@ -133,11 +133,9 @@ export default function DiscoverScreen({ navigation, route }: any) {
           familySeen.set(key, { id: r.supplier_product_id, hasImage });
         }
       });
-      const representativeIds = new Set([...familySeen.values()].map(v => v.id));
-      const deduped = mapped.filter(p => representativeIds.has(p.id));
-
-      // Search pool = ALL siblings (so any sibling SKU is matchable); plus family→representative
-      // map to collapse search matches back to one card per family.
+      // Independent-SKU mode: every sellable SKU is its own card — no family collapse.
+      // `deduped` is now an alias for the full mapped list (downstream facet/log code unchanged).
+      const deduped = mapped;
       const repByFamily: Record<string, string> = {};
       for (const [key, v] of familySeen) repByFamily[key] = v.id;
       setSearchAllItems(mapped.filter(p => p.images.length > 0));
@@ -235,24 +233,12 @@ export default function DiscoverScreen({ navigation, route }: any) {
   };
 
   const filtered = useMemo(() => {
-    let f: Product[];
-    if (!search) {
-      f = products;
-    } else {
-      // Match over the FULL pool so any sibling SKU surfaces the family, then collapse matches to
-      // ONE representative card per family (preserving order). Mirrors the Home search fix.
-      const byId = new Map(searchAllItems.map(p => [p.id, p] as const));
-      const seen = new Set<string>();
-      f = [];
-      for (const p of searchAllItems) {
-        if (!matchesSearch(p, search)) continue;
-        const key = p.product_family_key || p.id;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const repId = familyRep[key];
-        f.push((repId && byId.get(repId)) || p);
-      }
-    }
+    // Independent-SKU mode: every matching SKU is its own result — no family collapse. Searching
+    // any SKU returns that exact product. (familyRep retained for backend grouping only.)
+    void familyRep;
+    let f: Product[] = search
+      ? searchAllItems.filter(p => matchesSearch(p, search))
+      : products;
 
     if (selectedLevel1 !== 'All') {
       f = f.filter(p => {

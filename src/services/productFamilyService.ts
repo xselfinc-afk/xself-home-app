@@ -39,6 +39,26 @@ function rowImages(r: {
 }
 
 /**
+ * Independent-SKU detail loader. Loads ONE sellable SKU's full row (including
+ * gallery_images_json) and adapts it to a Product with the COMPLETE image gallery.
+ * Used by ProductDetailScreen so the detail opens exactly the tapped supplier_product_id,
+ * shows all its images, and renders no family color selector (adaptStandardizedRow builds a
+ * single self-variant → the picker's >1 guard hides it). product.id === supplier_product_id,
+ * so Add to Cart / Buy Now / Checkout use the exact tapped SKU.
+ */
+export async function loadProductDetail(supplierProductId: string): Promise<Product | null> {
+  const { data, error } = await supabase
+    .from('sellable_products')
+    .select(FAMILY_SELECT)
+    .eq('supplier_product_id', supplierProductId)
+    .limit(1);
+  if (error) { console.warn('[ProductDetail] load error:', error.message); return null; }
+  if (!data || data.length === 0) return null;
+  try { return adaptStandardizedRow(data[0] as any); }
+  catch (e) { console.warn('[ProductDetail] adapt error:', e instanceof Error ? e.message : e); return null; }
+}
+
+/**
  * Loads all rows with the given product_family_key and merges them into one
  * Product with a real ProductVariant per color.
  *
