@@ -335,6 +335,26 @@ serve(async (req: Request) => {
       console.error('[Webhook] order_notifications enqueue threw (non-fatal):', e instanceof Error ? e.message : e);
     }
 
+    // ── Enqueue customer order-confirmation (Phase C4.1 — ENQUEUE ONLY, no send) ──
+    // A separate processor drains this queue later; send-customer-order-email
+    // resolves the recipient from orders.customer_email at send time (so we do NOT
+    // read/store it here). STRICTLY NON-FATAL: the order is already confirmed paid;
+    // a queue failure must never change order status or cause Stripe to retry.
+    // ON CONFLICT (order_id) DO NOTHING dedupes duplicate Stripe deliveries.
+    try {
+      const { error: custErr } = await supabase
+        .from('customer_order_emails')
+        .upsert(
+          { order_id: orderId, status: 'pending' },
+          { onConflict: 'order_id', ignoreDuplicates: true },
+        );
+      if (custErr) {
+        console.error('[Webhook] customer_order_emails enqueue failed (non-fatal):', custErr.message);
+      }
+    } catch (e) {
+      console.error('[Webhook] customer_order_emails enqueue threw (non-fatal):', e instanceof Error ? e.message : e);
+    }
+
     return new Response(
       JSON.stringify({ received: true, action: 'confirmed', orderId, status: newStatus }),
       { status: 200 },
