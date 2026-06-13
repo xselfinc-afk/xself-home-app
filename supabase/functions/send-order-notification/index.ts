@@ -222,7 +222,8 @@ function buildEmailHtml(p: {
 }): string {
   const { order, enriched, orderNumber, customerName, customerPhone, customerAddress, isPickup, pickupDetail, totalStr } = p;
   const esc = escapeHtml;
-  const rows = enriched.map((it, idx) => {
+  // One card per item — image (clickable, no raw URL text) + details + line total.
+  const rows = enriched.map((it) => {
     const title = esc(it.product_title || it.title || '(untitled)');
     const qty   = Number(it.quantity ?? 0);
     const unit  = money(it.unit_price_cents);
@@ -230,52 +231,96 @@ function buildEmailHtml(p: {
     const sku   = esc(it.supplier_sku || '(no sku)');
     const pid   = esc(it.product_id || '(no product_id)');
     const color = esc(it.color || '—');
-    const img = (it.image && /^https?:\/\//i.test(it.image))
-      ? `<img src="${esc(it.image)}" alt="${title}" width="120" style="width:120px;height:auto;border-radius:8px;display:block;" />`
-        + `<div style="font-size:11px;color:#888;word-break:break-all;margin-top:4px;">${esc(it.image)}</div>`
-      : '<div style="font-size:12px;color:#aaa;">(no image)</div>';
-    return `<tr style="border-top:1px solid #eee;">`
-      + `<td style="padding:12px;vertical-align:top;width:140px;">${img}</td>`
-      + `<td style="padding:12px;vertical-align:top;">`
-      + `<div style="font-weight:600;font-size:15px;">${idx + 1}. ${title}</div>`
-      + `<div style="font-size:13px;color:#555;margin-top:4px;">SKU: ${sku}<br/>supplier_product_id: ${pid}<br/>Color: ${color} &nbsp;|&nbsp; Qty: ${qty}</div>`
-      + `<div style="font-size:13px;color:#333;margin-top:4px;">Unit: ${unit} &nbsp;|&nbsp; Subtotal: ${sub}</div>`
-      + `</td></tr>`;
+    const hasImg = !!(it.image && /^https?:\/\//i.test(it.image));
+    const imgCell = hasImg
+      ? `<a href="${esc(it.image as string)}" target="_blank" style="text-decoration:none;">`
+        + `<img src="${esc(it.image as string)}" alt="${title}" width="84" height="84" style="width:84px;height:84px;object-fit:cover;border-radius:10px;display:block;border:1px solid #ECE7DA;" /></a>`
+      : `<div style="width:84px;height:84px;border-radius:10px;background:#F3F1EB;border:1px solid #ECE7DA;color:#b4ac99;font-size:10px;text-align:center;line-height:84px;">No image</div>`;
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #ECE7DA;border-radius:14px;margin:0 0 10px;">`
+      + `<tr>`
+      + `<td valign="top" style="padding:14px;width:84px;">${imgCell}</td>`
+      + `<td valign="top" style="padding:14px 16px 14px 2px;">`
+      + `<div style="font-size:15px;font-weight:600;color:#2b2b2b;line-height:1.35;">${title}</div>`
+      + `<div style="margin-top:6px;font-size:13px;color:#7a7568;line-height:1.6;">`
+      + `Color: <span style="color:#2b2b2b;">${color}</span>&nbsp;&nbsp;·&nbsp;&nbsp;Qty: <span style="color:#2b2b2b;">${qty}</span><br/>`
+      + `SKU: <span style="color:#2b2b2b;">${sku}</span><br/>`
+      + `Supplier ID: <span style="color:#2b2b2b;">${pid}</span>`
+      + `</div>`
+      + `<div style="margin-top:10px;font-size:14px;color:#2b2b2b;">`
+      + `${unit} <span style="color:#9a9384;">× ${qty}</span> = <strong style="color:#1d1d1f;">${sub}</strong>`
+      + `</div>`
+      + `</td></tr></table>`;
   }).join('');
 
-  // Fulfillment block: Pickup (warehouse + window + pickup-pass instruction) or Delivery (address).
-  const fulfillmentHtml = isPickup
-    ? `<h2 style="font-size:16px;margin:20px 0 8px;">Pickup</h2>`
-      + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
-      + `<tr><td style="padding:12px 16px;font-size:14px;">`
-      + `<span style="white-space:pre-line;color:#444;">${esc(pickupDetail)}</span></td></tr>`
-      + `<tr><td style="padding:12px 16px;font-size:13px;border-top:1px solid #eee;color:#8a6d00;background:#FAF6E6;">`
-      + `📌 ${esc(PICKUP_INSTRUCTION)}</td></tr></table>`
-    : `<h2 style="font-size:16px;margin:20px 0 8px;">Delivery</h2>`
-      + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
-      + `<tr><td style="padding:12px 16px;font-size:14px;">`
-      + `<strong>Delivery address:</strong><br/><span style="white-space:pre-line;color:#444;">${esc(customerAddress)}</span></td></tr></table>`;
+  const fulfillmentLabel = isPickup ? 'Pickup' : 'Delivery';
 
-  return `<!doctype html><html><body style="margin:0;background:#F3F1EB;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;">`
-    + `<div style="max-width:640px;margin:0 auto;padding:24px;">`
-    + `<h1 style="font-size:20px;margin:0 0 4px;">🛎️ New paid order</h1>`
-    + `<div style="font-size:14px;color:#555;margin-bottom:16px;">`
-    + `${orderNumber ? `<strong>${esc(orderNumber)}</strong> · ` : ''}<span style="color:#888;">${esc(order.order_id)}</span></div>`
-    + `<h2 style="font-size:16px;margin:0 0 8px;">Customer</h2>`
-    + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
-    + `<tr><td style="padding:12px 16px;font-size:14px;line-height:1.5;">`
-    + `<strong>Name:</strong> ${esc(customerName)}<br/>`
-    + `<strong>Email:</strong> ${esc(order.customer_email || '(none)')}<br/>`
-    + `<strong>Phone:</strong> ${esc(customerPhone || '(none)')}<br/>`
-    + `<strong>Address:</strong><br/><span style="white-space:pre-line;color:#444;">${esc(customerAddress)}</span></td></tr></table>`
-    + fulfillmentHtml
-    + `<h2 style="font-size:16px;margin:20px 0 8px;">Items (${enriched.length})</h2>`
-    + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
-    + `${rows || '<tr><td style="padding:12px;color:#aaa;">(no items found)</td></tr>'}</table>`
-    + `<div style="margin-top:12px;padding:12px 16px;background:#fff;border-radius:12px;font-size:16px;">`
-    + `<strong>Order total:</strong> ${esc(totalStr)}</div>`
-    + `<div style="font-size:11px;color:#aaa;margin-top:16px;">Xself Home · internal order notification</div>`
-    + `</div></body></html>`;
+  // Reusable inline-styled fragments (email-safe: tables + inline CSS, no external CSS/JS).
+  const cardStyle  = 'background:#ffffff;border:1px solid #ECE7DA;border-radius:14px;';
+  const labelStyle = 'font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#9a9384;margin:0 0 10px;';
+  const paidPill   = `<span style="display:inline-block;padding:2px 10px;border-radius:999px;background:#E7F4EC;color:#1B7F3B;font-size:12px;font-weight:600;">Paid</span>`;
+
+  const summaryRows =
+      `<tr><td style="padding:6px 0;font-size:13px;color:#8a8579;">Order number</td><td style="padding:6px 0;font-size:14px;color:#2b2b2b;text-align:right;font-weight:600;">${orderNumber ? esc(orderNumber) : '—'}</td></tr>`
+    + `<tr><td style="padding:6px 0;font-size:13px;color:#8a8579;">Payment</td><td style="padding:6px 0;text-align:right;">${paidPill}</td></tr>`
+    + `<tr><td style="padding:6px 0;font-size:13px;color:#8a8579;">Fulfillment</td><td style="padding:6px 0;font-size:14px;color:#2b2b2b;text-align:right;">${fulfillmentLabel}</td></tr>`
+    + `<tr><td style="padding:8px 0 0;font-size:13px;color:#8a8579;border-top:1px solid #F0ECE0;">Total</td><td style="padding:8px 0 0;font-size:18px;color:#1d1d1f;text-align:right;font-weight:700;border-top:1px solid #F0ECE0;">${esc(totalStr)}</td></tr>`;
+
+  const fulfillmentCard = isPickup
+    ? `<div style="${labelStyle}">Pickup</div>`
+      + `<div style="font-size:14px;color:#444;line-height:1.7;white-space:pre-line;">${esc(pickupDetail)}</div>`
+      + `<div style="margin-top:12px;padding:12px 14px;background:#FBF4DD;border:1px solid #F0E2B6;border-radius:10px;font-size:13px;color:#7a5c00;line-height:1.55;">📌 ${esc(PICKUP_INSTRUCTION)}</div>`
+    : `<div style="${labelStyle}">Delivery</div>`
+      + `<div style="font-size:14px;color:#444;line-height:1.7;white-space:pre-line;">${esc(customerAddress)}</div>`;
+
+  const card = (inner: string): string =>
+    `<tr><td style="padding:0 0 16px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="${cardStyle}"><tr><td style="padding:18px;">${inner}</td></tr></table></td></tr>`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>`
+    + `<body style="margin:0;padding:0;background:#F3F1EB;">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F1EB;">`
+    + `<tr><td align="center" style="padding:24px 12px;">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">`
+
+    // Header
+    + `<tr><td style="text-align:center;padding:4px 8px 18px;">`
+    + `<div style="font-size:12px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#CA8A04;">Xself Home</div>`
+    + `<div style="font-size:24px;font-weight:700;color:#1d1d1f;margin-top:8px;">New Paid Order</div>`
+    + `<div style="font-size:15px;color:#2b2b2b;margin-top:8px;">${orderNumber ? `<strong>${esc(orderNumber)}</strong>` : ''} &nbsp;·&nbsp; <strong style="color:#CA8A04;">${esc(totalStr)}</strong></div>`
+    + `<div style="font-size:11px;color:#b4ac99;margin-top:6px;">${esc(order.order_id)}</div>`
+    + `</td></tr>`
+
+    // Order summary card
+    + card(`<div style="${labelStyle}">Order summary</div>`
+        + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${summaryRows}</table>`)
+
+    // Customer card
+    + card(`<div style="${labelStyle}">Customer</div>`
+        + `<div style="font-size:16px;font-weight:600;color:#1d1d1f;">${esc(customerName)}</div>`
+        + `<div style="margin-top:6px;font-size:14px;"><a href="mailto:${esc(order.customer_email || '')}" style="color:#CA8A04;text-decoration:none;">${esc(order.customer_email || '(none)')}</a></div>`
+        + `<div style="font-size:14px;color:#2b2b2b;">${esc(customerPhone || '(none)')}</div>`
+        + `<div style="margin-top:8px;font-size:14px;color:#6b675c;line-height:1.6;white-space:pre-line;">${esc(customerAddress)}</div>`)
+
+    // Fulfillment card (Pickup or Delivery)
+    + card(fulfillmentCard)
+
+    // Items
+    + `<tr><td style="padding:0 0 6px;"><div style="${labelStyle}">Items (${enriched.length})</div>`
+    + `${rows || `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="${cardStyle}"><tr><td style="padding:16px;color:#9a9384;font-size:14px;">(no items found)</td></tr></table>`}`
+    + `</td></tr>`
+
+    // Total strip
+    + `<tr><td style="padding:0 0 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="${cardStyle}"><tr>`
+    + `<td style="padding:16px 18px;font-size:14px;color:#8a8579;">Order total</td>`
+    + `<td style="padding:16px 18px;font-size:20px;font-weight:700;color:#1d1d1f;text-align:right;">${esc(totalStr)}</td>`
+    + `</tr></table></td></tr>`
+
+    // Footer
+    + `<tr><td style="text-align:center;padding:20px 12px 4px;font-size:11px;color:#b4ac99;line-height:1.7;">`
+    + `Xself Home · Internal order notification<br/>`
+    + `Automated internal alert — not sent to the customer.`
+    + `</td></tr>`
+
+    + `</table></td></tr></table></body></html>`;
 }
 
 // Sends the email via Resend's HTTPS API. Returns the Resend message id, or
