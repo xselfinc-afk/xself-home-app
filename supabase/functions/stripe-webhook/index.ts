@@ -322,7 +322,7 @@ serve(async (req: Request) => {
         .upsert(
           {
             order_id:      orderId,
-            channel:       'crisp',
+            channel:       'email',
             status:        'pending',
             customer_name: metadata.customer_name ?? null,
           },
