@@ -309,6 +309,32 @@ serve(async (req: Request) => {
     }
 
     console.log('[Webhook] Order confirmed:', orderId, '→', newStatus);
+
+    // ── Enqueue paid-order notification (Phase 2 — ENQUEUE ONLY, no send here) ──
+    // A separate sender Edge Function (Phase 3+) reads pending rows and delivers.
+    // STRICTLY NON-FATAL: the order is already confirmed; a queue failure must never
+    // change order status or cause Stripe to retry. We upsert ON CONFLICT DO NOTHING
+    // keyed on the order_id PK, so duplicate Stripe deliveries can't create duplicate
+    // jobs and can't reset a row the sender already advanced to 'sent'/'failed'.
+    try {
+      const { error: notifyErr } = await supabase
+        .from('order_notifications')
+        .upsert(
+          {
+            order_id:      orderId,
+            channel:       'crisp',
+            status:        'pending',
+            customer_name: metadata.customer_name ?? null,
+          },
+          { onConflict: 'order_id', ignoreDuplicates: true },
+        );
+      if (notifyErr) {
+        console.error('[Webhook] order_notifications enqueue failed (non-fatal):', notifyErr.message);
+      }
+    } catch (e) {
+      console.error('[Webhook] order_notifications enqueue threw (non-fatal):', e instanceof Error ? e.message : e);
+    }
+
     return new Response(
       JSON.stringify({ received: true, action: 'confirmed', orderId, status: newStatus }),
       { status: 200 },
