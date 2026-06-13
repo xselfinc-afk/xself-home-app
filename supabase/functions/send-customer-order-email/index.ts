@@ -42,7 +42,7 @@ const RESEND_API_KEY     = (Deno.env.get('RESEND_API_KEY')      ?? '').trim();
 const CUSTOMER_EMAIL_FROM = (Deno.env.get('CUSTOMER_EMAIL_FROM') ?? '').trim()
   || (Deno.env.get('NOTIFY_EMAIL_FROM') ?? '').trim();
 const SUPPORT_REPLY_TO   = (Deno.env.get('SUPPORT_REPLY_TO')     ?? '').trim();
-const SUPPORT_EMAIL      = (Deno.env.get('SUPPORT_EMAIL')        ?? 'support@xself.com').trim();
+const SUPPORT_EMAIL      = (Deno.env.get('SUPPORT_EMAIL')        ?? 'info@xselfhome.com').trim();
 const RESEND_API_BASE    = 'https://api.resend.com';
 
 const PICKUP_INSTRUCTION =
@@ -216,7 +216,7 @@ function buildCustomerHtml(p: {
     + `</tr></table></td></tr>`
 
     // Support note
-    + card(`<div style="font-size:14px;color:#444;line-height:1.6;">Questions about your order? Just reply to this email or contact us at `
+    + card(`<div style="font-size:14px;color:#444;line-height:1.6;">Questions about your order? Email us at `
         + `<a href="mailto:${esc(SUPPORT_EMAIL)}" style="color:#CA8A04;text-decoration:none;">${esc(SUPPORT_EMAIL)}</a>.</div>`)
 
     // Footer
