@@ -1,10 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// send-order-notification — Phase 3 MANUAL internal order-notification sender.
+// send-order-notification — MANUAL internal order-notification sender (Phase 3 + 5).
 //
 // A standalone, manually-invoked Edge Function that delivers a paid-order
-// notification to the team's Crisp inbox. It is the "sender" half of the queue
-// whose "enqueue" half lives in stripe-webhook (Phase 2): the webhook writes a
-// pending row into order_notifications; THIS function reads that row and sends.
+// notification on the row's channel. It is the "sender" half of the queue whose
+// "enqueue" half lives in stripe-webhook (Phase 2): the webhook writes a pending
+// row into order_notifications; THIS function reads that row and sends.
+//
+// CHANNEL-AWARE (order_notifications.channel):
+//   • 'email' (Phase 5, preferred) → sends an HTML email via Resend to NOTIFY_EMAIL_TO.
+//   • 'crisp' (Phase 3, optional fallback) → posts operator stealth notes to Crisp.
+//   • anything else / null → defaults to 'crisp'.
 //
 // MANUAL ONLY — there is intentionally NO auto-trigger, NO cron, NO database
 // webhook wired to this function. You invoke it yourself with one order_id.
@@ -17,9 +22,9 @@
 //     does NOT resend.
 //   • Loads orders + order_items, enriches each item with product image/title/color
 //     from standardized_products (best-effort; missing rows are tolerated).
-//   • Creates a fresh Crisp conversation and posts: one file message per item image
-//     (operator, stealth) + one text summary note (operator, stealth).
-//   • Success → order_notifications.status='sent', sent_at=now().
+//   • Sends on the row's channel: email via Resend (HTML w/ product images), or a
+//     fresh Crisp conversation with one file message per item image + a text note.
+//   • Success → order_notifications.status='sent', sent_at=now(), last_error=null.
 //   • Failure → order_notifications.attempts=attempts+1, status='failed', last_error=<msg>.
 //
 // HARD GUARANTEES:
@@ -52,6 +57,12 @@ const CRISP_TIER = ((Deno.env.get('CRISP_TOKEN_TIER') ?? 'website').trim() || 'w
 
 const CRISP_API_BASE = 'https://api.crisp.chat/v1';
 const MAX_IMAGE_MESSAGES = 8; // cap file-message posts so a large order can't spam the inbox
+
+// Resend (email channel) secrets — set via Supabase function secrets.
+const RESEND_API_KEY    = (Deno.env.get('RESEND_API_KEY')    ?? '').trim();
+const NOTIFY_EMAIL_TO   = (Deno.env.get('NOTIFY_EMAIL_TO')   ?? '').trim();
+const NOTIFY_EMAIL_FROM = (Deno.env.get('NOTIFY_EMAIL_FROM') ?? '').trim();
+const RESEND_API_BASE   = 'https://api.resend.com';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
@@ -141,6 +152,7 @@ function renderPickup(plan: Record<string, unknown> | null): string {
 
 interface OrderRow {
   order_id: string;
+  order_number: string | null;
   customer_email: string | null;
   customer_phone: string | null;
   fulfillment_method: string | null;
@@ -163,6 +175,86 @@ interface EnrichedItem extends ItemRow {
   image: string | null;
 }
 
+// ── Email (Resend) helpers ────────────────────────────────────────────────────
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
+// Builds the HTML body. Includes order number + id, customer name/email/phone,
+// fulfillment method + address/pickup, order total, and per-item image (embedded
+// <img> + the URL as text), title, supplier_product_id, SKU, color, qty, unit, subtotal.
+function buildEmailHtml(p: {
+  order: OrderRow;
+  enriched: EnrichedItem[];
+  orderNumber: string | null;
+  customerName: string;
+  fulfillmentLabel: string;
+  fulfillmentDetail: string;
+  totalStr: string;
+}): string {
+  const { order, enriched, orderNumber, customerName, fulfillmentLabel, fulfillmentDetail, totalStr } = p;
+  const esc = escapeHtml;
+  const rows = enriched.map((it, idx) => {
+    const title = esc(it.product_title || it.title || '(untitled)');
+    const qty   = Number(it.quantity ?? 0);
+    const unit  = money(it.unit_price_cents);
+    const sub   = money(it.total_cents);
+    const sku   = esc(it.supplier_sku || '(no sku)');
+    const pid   = esc(it.product_id || '(no product_id)');
+    const color = esc(it.color || '—');
+    const img = (it.image && /^https?:\/\//i.test(it.image))
+      ? `<img src="${esc(it.image)}" alt="${title}" width="120" style="width:120px;height:auto;border-radius:8px;display:block;" />`
+        + `<div style="font-size:11px;color:#888;word-break:break-all;margin-top:4px;">${esc(it.image)}</div>`
+      : '<div style="font-size:12px;color:#aaa;">(no image)</div>';
+    return `<tr style="border-top:1px solid #eee;">`
+      + `<td style="padding:12px;vertical-align:top;width:140px;">${img}</td>`
+      + `<td style="padding:12px;vertical-align:top;">`
+      + `<div style="font-weight:600;font-size:15px;">${idx + 1}. ${title}</div>`
+      + `<div style="font-size:13px;color:#555;margin-top:4px;">SKU: ${sku}<br/>supplier_product_id: ${pid}<br/>Color: ${color} &nbsp;|&nbsp; Qty: ${qty}</div>`
+      + `<div style="font-size:13px;color:#333;margin-top:4px;">Unit: ${unit} &nbsp;|&nbsp; Subtotal: ${sub}</div>`
+      + `</td></tr>`;
+  }).join('');
+
+  return `<!doctype html><html><body style="margin:0;background:#F3F1EB;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;">`
+    + `<div style="max-width:640px;margin:0 auto;padding:24px;">`
+    + `<h1 style="font-size:20px;margin:0 0 4px;">🛎️ New paid order</h1>`
+    + `<div style="font-size:14px;color:#555;margin-bottom:16px;">`
+    + `${orderNumber ? `<strong>${esc(orderNumber)}</strong> · ` : ''}<span style="color:#888;">${esc(order.order_id)}</span></div>`
+    + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
+    + `<tr><td style="padding:12px 16px;font-size:14px;">`
+    + `<strong>Customer:</strong> ${esc(customerName)}<br/>`
+    + `<strong>Email:</strong> ${esc(order.customer_email || '(none)')}<br/>`
+    + `<strong>Phone:</strong> ${esc(order.customer_phone || '(none)')}</td></tr>`
+    + `<tr><td style="padding:12px 16px;font-size:14px;border-top:1px solid #eee;">`
+    + `<strong>Fulfillment:</strong> ${esc(fulfillmentLabel)}<br/>`
+    + `<span style="white-space:pre-line;color:#444;">${esc(fulfillmentDetail)}</span></td></tr>`
+    + `<tr><td style="padding:12px 16px;font-size:16px;border-top:1px solid #eee;">`
+    + `<strong>Order total:</strong> ${esc(totalStr)}</td></tr></table>`
+    + `<h2 style="font-size:16px;margin:20px 0 8px;">Items (${enriched.length})</h2>`
+    + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
+    + `${rows || '<tr><td style="padding:12px;color:#aaa;">(no items found)</td></tr>'}</table>`
+    + `<div style="font-size:11px;color:#aaa;margin-top:16px;">Xself Home · internal order notification</div>`
+    + `</div></body></html>`;
+}
+
+// Sends the email via Resend's HTTPS API. Returns the Resend message id, or
+// throws on any non-2xx / malformed response (caught by the send try/catch).
+async function sendViaResend(subject: string, html: string): Promise<string> {
+  const res = await fetch(`${RESEND_API_BASE}/emails`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: NOTIFY_EMAIL_FROM, to: [NOTIFY_EMAIL_TO], subject, html }),
+  });
+  const raw = await res.text();
+  let parsed: { id?: string; message?: string } | null = null;
+  try { parsed = JSON.parse(raw); } catch { /* leave null */ }
+  if (res.status >= 400 || !parsed?.id) {
+    throw new Error(`resend send failed (${res.status}): ${raw.slice(0, 300)}`);
+  }
+  return parsed.id;
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST')    return json({ error: 'method_not_allowed' }, 405);
@@ -178,9 +270,8 @@ serve(async (req: Request) => {
     return json({ error: 'unauthorized', detail: 'service-role bearer required' }, 401);
   }
 
-  if (!WEBSITE_ID || !IDENTIFIER || !KEY) {
-    return json({ error: 'crisp_not_configured' }, 500);
-  }
+  // Per-channel credential checks happen inside the send branch below (so an
+  // 'email' send does not require Crisp creds, and vice-versa).
 
   // ── Parse body ──────────────────────────────────────────────────────────────
   let body: { order_id?: unknown; force?: unknown };
@@ -194,7 +285,7 @@ serve(async (req: Request) => {
   // ── 1. Load the queue row (must exist) ──────────────────────────────────────
   const { data: notif, error: notifErr } = await supabase
     .from('order_notifications')
-    .select('order_id, status, attempts, customer_name')
+    .select('order_id, status, attempts, customer_name, channel')
     .eq('order_id', orderId)
     .maybeSingle();
 
@@ -225,7 +316,7 @@ serve(async (req: Request) => {
     // ── 2. Load order + items ─────────────────────────────────────────────────
     const { data: order, error: orderErr } = await supabase
       .from('orders')
-      .select('order_id, customer_email, customer_phone, fulfillment_method, fulfillment_plan, address_json, total_cents, total')
+      .select('order_id, order_number, customer_email, customer_phone, fulfillment_method, fulfillment_plan, address_json, total_cents, total')
       .eq('order_id', orderId)
       .maybeSingle<OrderRow>();
     if (orderErr) throw new Error(`orders read failed: ${orderErr.message}`);
@@ -268,15 +359,18 @@ serve(async (req: Request) => {
       };
     });
 
-    // ── 4. Build the notification text ────────────────────────────────────────
+    // ── 4. Shared fields + plaintext summary (used by Crisp; email uses HTML) ──
+    const orderNumber = (order.order_number && String(order.order_number).trim()) || null;
+    const totalStr = money(order.total_cents, order.total);
     const customerName = (notif.customer_name && String(notif.customer_name).trim())
       || pick(order.address_json, ['name', 'fullName', 'full_name', 'recipient'])
       || '(name not provided)';
     const method = (order.fulfillment_method ?? '').toLowerCase();
     const isPickup = method === 'pickup';
-    const fulfillmentBlock = isPickup
-      ? `Fulfillment: PICKUP\n${renderPickup(order.fulfillment_plan)}`
-      : `Fulfillment: DELIVERY\n${renderAddress(order.address_json)}`;
+    const fulfillmentLabel = isPickup ? 'PICKUP' : 'DELIVERY';
+    const fulfillmentDetail = isPickup
+      ? renderPickup(order.fulfillment_plan)
+      : renderAddress(order.address_json);
 
     const itemLines = enriched.map((it, idx) => {
       const title = it.product_title || it.title || '(untitled)';
@@ -295,68 +389,94 @@ serve(async (req: Request) => {
     });
 
     const summary = [
-      `🛎️ NEW PAID ORDER — ${order.order_id}`,
+      `🛎️ NEW PAID ORDER — ${orderNumber ? `${orderNumber} (${order.order_id})` : order.order_id}`,
       ``,
       `Customer: ${customerName}`,
       `Email: ${order.customer_email || '(none)'}`,
       `Phone: ${order.customer_phone || '(none)'}`,
       ``,
-      fulfillmentBlock,
+      `Fulfillment: ${fulfillmentLabel}`,
+      fulfillmentDetail,
       ``,
-      `Order total: ${money(order.total_cents, order.total)}`,
+      `Order total: ${totalStr}`,
       ``,
       `Items (${enriched.length}):`,
       itemLines.length ? itemLines.join('\n\n') : '(no items found)',
     ].join('\n');
 
-    // ── 5. Create a fresh Crisp conversation ──────────────────────────────────
-    const conv = await crispFetch<{ data?: { session_id?: string } }>(
-      `/website/${WEBSITE_ID}/conversation`, { method: 'POST' });
-    const sessionId = conv.data?.data?.session_id;
-    if (conv.status >= 400 || !sessionId) {
-      throw new Error(`crisp create conversation failed (${conv.status}): ${conv.raw.slice(0, 200)}`);
-    }
+    // ── 5. Send on the row's channel ──────────────────────────────────────────
+    const channel = ((notif.channel as string | null) ?? 'crisp').toLowerCase();
+    let sendMeta: Record<string, unknown>;
 
-    // 5a. Subject + customer meta so the inbox row is self-descriptive (non-fatal).
-    await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/meta`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        subject:  `New paid order ${order.order_id}`,
-        nickname: customerName.slice(0, 200),
-        ...(order.customer_email ? { email: order.customer_email.slice(0, 200) } : {}),
-        segments: ['order-notification', isPickup ? 'pickup' : 'delivery'],
-      }),
-    }).catch(() => { /* non-fatal */ });
+    if (channel === 'email') {
+      // EMAIL via Resend (preferred channel).
+      if (!RESEND_API_KEY || !NOTIFY_EMAIL_TO || !NOTIFY_EMAIL_FROM) {
+        // Operator misconfiguration, not a delivery failure — do NOT mark failed.
+        return json({ error: 'email_not_configured',
+          detail: 'RESEND_API_KEY / NOTIFY_EMAIL_TO / NOTIFY_EMAIL_FROM must be set' }, 500);
+      }
+      const subject = `New paid order: ${orderNumber || order.order_id} - ${totalStr}`;
+      const html = buildEmailHtml({
+        order, enriched, orderNumber, customerName, fulfillmentLabel, fulfillmentDetail, totalStr,
+      });
+      const emailId = await sendViaResend(subject, html); // throws on failure → caught below
+      sendMeta = { channel: 'email', email_id: emailId };
+      console.log('[send-order-notification] email sent', orderId, '| resend id', emailId);
 
-    // 5b. One file message per item image (operator, stealth), capped. Non-fatal.
-    let imagesPosted = 0;
-    for (const it of enriched) {
-      if (imagesPosted >= MAX_IMAGE_MESSAGES) break;
-      if (!it.image || !/^https?:\/\//i.test(it.image)) continue;
-      await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/message`, {
+    } else {
+      // CRISP (optional fallback).
+      if (!WEBSITE_ID || !IDENTIFIER || !KEY) {
+        return json({ error: 'crisp_not_configured' }, 500);
+      }
+      const conv = await crispFetch<{ data?: { session_id?: string } }>(
+        `/website/${WEBSITE_ID}/conversation`, { method: 'POST' });
+      const sessionId = conv.data?.data?.session_id;
+      if (conv.status >= 400 || !sessionId) {
+        throw new Error(`crisp create conversation failed (${conv.status}): ${conv.raw.slice(0, 200)}`);
+      }
+
+      // Subject + customer meta so the inbox row is self-descriptive (non-fatal).
+      await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/meta`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          subject:  `New paid order ${orderNumber || order.order_id}`,
+          nickname: customerName.slice(0, 200),
+          ...(order.customer_email ? { email: order.customer_email.slice(0, 200) } : {}),
+          segments: ['order-notification', isPickup ? 'pickup' : 'delivery'],
+        }),
+      }).catch(() => { /* non-fatal */ });
+
+      // One file message per item image (operator, stealth), capped. Non-fatal.
+      let imagesPosted = 0;
+      for (const it of enriched) {
+        if (imagesPosted >= MAX_IMAGE_MESSAGES) break;
+        if (!it.image || !/^https?:\/\//i.test(it.image)) continue;
+        await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/message`, {
+          method: 'POST',
+          body: JSON.stringify({
+            type: 'file', from: 'operator', origin: 'chat', stealth: true,
+            content: {
+              name: `${(it.product_title || it.title || 'product').slice(0, 60)}.jpg`,
+              type: 'image/jpeg',
+              url:  it.image,
+            },
+          }),
+        }).catch(() => { /* non-fatal: image is a nicety */ });
+        imagesPosted++;
+      }
+
+      // The text summary — REQUIRED. A failure here fails the whole send.
+      const note = await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/message`, {
         method: 'POST',
         body: JSON.stringify({
-          type: 'file', from: 'operator', origin: 'chat', stealth: true,
-          content: {
-            name: `${(it.product_title || it.title || 'product').slice(0, 60)}.jpg`,
-            type: 'image/jpeg',
-            url:  it.image,
-          },
+          type: 'text', from: 'operator', origin: 'chat', stealth: true,
+          content: summary.slice(0, 4000),
         }),
-      }).catch(() => { /* non-fatal: image is a nicety */ });
-      imagesPosted++;
-    }
-
-    // 5c. The text summary — REQUIRED. A failure here fails the whole send.
-    const note = await crispFetch(`/website/${WEBSITE_ID}/conversation/${sessionId}/message`, {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'text', from: 'operator', origin: 'chat', stealth: true,
-        content: summary.slice(0, 4000),
-      }),
-    });
-    if (note.status >= 400) {
-      throw new Error(`crisp text note failed (${note.status}): ${note.raw.slice(0, 200)}`);
+      });
+      if (note.status >= 400) {
+        throw new Error(`crisp text note failed (${note.status}): ${note.raw.slice(0, 200)}`);
+      }
+      sendMeta = { channel: 'crisp', session_id: sessionId, images_posted: imagesPosted };
     }
 
     // ── 6. Mark sent ──────────────────────────────────────────────────────────
@@ -367,13 +487,12 @@ serve(async (req: Request) => {
     if (sentErr) {
       // The notification DID send; we just couldn't record it. Surface, don't mark failed.
       console.error('[send-order-notification] sent but status update failed:', sentErr.message);
-      return json({ ok: true, sent: true, status_update_failed: true, order_id: orderId,
-        session_id: sessionId, images_posted: imagesPosted });
+      return json({ ok: true, sent: true, status_update_failed: true, order_id: orderId, ...sendMeta });
     }
 
-    console.log('[send-order-notification] sent', orderId, '| session', sessionId, '| images', imagesPosted);
-    return json({ ok: true, sent: true, order_id: orderId, session_id: sessionId,
-      images_posted: imagesPosted, resent: force && notif.status === 'sent' });
+    console.log('[send-order-notification] sent', orderId, '| channel', channel);
+    return json({ ok: true, sent: true, order_id: orderId,
+      resent: force && notif.status === 'sent', ...sendMeta });
 
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
