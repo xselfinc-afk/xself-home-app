@@ -138,6 +138,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // True when Edge Function returned stale: true — blocks checkout until user retries
   const [isInventoryStale, setIsInventoryStale] = useState(false);
 
+  // Live inventory verification fallback: when the plan is a fallback (inventory_cache stale),
+  // verify the exact cart SKUs against GIGA in real time (server-side verify-inventory-live).
+  // On success (all in stock) we treat inventory as verified → clear the warning + enable Affirm.
+  const [liveVerifying, setLiveVerifying] = useState(false);
+  const [liveVerified, setLiveVerified] = useState(false);
+  const verifyAttemptRef = useRef<string>('');
+
   // 'pickup' | 'delivery' | null — null means user hasn't chosen yet (req 9)
   const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
 
@@ -339,6 +346,37 @@ export default function CheckoutScreen({ route, navigation }: any) {
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAddress?.id, orderItemsKey, fulfillRetryKey]);
+
+  // ── Live inventory verification fallback ──────────────────────────────────
+  // Reset verification whenever the plan inputs change (new cart / address / retry).
+  useEffect(() => { setLiveVerified(false); }, [orderItemsKey, selectedAddress?.id, fulfillRetryKey]);
+
+  // When the plan came back as a fallback (inventory_cache stale) — NOT a hard stale failure —
+  // probe GIGA in real time for the exact cart SKUs via the server-side verify-inventory-live
+  // Edge Function. Success (all in stock) → mark verified (clears warning + enables Affirm).
+  // Any failure/timeout/out-of-stock → leave unverified (Affirm stays blocked; card/Apple Pay
+  // unaffected). One attempt per plan state (guarded by verifyAttemptRef) — never loops.
+  useEffect(() => {
+    if (!isInventoryFallback || isInventoryStale || liveVerified) return;
+    const skus = [...new Set(orderItems.map(i => i.productId).filter(Boolean))];
+    if (skus.length === 0) return;
+    const attemptKey = `${selectedAddress?.id ?? ''}|${orderItemsKey}|${fulfillRetryKey}`;
+    if (verifyAttemptRef.current === attemptKey) return;
+    verifyAttemptRef.current = attemptKey;
+    let active = true;
+    setLiveVerifying(true);
+    supabase.functions.invoke('verify-inventory-live', { body: { skus } })
+      .then(({ data, error }) => {
+        if (!active) return;
+        const d = data as { verified?: boolean; allInStock?: boolean } | null;
+        if (!error && d?.verified === true && d?.allInStock === true) setLiveVerified(true);
+      })
+      .catch(() => { /* fail-safe: keep Affirm blocked */ })
+      .finally(() => { if (active) setLiveVerifying(false); });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInventoryFallback, isInventoryStale, liveVerified, orderItemsKey, selectedAddress?.id, fulfillRetryKey]);
+
   const [addrFirstName, setAddrFirstName] = useState('');
   const [addrLastName, setAddrLastName] = useState('');
   const [addrPhone, setAddrPhone] = useState('');
@@ -784,12 +822,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
 
-          {!deliveryLoading && isInventoryFallback && (
+          {!deliveryLoading && isInventoryFallback && !liveVerified && (
             <View style={styles.fulfillFallbackBanner}>
               <Ionicons name="information-circle-outline" size={13} color="#92660A" />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.fulfillFallbackText, { flex: 0 }]}>
-                  We'll confirm availability after you place your order. Delivery dates are based on your shipping address.
+                  {liveVerifying
+                    ? 'Verifying live availability…'
+                    : "We'll confirm availability after you place your order. Delivery dates are based on your shipping address."}
                 </Text>
                 <TouchableOpacity
                   onPress={() => setFulfillRetryKey(k => k + 1)}
@@ -881,7 +921,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.affirmSubtitle}>Pay over time · Subject to approval</Text>
               {affirmError ? (
                 <Text style={styles.affirmError}>{affirmError}</Text>
-              ) : (isInventoryFallback || isInventoryStale) ? (
+              ) : liveVerifying ? (
+                <Text style={styles.affirmSubtitle}>Verifying live availability…</Text>
+              ) : ((isInventoryFallback && !liveVerified) || isInventoryStale) ? (
                 <Text style={styles.affirmError}>
                   Affirm is unavailable until delivery and inventory are verified. Please try again or use a card.
                 </Text>
@@ -890,8 +932,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
               ) : null}
               <TouchableOpacity
-                style={[styles.affirmBtn, (affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback || isInventoryStale) && { opacity: 0.6 }]}
-                disabled={affirmLoading || !selectedAddress || !activePlan || fulfillmentChoice === null || isInventoryFallback || isInventoryStale}
+                style={[styles.affirmBtn, (affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale) && { opacity: 0.6 }]}
+                disabled={affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale}
                 onPress={handleAffirmPayment}
                 activeOpacity={0.8}
               >
