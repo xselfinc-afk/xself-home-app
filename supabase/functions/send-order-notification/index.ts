@@ -64,6 +64,11 @@ const NOTIFY_EMAIL_TO   = (Deno.env.get('NOTIFY_EMAIL_TO')   ?? '').trim();
 const NOTIFY_EMAIL_FROM = (Deno.env.get('NOTIFY_EMAIL_FROM') ?? '').trim();
 const RESEND_API_BASE   = 'https://api.resend.com';
 
+// Shown on pickup-order notifications so ops know the customer flow.
+const PICKUP_INSTRUCTION =
+  'The customer will receive a pickup pass within 24 hours after placing the order. '
+  + 'They must bring the pickup pass to the warehouse for pickup.';
+
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -119,20 +124,6 @@ function pick(obj: Record<string, unknown> | null | undefined, keys: string[]): 
   return null;
 }
 
-// Render a shipping address from address_json defensively (its exact key set
-// varies by checkout version — try the common aliases, skip what's absent).
-function renderAddress(addr: Record<string, unknown> | null): string {
-  if (!addr || typeof addr !== 'object') return '(no address on order)';
-  const line1 = pick(addr, ['line1', 'address1', 'street', 'address', 'addressLine1']);
-  const line2 = pick(addr, ['line2', 'address2', 'apt', 'unit', 'addressLine2']);
-  const city  = pick(addr, ['city', 'town', 'locality']);
-  const state = pick(addr, ['state', 'region', 'province', 'administrativeArea']);
-  const zip   = pick(addr, ['zip', 'postalCode', 'postal_code', 'zipCode', 'postcode']);
-  const cityStateZip = [city, [state, zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  const parts = [line1, line2, cityStateZip].filter((s): s is string => !!s && s.length > 0);
-  return parts.length ? parts.join('\n') : '(address present but unrecognized shape)';
-}
-
 // Render pickup info from fulfillment_plan defensively.
 function renderPickup(plan: Record<string, unknown> | null): string {
   if (!plan || typeof plan !== 'object') return '(no pickup plan on order)';
@@ -153,6 +144,7 @@ function renderPickup(plan: Record<string, unknown> | null): string {
 interface OrderRow {
   order_id: string;
   order_number: string | null;
+  user_id: string | null;
   customer_email: string | null;
   customer_phone: string | null;
   fulfillment_method: string | null;
@@ -160,6 +152,38 @@ interface OrderRow {
   address_json: Record<string, unknown> | null;
   total_cents: number | null;
   total: number | null;
+}
+
+// public.addresses — the app's source of truth for customer name/phone/line2,
+// which orders does NOT persist. Used for sender-side enrichment (Phase 5.1).
+interface AddressRow {
+  first_name: string | null;
+  last_name: string | null;
+  phone: string | null;
+  address_line_1: string | null;
+  address_line_2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  country: string | null;
+  is_default: boolean | null;
+}
+
+// Renders the CUSTOMER's address. Prefers the order's own address_json (the
+// authoritative order address) and supplements line2 from the matched addresses
+// row when address_json omits it.
+function renderCustomerAddress(
+  addrJson: Record<string, unknown> | null,
+  addr: AddressRow | null,
+): string {
+  const line1 = pick(addrJson, ['line1', 'address1', 'address_line_1', 'street']) || (addr?.address_line_1 ?? null);
+  const line2 = pick(addrJson, ['line2', 'address2', 'address_line_2', 'apt', 'unit']) || (addr?.address_line_2 ?? null);
+  const city  = pick(addrJson, ['city', 'town', 'locality']) || (addr?.city ?? null);
+  const state = pick(addrJson, ['state', 'region', 'province']) || (addr?.state ?? null);
+  const zip   = pick(addrJson, ['zip', 'postalCode', 'postal_code', 'zipCode']) || (addr?.zip ?? null);
+  const cityStateZip = [city, [state, zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const parts = [line1, line2, cityStateZip].filter((s): s is string => !!s && s.length > 0);
+  return parts.length ? parts.join('\n') : '(no address on order)';
 }
 interface ItemRow {
   product_id: string | null;
@@ -181,19 +205,22 @@ function escapeHtml(s: string): string {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
-// Builds the HTML body. Includes order number + id, customer name/email/phone,
-// fulfillment method + address/pickup, order total, and per-item image (embedded
-// <img> + the URL as text), title, supplier_product_id, SKU, color, qty, unit, subtotal.
+// Builds the HTML body. Sections: Customer (name/email/phone/address), then a
+// channel-appropriate fulfillment block — Pickup (warehouse + window + pickup-pass
+// instruction) or Delivery (delivery address) — then the unchanged product table
+// (image + URL, title, supplier_product_id, SKU, color, qty, unit, subtotal) + total.
 function buildEmailHtml(p: {
   order: OrderRow;
   enriched: EnrichedItem[];
   orderNumber: string | null;
   customerName: string;
-  fulfillmentLabel: string;
-  fulfillmentDetail: string;
+  customerPhone: string | null;
+  customerAddress: string;
+  isPickup: boolean;
+  pickupDetail: string;
   totalStr: string;
 }): string {
-  const { order, enriched, orderNumber, customerName, fulfillmentLabel, fulfillmentDetail, totalStr } = p;
+  const { order, enriched, orderNumber, customerName, customerPhone, customerAddress, isPickup, pickupDetail, totalStr } = p;
   const esc = escapeHtml;
   const rows = enriched.map((it, idx) => {
     const title = esc(it.product_title || it.title || '(untitled)');
@@ -216,24 +243,37 @@ function buildEmailHtml(p: {
       + `</td></tr>`;
   }).join('');
 
+  // Fulfillment block: Pickup (warehouse + window + pickup-pass instruction) or Delivery (address).
+  const fulfillmentHtml = isPickup
+    ? `<h2 style="font-size:16px;margin:20px 0 8px;">Pickup</h2>`
+      + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
+      + `<tr><td style="padding:12px 16px;font-size:14px;">`
+      + `<span style="white-space:pre-line;color:#444;">${esc(pickupDetail)}</span></td></tr>`
+      + `<tr><td style="padding:12px 16px;font-size:13px;border-top:1px solid #eee;color:#8a6d00;background:#FAF6E6;">`
+      + `📌 ${esc(PICKUP_INSTRUCTION)}</td></tr></table>`
+    : `<h2 style="font-size:16px;margin:20px 0 8px;">Delivery</h2>`
+      + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
+      + `<tr><td style="padding:12px 16px;font-size:14px;">`
+      + `<strong>Delivery address:</strong><br/><span style="white-space:pre-line;color:#444;">${esc(customerAddress)}</span></td></tr></table>`;
+
   return `<!doctype html><html><body style="margin:0;background:#F3F1EB;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;">`
     + `<div style="max-width:640px;margin:0 auto;padding:24px;">`
     + `<h1 style="font-size:20px;margin:0 0 4px;">🛎️ New paid order</h1>`
     + `<div style="font-size:14px;color:#555;margin-bottom:16px;">`
     + `${orderNumber ? `<strong>${esc(orderNumber)}</strong> · ` : ''}<span style="color:#888;">${esc(order.order_id)}</span></div>`
+    + `<h2 style="font-size:16px;margin:0 0 8px;">Customer</h2>`
     + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
-    + `<tr><td style="padding:12px 16px;font-size:14px;">`
-    + `<strong>Customer:</strong> ${esc(customerName)}<br/>`
+    + `<tr><td style="padding:12px 16px;font-size:14px;line-height:1.5;">`
+    + `<strong>Name:</strong> ${esc(customerName)}<br/>`
     + `<strong>Email:</strong> ${esc(order.customer_email || '(none)')}<br/>`
-    + `<strong>Phone:</strong> ${esc(order.customer_phone || '(none)')}</td></tr>`
-    + `<tr><td style="padding:12px 16px;font-size:14px;border-top:1px solid #eee;">`
-    + `<strong>Fulfillment:</strong> ${esc(fulfillmentLabel)}<br/>`
-    + `<span style="white-space:pre-line;color:#444;">${esc(fulfillmentDetail)}</span></td></tr>`
-    + `<tr><td style="padding:12px 16px;font-size:16px;border-top:1px solid #eee;">`
-    + `<strong>Order total:</strong> ${esc(totalStr)}</td></tr></table>`
+    + `<strong>Phone:</strong> ${esc(customerPhone || '(none)')}<br/>`
+    + `<strong>Address:</strong><br/><span style="white-space:pre-line;color:#444;">${esc(customerAddress)}</span></td></tr></table>`
+    + fulfillmentHtml
     + `<h2 style="font-size:16px;margin:20px 0 8px;">Items (${enriched.length})</h2>`
     + `<table style="width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;">`
     + `${rows || '<tr><td style="padding:12px;color:#aaa;">(no items found)</td></tr>'}</table>`
+    + `<div style="margin-top:12px;padding:12px 16px;background:#fff;border-radius:12px;font-size:16px;">`
+    + `<strong>Order total:</strong> ${esc(totalStr)}</div>`
     + `<div style="font-size:11px;color:#aaa;margin-top:16px;">Xself Home · internal order notification</div>`
     + `</div></body></html>`;
 }
@@ -316,7 +356,7 @@ serve(async (req: Request) => {
     // ── 2. Load order + items ─────────────────────────────────────────────────
     const { data: order, error: orderErr } = await supabase
       .from('orders')
-      .select('order_id, order_number, customer_email, customer_phone, fulfillment_method, fulfillment_plan, address_json, total_cents, total')
+      .select('order_id, order_number, user_id, customer_email, customer_phone, fulfillment_method, fulfillment_plan, address_json, total_cents, total')
       .eq('order_id', orderId)
       .maybeSingle<OrderRow>();
     if (orderErr) throw new Error(`orders read failed: ${orderErr.message}`);
@@ -359,18 +399,49 @@ serve(async (req: Request) => {
       };
     });
 
+    // ── 3b. Enrich customer identity from public.addresses (best-effort) ──────
+    // orders does not persist customer name/phone; the app stores them in the
+    // addresses table. Match on user_id + address_line_1 + zip; fall back to the
+    // user's default address. Non-fatal — on any miss the fields stay null and we
+    // fall back to order_notifications.customer_name / address_json.
+    let addr: AddressRow | null = null;
+    const userId = (order.user_id && String(order.user_id).trim()) || null;
+    if (userId) {
+      const { data: addrRows, error: addrErr } = await supabase
+        .from('addresses')
+        .select('first_name, last_name, phone, address_line_1, address_line_2, city, state, zip, country, is_default')
+        .eq('user_id', userId);
+      if (addrErr) {
+        console.warn('[send-order-notification] address enrichment failed (non-fatal):', addrErr.message);
+      } else if (Array.isArray(addrRows) && addrRows.length > 0) {
+        const oLine1 = (pick(order.address_json, ['line1', 'address1', 'address_line_1', 'street']) ?? '').toLowerCase().trim();
+        const oZip   = (pick(order.address_json, ['zip', 'postalCode', 'postal_code', 'zipCode']) ?? '').toLowerCase().trim();
+        const exact = (addrRows as AddressRow[]).find((r) => {
+          const l1 = String(r.address_line_1 ?? '').toLowerCase().trim();
+          const z  = String(r.zip ?? '').toLowerCase().trim();
+          return !!oLine1 && l1 === oLine1 && (!oZip || z === oZip);
+        });
+        addr = exact
+          ?? (addrRows as AddressRow[]).find((r) => r.is_default === true)
+          ?? (addrRows[0] as AddressRow);
+      }
+    }
+
     // ── 4. Shared fields + plaintext summary (used by Crisp; email uses HTML) ──
     const orderNumber = (order.order_number && String(order.order_number).trim()) || null;
     const totalStr = money(order.total_cents, order.total);
+    const addrName = addr ? `${addr.first_name ?? ''} ${addr.last_name ?? ''}`.trim() : '';
     const customerName = (notif.customer_name && String(notif.customer_name).trim())
+      || (addrName || null)
       || pick(order.address_json, ['name', 'fullName', 'full_name', 'recipient'])
       || '(name not provided)';
+    const customerPhone = (addr?.phone && String(addr.phone).trim())
+      || (order.customer_phone && String(order.customer_phone).trim())
+      || null;
+    const customerAddress = renderCustomerAddress(order.address_json, addr);
     const method = (order.fulfillment_method ?? '').toLowerCase();
     const isPickup = method === 'pickup';
-    const fulfillmentLabel = isPickup ? 'PICKUP' : 'DELIVERY';
-    const fulfillmentDetail = isPickup
-      ? renderPickup(order.fulfillment_plan)
-      : renderAddress(order.address_json);
+    const pickupDetail = renderPickup(order.fulfillment_plan);
 
     const itemLines = enriched.map((it, idx) => {
       const title = it.product_title || it.title || '(untitled)';
@@ -393,10 +464,13 @@ serve(async (req: Request) => {
       ``,
       `Customer: ${customerName}`,
       `Email: ${order.customer_email || '(none)'}`,
-      `Phone: ${order.customer_phone || '(none)'}`,
+      `Phone: ${customerPhone || '(none)'}`,
+      `Address:`,
+      customerAddress,
       ``,
-      `Fulfillment: ${fulfillmentLabel}`,
-      fulfillmentDetail,
+      isPickup ? `Pickup:` : `Delivery:`,
+      isPickup ? pickupDetail : customerAddress,
+      ...(isPickup ? [PICKUP_INSTRUCTION] : []),
       ``,
       `Order total: ${totalStr}`,
       ``,
@@ -417,7 +491,7 @@ serve(async (req: Request) => {
       }
       const subject = `New paid order: ${orderNumber || order.order_id} - ${totalStr}`;
       const html = buildEmailHtml({
-        order, enriched, orderNumber, customerName, fulfillmentLabel, fulfillmentDetail, totalStr,
+        order, enriched, orderNumber, customerName, customerPhone, customerAddress, isPickup, pickupDetail, totalStr,
       });
       const emailId = await sendViaResend(subject, html); // throws on failure → caught below
       sendMeta = { channel: 'email', email_id: emailId };
