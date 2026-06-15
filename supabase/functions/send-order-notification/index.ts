@@ -62,6 +62,7 @@ const MAX_IMAGE_MESSAGES = 8; // cap file-message posts so a large order can't s
 const RESEND_API_KEY    = (Deno.env.get('RESEND_API_KEY')    ?? '').trim();
 const NOTIFY_EMAIL_TO   = (Deno.env.get('NOTIFY_EMAIL_TO')   ?? '').trim();
 const NOTIFY_EMAIL_FROM = (Deno.env.get('NOTIFY_EMAIL_FROM') ?? '').trim();
+const SUPPORT_REPLY_TO  = (Deno.env.get('SUPPORT_REPLY_TO')  ?? '').trim();
 const RESEND_API_BASE   = 'https://api.resend.com';
 
 // Shown on pickup-order notifications so ops know the customer flow.
@@ -326,10 +327,12 @@ function buildEmailHtml(p: {
 // Sends the email via Resend's HTTPS API. Returns the Resend message id, or
 // throws on any non-2xx / malformed response (caught by the send try/catch).
 async function sendViaResend(subject: string, html: string): Promise<string> {
+  const payload: Record<string, unknown> = { from: NOTIFY_EMAIL_FROM, to: [NOTIFY_EMAIL_TO], subject, html };
+  if (SUPPORT_REPLY_TO) payload.reply_to = SUPPORT_REPLY_TO;
   const res = await fetch(`${RESEND_API_BASE}/emails`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: NOTIFY_EMAIL_FROM, to: [NOTIFY_EMAIL_TO], subject, html }),
+    body: JSON.stringify(payload),
   });
   const raw = await res.text();
   let parsed: { id?: string; message?: string } | null = null;
