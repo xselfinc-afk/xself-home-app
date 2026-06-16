@@ -101,6 +101,9 @@ function ConciergeAvatar() {
 
 export default function SupportScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
+  // Measured header height so the keyboard-avoiding offset accounts for the
+  // safe-area top + custom header above the chat body (layout-only).
+  const [headerHeight, setHeaderHeight] = useState(0);
   const { user } = useAuth();
   const { addItem } = useCart();
 
@@ -617,7 +620,7 @@ export default function SupportScreen({ navigation, route }: any) {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={styles.header} onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -640,7 +643,7 @@ export default function SupportScreen({ navigation, route }: any) {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + headerHeight : 0}
       >
         {booting ? (
           <View style={styles.center}>
@@ -1513,7 +1516,7 @@ const styles = StyleSheet.create({
   ctaBtnTextDisabled: { color: '#9CA3AF' },
 
   // ── Chat ─────────────────────────────────────────────────────────────────
-  listContent: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 12 },
+  listContent: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 18 },
 
   emptyWrap: { alignItems: 'center', paddingHorizontal: 24 },
   emptyBadge: {
