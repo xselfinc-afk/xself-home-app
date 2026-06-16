@@ -66,6 +66,17 @@ function expiresLabel(iso: string): string {
 //   3. The "Create Special Offer" markdown link helper note.
 //   4. Any raw `mobile-create-quote.html` reference.
 // Customer's own messages are never filtered — only `from: 'operator'` ones.
+// Subtle clock label for a message bubble. Crisp `ts` is Unix seconds.
+function fmtTime(tsSeconds: number): string {
+  if (!tsSeconds) return '';
+  const d = new Date(tsSeconds * 1000);
+  let h = d.getHours();
+  const m = d.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${m < 10 ? '0' + m : m} ${ampm}`;
+}
+
 const ADMIN_URL_REGEX =
   /https?:\/\/[^\s]*(?:netlify\.app|vercel\.app|pages\.dev|gorgeous-mermaid-80b26a)[^\s]*/i;
 const PRODUCT_INQUIRY_REGEX = /^\s*Product inquiry:/i;
@@ -536,6 +547,7 @@ export default function SupportScreen({ navigation, route }: any) {
               </Text>
             </View>
           </Wrapper>
+          {!isUser ? <Text style={styles.bubbleTime}>{fmtTime(item.ts)}</Text> : null}
           {isUser && item.status ? (
             <View style={styles.statusRow}>
               {item.status === 'sending' && (
@@ -631,7 +643,7 @@ export default function SupportScreen({ navigation, route }: any) {
         <View style={styles.headerTitleWrap}>
           <Text style={styles.headerTitle}>Xself Concierge</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
-            Ask us about this product
+            Usually replies soon
           </Text>
         </View>
         <View style={styles.headerSpacer} />
@@ -1021,10 +1033,22 @@ export default function SupportScreen({ navigation, route }: any) {
                   <View style={styles.emptyBadge}>
                     <Ionicons name="sparkles" size={16} color="#1C1917" />
                   </View>
-                  <Text style={styles.emptyTitle}>Say hi</Text>
+                  <Text style={styles.emptyTitle}>How can we help?</Text>
                   <Text style={styles.emptyBody}>
-                    Our concierge team is on by 9 AM and replies within minutes during business hours.
+                    Our concierge replies within minutes during business hours.
                   </Text>
+                  <View style={styles.suggestionWrap}>
+                    {['Order status', 'Delivery & pickup', 'Product question'].map((s) => (
+                      <TouchableOpacity
+                        key={s}
+                        style={styles.suggestionChip}
+                        onPress={() => setDraft(s)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.suggestionChipText}>{s}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 </View>
               }
               onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
@@ -1569,7 +1593,7 @@ const styles = StyleSheet.create({
   statusText:   { fontSize: 10, color: '#9CA3AF', fontWeight: '500' },
   statusFailed: { fontSize: 10, color: '#DC2626', fontWeight: '500' },
   bubbleUser: {
-    backgroundColor: '#E8E1D4',
+    backgroundColor: XSELF_YELLOW,
     borderBottomRightRadius: 6,
   },
   bubbleAgent: {
@@ -1582,6 +1606,14 @@ const styles = StyleSheet.create({
   bubbleAgentName: { fontSize: 11, color: '#9CA3AF', marginBottom: 2, fontWeight: '500' },
   bubbleTextUser:  { fontSize: 14, color: '#1C1917', lineHeight: 19 },
   bubbleTextAgent: { fontSize: 14, color: '#1C1917', lineHeight: 19 },
+  bubbleTime: { fontSize: 10, color: '#9CA3AF', marginTop: 3, marginHorizontal: 4 },
+  suggestionWrap: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 16 },
+  suggestionChip: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)',
+    paddingHorizontal: 14, paddingVertical: 8,
+  },
+  suggestionChipText: { fontSize: 13, color: '#1C1917', fontWeight: '500' },
 
   // ── Composer ─────────────────────────────────────────────────────────────
   composerWrap: {
