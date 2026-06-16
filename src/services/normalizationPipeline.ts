@@ -61,6 +61,11 @@ export type StandardizedProductInsert = {
 
 /** Ordered from most specific → least specific to avoid short-pattern false positives. */
 const CATEGORY_PATTERNS: Array<{ patterns: string[]; label: string }> = [
+  // Scenario A (Option A2): map to EXISTING labels only — no new browse categories.
+  // Placed first so "kitchen island/cart" → Table and "wine rack/cabinet" → Storage win
+  // over the broad 'table'/'cabinet' fallbacks below.
+  { patterns: ['kitchen island', 'kitchen cart', 'rolling kitchen'], label: 'Table' },
+  { patterns: ['wine rack', 'wine cabinet', 'wine storage'], label: 'Storage' },
   { patterns: ['nightstand', 'bedside table', 'bedside cabinet', 'night stand', 'night table'], label: 'Nightstand' },
   { patterns: ['tv stand', 'media console', 'entertainment center', 'media unit', 'media stand', 'tv console', 'media center'], label: 'TV Stand' },
   { patterns: ['dresser', 'chest of drawers', 'drawer dresser', 'chest drawer', '6 drawer', '5 drawer', '4 drawer', 'drawer chest'], label: 'Dresser' },
