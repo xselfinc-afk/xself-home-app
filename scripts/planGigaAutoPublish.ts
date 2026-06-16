@@ -199,8 +199,10 @@ type Cand = {
     if (!c.img) { c.bucket = 'REJECT'; c.reasons.push('no_image'); continue; }
     if (!(c.normCost > 0)) { c.bucket = 'REJECT'; c.reasons.push('no_price'); continue; }
     if (HARD_JUNK.test(c.title)) { c.bucket = 'REJECT'; c.reasons.push('junk_category'); continue; }
-    if (BRAND_PREFIX.test(c.title)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('brand_prefix'); continue; }
-    if (MARKETING.test(c.title)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('marketing_text'); continue; }
+    // Strategy A: gate on the NORMALIZED title so brand/marketing the normalizer has
+    // already stripped (titleGenerator.cleanTitle) no longer holds a clean product.
+    if (BRAND_PREFIX.test(c.normTitle)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('brand_prefix'); continue; }
+    if (MARKETING.test(c.normTitle)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('marketing_text'); continue; }
     if (c.normCost < LOW_PRICE) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('low_price'); continue; }
     if (c.title.length < 12) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('weak_title'); continue; }
     // Match the runner's title gate: it holds when the NORMALIZED product_title (not the raw supplier

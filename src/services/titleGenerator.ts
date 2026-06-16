@@ -21,6 +21,21 @@ const CATEGORY_SUFFIXES_TO_STRIP: RegExp[] = [
   /\s*\[[^\]]{10,}\]\s*$/,           // long bracket content at end
 ];
 
+// Strategy A: strip a leading supplier brand prefix (anchored, explicit list).
+// Bare "GO" is deliberately EXCLUDED (too ambiguous — e.g. real words). Mirrors the
+// brand list in scripts/planGigaAutoPublish.ts so the planner gate and the normalizer agree.
+const LEADING_BRAND_PREFIX = /^(?:trexm|vibe\s?haus|k&k|fch|gartoo|kepswin|woj|topmax|tomax)\b[\s:.,\-–|]*/i;
+
+// Leading promotional tag(s) like "[Video]" / "[Assembly Video Provided]".
+const LEADING_PROMO_TAG = /^\s*(?:\[[^\]]*\b(?:video|assembly)\b[^\]]*\]\s*)+/i;
+
+// Clearly-promotional fragments removed anywhere in the title (tightly scoped).
+const MARKETING_FRAGMENTS: RegExp[] = [
+  /\bmade in usa\b/gi,
+  /\b\d+\s*-?\s*day shipping\b/gi,
+  /\bcustom fabric options?\b/gi,
+];
+
 function truncateAtWord(s: string, max: number): string {
   if (!s) return '';
   if (s.length <= max) return s;
@@ -38,6 +53,14 @@ export function cleanTitle(raw: string): string {
 
   let t = raw.trim();
 
+  // Strategy A: strip leading supplier brand prefix + clearly-promotional fragments
+  // before the generic promo/suffix cleanup below.
+  t = t.replace(LEADING_PROMO_TAG, '');
+  t = t.replace(LEADING_BRAND_PREFIX, '');
+  for (const re of MARKETING_FRAGMENTS) {
+    t = t.replace(re, '');
+  }
+
   for (const re of PROMO_PATTERNS) {
     t = t.replace(re, '');
   }
@@ -45,6 +68,8 @@ export function cleanTitle(raw: string): string {
     t = t.replace(re, '');
   }
 
+  // Collapse separator/comma debris left behind by fragment removal (e.g. "– , , ,").
+  t = t.replace(/[-–|]\s*,/g, ',').replace(/(?:,\s*){2,}/g, ', ');
   t = t.replace(/,\s*,/g, ',').replace(/\s{2,}/g, ' ').trim();
   t = t.replace(/^[,\-–|:]+\s*/, '').replace(/\s*[,\-–|:]+$/, '').trim();
 
