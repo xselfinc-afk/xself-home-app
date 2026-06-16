@@ -17,6 +17,8 @@ import {
 } from '../services/supportService';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
+import { useConcierge } from '../context/ConciergeContext';
+import { useFocusEffect } from '@react-navigation/native';
 import { Product, ProductVariant, formatPrice } from '../data/products';
 import { variantUrl } from '../utils/imageVariant';
 import { defaultCartItem } from '../utils/cartItem';
@@ -117,6 +119,19 @@ export default function SupportScreen({ navigation, route }: any) {
   const [headerHeight, setHeaderHeight] = useState(0);
   const { user } = useAuth();
   const { addItem } = useCart();
+  const { setActive: setConciergeActive, markRead: markConciergeRead } = useConcierge();
+
+  // Concierge unread integration: while SupportScreen is focused, mark the thread
+  // active (suppresses the in-app banner) and clear unread; release on blur so a
+  // later operator message can re-trigger the banner/badges. Unread/banner logic
+  // lives entirely in ConciergeContext; quote/offer/checkout is untouched.
+  useFocusEffect(
+    useCallback(() => {
+      setConciergeActive(true);
+      markConciergeRead();
+      return () => setConciergeActive(false);
+    }, [setConciergeActive, markConciergeRead]),
+  );
 
   const product: Product | undefined = route?.params?.product;
   const selectedVariant: ProductVariant | null = route?.params?.selectedVariant ?? null;
