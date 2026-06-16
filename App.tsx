@@ -14,7 +14,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 import ProductCard from './src/components/ProductCard';
-import { NavigationContainer, useNavigationState } from '@react-navigation/native';
+import { NavigationContainer, useNavigationState, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -38,6 +38,8 @@ import { RecommendationProvider, useRecommendations, diversify } from './src/con
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { OrdersProvider } from './src/context/OrdersContext';
 import { ConversationProvider, useConversations } from './src/context/ConversationContext';
+import { ConciergeProvider, useConcierge } from './src/context/ConciergeContext';
+import ConciergeTopBanner from './src/components/ConciergeTopBanner';
 import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
 import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
@@ -2505,6 +2507,7 @@ function CartScreen({ navigation }) {
 }
 
 function AccountScreen({ navigation }) {
+  const conciergeUnread = useConcierge().unreadCount;
   const { user, isGuest, signOut, deleteAccount } = useAuth();
   const { balance } = useRewards();
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -2541,6 +2544,7 @@ function AccountScreen({ navigation }) {
         style={[styles.menuItem, !isLast && styles.menuItemBorder]}
         onPress={() => locked
           ? navigation.navigate('SignInEntry')
+          : item.route === 'Support' ? (navigationRef.isReady() && navigationRef.navigate('Support' as never))
           : item.route ? navigation.navigate(item.route)
         : (item as any).href ? Linking.openURL((item as any).href)
         : null}
@@ -2550,6 +2554,11 @@ function AccountScreen({ navigation }) {
           <Text style={[styles.menuText, { color: textColor }]}>{item.title}</Text>
           {item.subtitle && !locked && <Text style={styles.menuSubText}>{item.subtitle}</Text>}
         </View>
+        {item.route === 'Support' && conciergeUnread > 0 && (
+          <View style={{ minWidth: 20, height: 20, borderRadius: 10, backgroundColor: '#CA8A04', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6, marginRight: 6 }}>
+            <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{conciergeUnread > 9 ? '9+' : String(conciergeUnread)}</Text>
+          </View>
+        )}
         <Ionicons name={locked ? 'lock-closed-outline' : 'chevron-forward'} size={15} color="#D1CFC9" />
       </TouchableOpacity>
     );
@@ -2836,6 +2845,7 @@ function AccountTabStack() {
 function CustomTabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { totalItems, badgeVersion } = useCart();
+  const { unreadCount: conciergeUnread } = useConcierge();
   const { setCartTarget } = useCartAnimation();
   const cartIconRef = useRef<View>(null);
   const rootRouteName = useNavigationState(s => s.routes[s.index]?.name);
@@ -2895,6 +2905,11 @@ function CustomTabBar({ state, navigation }: any) {
                       <Text style={styles.floatTabBadgeText}>{totalItems > 9 ? '9+' : String(totalItems)}</Text>
                     </Animated.View>
                   )}
+                  {name === 'Account' && conciergeUnread > 0 && (
+                    <View style={{ position: 'absolute', top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#CA8A04', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{conciergeUnread > 9 ? '9+' : String(conciergeUnread)}</Text>
+                    </View>
+                  )}
                 </View>
               </View>
               <Text style={[styles.floatTabLabel, isFocused && styles.floatTabLabelActive]}>{name}</Text>
@@ -2922,6 +2937,43 @@ function TabNavigator() {
       </Tab.Navigator>
       <BottomGradient />
     </View>
+  );
+}
+
+// ── Concierge in-app banner host (Phase 1) ────────────────────────────
+// App-level overlay. Shows ConciergeTopBanner when ConciergeContext reports a new
+// operator message; owns the auto-dismiss timer (banner stays pure). Tap → root
+// Stack 'Support' (tab bar auto-hides) + markRead. No Crisp/quote/payment logic.
+export const navigationRef = createNavigationContainerRef<any>();
+
+function ConciergeBannerHost() {
+  const { lastEvent, markRead } = useConcierge();
+  const [bannerVisible, setBannerVisible] = useState(false);
+  const [bannerPreview, setBannerPreview] = useState<string | null>(null);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!lastEvent) return;
+    setBannerPreview(lastEvent.preview);
+    setBannerVisible(true);
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    bannerTimerRef.current = setTimeout(() => setBannerVisible(false), 4500);
+    return () => { if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current); };
+  }, [lastEvent]);
+
+  const goToSupport = () => {
+    setBannerVisible(false);
+    markRead();
+    if (navigationRef.isReady()) navigationRef.navigate('Support' as never);
+  };
+
+  return (
+    <ConciergeTopBanner
+      visible={bannerVisible}
+      preview={bannerPreview}
+      onPress={goToSupport}
+      onDismiss={() => setBannerVisible(false)}
+    />
   );
 }
 
@@ -3001,7 +3053,8 @@ export default function App() {
       <CartProvider>
       <OrdersProvider>
       <ConversationProvider>
-      <NavigationContainer>
+      <ConciergeProvider>
+      <NavigationContainer ref={navigationRef}>
         <Stack.Navigator id="RootStack" initialRouteName="Main" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
           <Stack.Screen name="SignInEntry" component={SignInEntryScreen} />
           <Stack.Screen name="Main" component={TabNavigator} />
@@ -3014,6 +3067,8 @@ export default function App() {
           <Stack.Screen name="Support" component={SupportScreen} />
         </Stack.Navigator>
       </NavigationContainer>
+      <ConciergeBannerHost />
+      </ConciergeProvider>
       </ConversationProvider>
       </OrdersProvider>
       </CartProvider>
