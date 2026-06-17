@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView,
+  View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Keyboard,
   Platform, ActivityIndicator, AppState,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -126,6 +126,11 @@ export default function SupportScreen({ navigation, route }: any) {
   // Measured header height so the keyboard-avoiding offset accounts for the
   // safe-area top + custom header above the chat body (layout-only).
   const [headerHeight, setHeaderHeight] = useState(0);
+  // Floating composer overlay: measured composer height + live keyboard height feed
+  // the FlatList bottom inset so the newest message always clears the composer
+  // (layout-only; no send/Crisp/message changes).
+  const [composerHeight, setComposerHeight] = useState(0);
+  const [kbHeight, setKbHeight] = useState(0);
   const { user } = useAuth();
   const { addItem } = useCart();
   const { setActive: setConciergeActive, markRead: markConciergeRead } = useConcierge();
@@ -389,12 +394,17 @@ export default function SupportScreen({ navigation, route }: any) {
   }, [product?.id, user?.email]);
 
 
-  // ── Auto-scroll on new message ────────────────────────────────────────────
+  // Track keyboard height so the floating composer rides just above the keyboard and
+  // the inverted list's bottom reserve grows to keep the newest message clear of it.
+  // No auto-scroll needed: an inverted list anchors the newest message (index 0) at
+  // the visual bottom by construction, so open/send/receive land it there naturally.
   useEffect(() => {
-    if (messages.length === 0) return;
-    const id = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
-    return () => clearTimeout(id);
-  }, [messages.length]);
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   // ── Send pipeline ────────────────────────────────────────────────────────
   // Customer's bubble shows ONLY what they typed. Product context lives in
@@ -536,6 +546,10 @@ export default function SupportScreen({ navigation, route }: any) {
     [messages],
   );
 
+  // Inverted list renders newest-first; reverse a COPY for the list only — never
+  // mutate visibleMessages or the message source.
+  const orderedForList = useMemo(() => [...visibleMessages].reverse(), [visibleMessages]);
+
   const empty = useMemo(
     () => (!booting && !bootError && visibleMessages.length === 0),
     [booting, bootError, visibleMessages.length],
@@ -545,14 +559,12 @@ export default function SupportScreen({ navigation, route }: any) {
     const isUser = item.from === 'user';
     const isFailed = item.status === 'failed';
     const Wrapper: any = isFailed ? TouchableOpacity : View;
-    // Avatar shows only on the LAST operator message of a consecutive group;
-    // the sender label shows only on the FIRST. Index against visibleMessages
-    // (the array the list actually renders) so filtered internal messages don't
-    // skew grouping. Other bubbles keep the same left spacer for alignment.
-    const prev = visibleMessages[index - 1];
-    const next = visibleMessages[index + 1];
-    const showAvatar = !isUser && (!next || next.from === 'user');
-    const showName = !isUser && (!prev || prev.from === 'user');
+    // Avatar shows only on the LAST (most recent) operator message of a consecutive
+    // group. The list is inverted, so the chronologically-later neighbor sits at
+    // index - 1 in orderedForList (index 0 is the newest message). Other bubbles keep
+    // the same left spacer for alignment.
+    const laterMsg = orderedForList[index - 1];
+    const showAvatar = !isUser && (!laterMsg || laterMsg.from === 'user');
     return (
       <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
         {!isUser
@@ -566,9 +578,6 @@ export default function SupportScreen({ navigation, route }: any) {
             accessibilityLabel={isFailed ? 'Tap to retry sending' : undefined}
           >
             <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAgent]}>
-              {showName ? (
-                <Text style={styles.bubbleAgentName}>Xself</Text>
-              ) : null}
               <Text style={isUser ? styles.bubbleTextUser : styles.bubbleTextAgent}>
                 {item.content}
               </Text>
@@ -679,11 +688,7 @@ export default function SupportScreen({ navigation, route }: any) {
       <View style={styles.divider} />
 
       {/* Body */}
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+      <View style={{ flex: 1 }}>
         {booting ? (
           <View style={styles.center}>
             <ActivityIndicator size="small" color="#1C1917" />
@@ -1049,22 +1054,25 @@ export default function SupportScreen({ navigation, route }: any) {
             <FlatList
               ref={listRef}
               style={{ flex: 1 }}
+              inverted
               keyboardShouldPersistTaps="handled"
-              data={visibleMessages}
+              data={orderedForList}
               keyExtractor={(m) => String(m.id)}
               renderItem={renderItem}
               contentContainerStyle={[
-                styles.listContent,
-                { paddingBottom: 16 },
-                // Empty state centers the prompt; with messages, bottom-anchor so a
-                // short conversation fills from the in-flow composer upward and the
-                // newest message rests just above the input.
+                { paddingHorizontal: 14 },
+                // Inverted list: paddingTop is rendered at the VISUAL BOTTOM, reserving
+                // room so the newest message rests above the floating composer
+                // (composer height + keyboard height + gap). paddingBottom lands at the
+                // visual top for breathing under the divider. Newest anchors to the
+                // bottom by construction — no scrollToEnd needed.
                 empty
                   ? { flexGrow: 1, justifyContent: 'center' }
-                  : { flexGrow: 1, justifyContent: 'flex-end' },
+                  : { paddingTop: composerHeight + kbHeight + 24, paddingBottom: 16 },
               ]}
               ListEmptyComponent={
-                <View style={styles.emptyWrap}>
+                // Counter-flip so the prompt renders upright inside the inverted list.
+                <View style={[styles.emptyWrap, { transform: [{ scaleY: -1 }] }]}>
                   <View style={styles.emptyBadge}>
                     <Ionicons name="sparkles" size={16} color="#1C1917" />
                   </View>
@@ -1086,14 +1094,19 @@ export default function SupportScreen({ navigation, route }: any) {
                   </View>
                 </View>
               }
-              onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
             />
           </>
         )}
 
         {/* Composer */}
         {!booting && !bootError && (
-          <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+          <View
+            style={[
+              styles.composerWrap,
+              { bottom: kbHeight, paddingBottom: kbHeight > 0 ? 10 : Math.max(insets.bottom, 10) },
+            ]}
+            onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}
+          >
             {sendError ? <Text style={styles.sendError}>{sendError}</Text> : null}
             <View style={styles.composerRow}>
               <TextInput
@@ -1125,7 +1138,7 @@ export default function SupportScreen({ navigation, route }: any) {
             </View>
           </View>
         )}
-      </KeyboardAvoidingView>
+      </View>
     </View>
   );
 }
@@ -1652,8 +1665,10 @@ const styles = StyleSheet.create({
 
   // ── Composer ─────────────────────────────────────────────────────────────
   composerWrap: {
-    backgroundColor: '#F3F1EB',
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(0,0,0,0.04)',
+    // Floating overlay: transparent so messages scroll visibly behind it. Only the
+    // input pill + send button (their own backgrounds) read as floating elements.
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: 'transparent',
     paddingHorizontal: 14, paddingTop: 10,
   },
   sendError: { fontSize: 12, color: '#B45309', marginBottom: 6 },
