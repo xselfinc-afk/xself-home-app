@@ -17,7 +17,7 @@ import ProductCard from './src/components/ProductCard';
 import { NavigationContainer, useNavigationState, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
@@ -3041,6 +3041,7 @@ export default function App() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0F766E' }}>
+      <SafeAreaProvider>
       <StripeProvider
         publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ''}
         merchantIdentifier={process.env.EXPO_PUBLIC_APPLE_MERCHANT_ID ?? 'merchant.com.xself.home'}
@@ -3078,6 +3079,7 @@ export default function App() {
       </AuthProvider>
       </StripeProvider>
       {showSplash && <SplashOverlay opacity={splashOpacity} />}
+      </SafeAreaProvider>
     </View>
   );
 }
