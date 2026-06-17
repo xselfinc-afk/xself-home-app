@@ -41,7 +41,7 @@ export interface ConciergeTopBannerProps {
 export default function ConciergeTopBanner({
   visible,
   preview,
-  title = 'New message from Xself Concierge',
+  title = 'New message',
   onPress,
   onDismiss,
 }: ConciergeTopBannerProps) {

@@ -76,7 +76,16 @@ function fmtTime(tsSeconds: number): string {
   const m = d.getMinutes();
   const ampm = h >= 12 ? 'PM' : 'AM';
   h = h % 12 || 12;
-  return `${h}:${m < 10 ? '0' + m : m} ${ampm}`;
+  const time = `${h}:${m < 10 ? '0' + m : m} ${ampm}`;
+  // Today → time only; older messages → "Mon D, h:mm AM/PM" (local device time).
+  const now = new Date();
+  const isToday =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (isToday) return time;
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${time}`;
 }
 
 const ADMIN_URL_REGEX =
@@ -536,11 +545,14 @@ export default function SupportScreen({ navigation, route }: any) {
     const isUser = item.from === 'user';
     const isFailed = item.status === 'failed';
     const Wrapper: any = isFailed ? TouchableOpacity : View;
-    // Show the avatar only on the last operator message in a consecutive
-    // support-message group; earlier bubbles keep the same left-side spacer
-    // so message widths and alignment stay constant.
-    const next = messages[index + 1];
+    // Avatar shows only on the LAST operator message of a consecutive group;
+    // the sender label shows only on the FIRST. Index against visibleMessages
+    // (the array the list actually renders) so filtered internal messages don't
+    // skew grouping. Other bubbles keep the same left spacer for alignment.
+    const prev = visibleMessages[index - 1];
+    const next = visibleMessages[index + 1];
     const showAvatar = !isUser && (!next || next.from === 'user');
+    const showName = !isUser && (!prev || prev.from === 'user');
     return (
       <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
         {!isUser
@@ -554,8 +566,8 @@ export default function SupportScreen({ navigation, route }: any) {
             accessibilityLabel={isFailed ? 'Tap to retry sending' : undefined}
           >
             <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAgent]}>
-              {!isUser ? (
-                <Text style={styles.bubbleAgentName}>Xself Concierge</Text>
+              {showName ? (
+                <Text style={styles.bubbleAgentName}>Xself</Text>
               ) : null}
               <Text style={isUser ? styles.bubbleTextUser : styles.bubbleTextAgent}>
                 {item.content}
@@ -656,7 +668,7 @@ export default function SupportScreen({ navigation, route }: any) {
           <Ionicons name="chevron-back" size={22} color="#1C1917" />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>
-          <Text style={styles.headerTitle}>Xself Concierge</Text>
+          <Text style={styles.headerTitle}>Chat with us</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
             Usually replies soon
           </Text>
@@ -1078,7 +1090,7 @@ export default function SupportScreen({ navigation, route }: any) {
             <View style={styles.composerRow}>
               <TextInput
                 style={styles.input}
-                placeholder="Message Xself Concierge"
+                placeholder="Type a message…"
                 placeholderTextColor="#9CA3AF"
                 value={draft}
                 onChangeText={setDraft}
@@ -1633,7 +1645,7 @@ const styles = StyleSheet.create({
   // ── Composer ─────────────────────────────────────────────────────────────
   composerWrap: {
     backgroundColor: '#F3F1EB',
-    borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.06)',
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(0,0,0,0.04)',
     paddingHorizontal: 14, paddingTop: 10,
   },
   sendError: { fontSize: 12, color: '#B45309', marginBottom: 6 },

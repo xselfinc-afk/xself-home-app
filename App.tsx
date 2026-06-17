@@ -2529,7 +2529,7 @@ function AccountScreen({ navigation }) {
     // chat-entry-points consolidation. Route still registered in AccountStack
     // for safety; reachable only by direct code navigation.
     { icon: 'cube-outline', title: 'Orders & Purchases', route: 'Orders', requiresAuth: true },
-    { icon: 'help-buoy-outline', title: 'Contact Support', subtitle: 'Chat with Xself Concierge', route: 'Support' },
+    { icon: 'help-buoy-outline', title: 'Chat with us', subtitle: 'Usually replies soon', route: 'Support' },
     { icon: 'share-social-outline', title: 'Start Sharing', subtitle: 'Earn $5–$20 per referral', route: 'Earn', requiresAuth: true, secondary: true },
   ];
 
