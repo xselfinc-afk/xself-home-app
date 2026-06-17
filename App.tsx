@@ -2508,6 +2508,7 @@ function CartScreen({ navigation }) {
 
 function AccountScreen({ navigation }) {
   const conciergeUnread = useConcierge().unreadCount;
+  const insets = useSafeAreaInsets();
   const { user, isGuest, signOut, deleteAccount } = useAuth();
   const { balance } = useRewards();
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -2576,7 +2577,7 @@ function AccountScreen({ navigation }) {
   if (!user) {
     return (
       <SafeAreaView style={styles.container}>
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}>
           <View style={styles.guestIdentity}>
             <View style={styles.guestAvatarWrap}>
               <Ionicons name="person-outline" size={32} color="#CA8A04" />
@@ -2610,7 +2611,7 @@ function AccountScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}>
 
         {/* Membership Card — premium dark focal point */}
         <View style={styles.memberCard}>

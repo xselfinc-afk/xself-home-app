@@ -1048,6 +1048,8 @@ export default function SupportScreen({ navigation, route }: any) {
 
             <FlatList
               ref={listRef}
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
               data={visibleMessages}
               keyExtractor={(m) => String(m.id)}
               renderItem={renderItem}
@@ -1567,7 +1569,7 @@ const styles = StyleSheet.create({
   ctaBtnTextDisabled: { color: '#9CA3AF' },
 
   // ── Chat ─────────────────────────────────────────────────────────────────
-  listContent: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 18 },
+  listContent: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 28 },
 
   emptyWrap: { alignItems: 'center', paddingHorizontal: 24 },
   emptyBadge: {
