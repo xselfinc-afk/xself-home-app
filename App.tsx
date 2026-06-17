@@ -2836,7 +2836,11 @@ function AccountTabStack() {
       <AccountStack.Screen name="Membership" component={MembershipScreen} />
       <AccountStack.Screen name="Earn" component={EarnScreen} />
       <AccountStack.Screen name="Inbox" component={InboxScreen} />
-      <AccountStack.Screen name="Support" component={SupportScreen} />
+      {/* 'Support' is intentionally NOT registered in AccountStack. The Concierge
+          chat opens via the root Stack 'Support' (navigationRef.navigate('Support'))
+          so the bottom tab bar is hidden and the composer isn't covered. A nested
+          registration here caused Support to render inside the Account tab, leaving
+          the floating tab bar overlaying the message input. */}
       <AccountStack.Screen name="SignInEntry" component={SignInEntryScreen} />
     </AccountStack.Navigator>
   );
