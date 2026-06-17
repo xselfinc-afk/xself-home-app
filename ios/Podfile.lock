@@ -24,6 +24,8 @@ PODS:
   - Crisp (2.12.0):
     - Crisp/Crisp (= 2.12.0)
   - Crisp/Crisp (2.12.0)
+  - EASClient (1.0.8):
+    - ExpoModulesCore
   - EXConstants (18.0.13):
     - ExpoModulesCore
   - EXImageLoader (6.0.0):
@@ -280,6 +282,35 @@ PODS:
     - ExpoModulesCore
   - ExpoSplashScreen (31.0.13):
     - ExpoModulesCore
+  - EXStructuredHeaders (5.0.0)
+  - EXUpdates (29.0.18):
+    - EASClient
+    - EXManifests
+    - ExpoModulesCore
+    - EXStructuredHeaders
+    - EXUpdatesInterface
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - ReachabilitySwift
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - Yoga
   - EXUpdatesInterface (2.0.0):
     - ExpoModulesCore
   - FBLazyVector (0.81.5)
@@ -309,6 +340,7 @@ PODS:
     - FBLazyVector (= 0.81.5)
     - RCTRequired (= 0.81.5)
     - React-Core (= 0.81.5)
+  - ReachabilitySwift (5.2.4)
   - React (0.81.5):
     - React-Core (= 0.81.5)
     - React-Core/DevSupport (= 0.81.5)
@@ -2193,6 +2225,7 @@ PODS:
 
 DEPENDENCIES:
   - "AsyncStorage (from `../node_modules/@react-native-async-storage/async-storage`)"
+  - EASClient (from `../node_modules/expo-eas-client/ios`)
   - EXConstants (from `../node_modules/expo-constants/ios`)
   - EXImageLoader (from `../node_modules/expo-image-loader/ios`)
   - EXJSONUtils (from `../node_modules/expo-json-utils/ios`)
@@ -2215,6 +2248,8 @@ DEPENDENCIES:
   - ExpoModulesCore (from `../node_modules/expo-modules-core`)
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
+  - EXStructuredHeaders (from `../node_modules/expo-structured-headers/ios`)
+  - EXUpdates (from `../node_modules/expo-updates/ios`)
   - EXUpdatesInterface (from `../node_modules/expo-updates-interface/ios`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
@@ -2295,6 +2330,7 @@ SPEC REPOS:
     - libavif
     - libdav1d
     - libwebp
+    - ReachabilitySwift
     - SDWebImage
     - SDWebImageAVIFCoder
     - SDWebImageSVGCoder
@@ -2312,6 +2348,8 @@ SPEC REPOS:
 EXTERNAL SOURCES:
   AsyncStorage:
     :path: "../node_modules/@react-native-async-storage/async-storage"
+  EASClient:
+    :path: "../node_modules/expo-eas-client/ios"
   EXConstants:
     :path: "../node_modules/expo-constants/ios"
   EXImageLoader:
@@ -2356,6 +2394,10 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-secure-store/ios"
   ExpoSplashScreen:
     :path: "../node_modules/expo-splash-screen/ios"
+  EXStructuredHeaders:
+    :path: "../node_modules/expo-structured-headers/ios"
+  EXUpdates:
+    :path: "../node_modules/expo-updates/ios"
   EXUpdatesInterface:
     :path: "../node_modules/expo-updates-interface/ios"
   FBLazyVector:
@@ -2505,6 +2547,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   AsyncStorage: 2e1d431842588f5af845737e6435c1fcbecdab51
   Crisp: 8bf04420a5aef83f1034022eb709be177c42c878
+  EASClient: 40dd9e740684782610c49becab2643782ea1a20c
   EXConstants: fce59a631a06c4151602843667f7cfe35f81e271
   EXImageLoader: 189e3476581efe3ad4d1d3fb4735b7179eb26f05
   EXJSONUtils: 1d3e4590438c3ee593684186007028a14b3686cd
@@ -2527,6 +2570,8 @@ SPEC CHECKSUMS:
   ExpoModulesCore: f3da4f1ab5a8375d0beafab763739dbee8446583
   ExpoSecureStore: d32f751874a2ceb5aaeebeb3578e165c1ba2b24a
   ExpoSplashScreen: bc3cffefca2716e5f22350ca109badd7e50ec14d
+  EXStructuredHeaders: c951e77f2d936f88637421e9588c976da5827368
+  EXUpdates: 3be674499e30f26d080a01b2e45f9598a0cfb00d
   EXUpdatesInterface: 5adf50cb41e079c861da6d9b4b954c3db9a50734
   FBLazyVector: e95a291ad2dadb88e42b06e0c5fb8262de53ec12
   hermes-engine: 9f4dfe93326146a1c99eb535b1cb0b857a3cd172
@@ -2536,6 +2581,7 @@ SPEC CHECKSUMS:
   RCTDeprecation: 943572d4be82d480a48f4884f670135ae30bf990
   RCTRequired: 8f3cfc90cc25cf6e420ddb3e7caaaabc57df6043
   RCTTypeSafety: 16a4144ca3f959583ab019b57d5633df10b5e97c
+  ReachabilitySwift: 32793e867593cfc1177f5d16491e3a197d2fccda
   React: 914f8695f9bf38e6418228c2ffb70021e559f92f
   React-callinvoker: 1c0808402aee0c6d4a0d8e7220ce6547af9fba71
   React-Core: c61410ef0ca6055e204a963992e363227e0fd1c5
