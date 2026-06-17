@@ -682,7 +682,7 @@ export default function SupportScreen({ navigation, route }: any) {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + headerHeight : 0}
+        keyboardVerticalOffset={0}
       >
         {booting ? (
           <View style={styles.center}>
@@ -1055,7 +1055,13 @@ export default function SupportScreen({ navigation, route }: any) {
               renderItem={renderItem}
               contentContainerStyle={[
                 styles.listContent,
-                empty && { flexGrow: 1, justifyContent: 'center' },
+                { paddingBottom: 16 },
+                // Empty state centers the prompt; with messages, bottom-anchor so a
+                // short conversation fills from the in-flow composer upward and the
+                // newest message rests just above the input.
+                empty
+                  ? { flexGrow: 1, justifyContent: 'center' }
+                  : { flexGrow: 1, justifyContent: 'flex-end' },
               ]}
               ListEmptyComponent={
                 <View style={styles.emptyWrap}>
