@@ -70,47 +70,11 @@ function fmtDate(d: Date): string {
 }
 
 /**
- * Seed ledger: three referral earns (+$20) + one legacy credit spend (-$7.50) = $12.50 balance.
- * The legacy spend uses a historical checkoutSessionId so it is idempotency-safe.
+ * Empty starting ledger — no seeded demo rewards. Balance, totalEarned, history,
+ * etc. are all derived from real referral_earn / credit_spend entries recorded at
+ * runtime, so a new user sees $0.00 until genuine rewards exist.
  */
-const INITIAL_LEDGER: LedgerEntry[] = [
-  {
-    id: 'seed-1',
-    type: 'referral_earn',
-    amount: 10,
-    orderId: 'ORD-SEED-001',
-    referralCode: REFERRAL_CODE,
-    note: 'Referral purchase — Sarah M. ($499 order)',
-    date: 'Mar 10, 2026',
-  },
-  {
-    id: 'seed-2',
-    type: 'referral_earn',
-    amount: 5,
-    orderId: 'ORD-SEED-002',
-    referralCode: REFERRAL_CODE,
-    note: 'Referral purchase — James T. ($149 order)',
-    date: 'Feb 28, 2026',
-  },
-  {
-    id: 'seed-3',
-    type: 'referral_earn',
-    amount: 5,
-    orderId: 'ORD-SEED-003',
-    referralCode: REFERRAL_CODE,
-    note: 'Referral purchase — Mia L. ($149 order)',
-    date: 'Feb 15, 2026',
-  },
-  {
-    id: 'seed-spend-1',
-    type: 'credit_spend',
-    amount: -7.50,
-    orderId: 'ORD-HIST-000',
-    checkoutSessionId: 'sess-hist-000',
-    note: 'Shopping credit applied — order ORD-HIST-000',
-    date: 'Jan 20, 2026',
-  },
-];
+const INITIAL_LEDGER: LedgerEntry[] = [];
 
 type RewardsCtx = {
   ledger: LedgerEntry[];
@@ -175,7 +139,7 @@ const RewardsContext = createContext<RewardsCtx>(null!);
 
 export function RewardsProvider({ children }: { children: React.ReactNode }) {
   const [ledger, setLedger] = useState<LedgerEntry[]>(INITIAL_LEDGER);
-  const [clicks, setClicks] = useState(12);
+  const [clicks, setClicks] = useState(0);
 
   // ── Derived values ──────────────────────────────────────────────────────
   const balance = parseFloat(ledger.reduce((sum, e) => sum + e.amount, 0).toFixed(2));
