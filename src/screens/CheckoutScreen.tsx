@@ -57,7 +57,7 @@ function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
 export default function CheckoutScreen({ route, navigation }: any) {
   const { cart, reserveExpiry, clearCart } = useCart();
   const { shoppingCredit, recordCreditSpend } = useRewards();
-  const { user, isGuest, continueAsGuest } = useAuth();
+  const { user, isGuest, continueAsGuest, sendOtp, verifyOtp } = useAuth();
   const { addOrder } = useOrders();
   const { confirmPayment, confirmPlatformPayPayment } = useStripe();
   const insets = useSafeAreaInsets();
@@ -203,6 +203,22 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrSaveError, setAddrSaveError] = useState<string | null>(null);
   const [fulfillRetryKey, setFulfillRetryKey] = useState(0);
+
+  // ── Guest email verification (OTP) ──────────────────────────────────────────
+  // Every order needs a verified contact email. Logged-in users are already
+  // verified via their Supabase session email; guests must verify a one-time code
+  // here before payment. Verifying reuses AuthContext.sendOtp/verifyOtp — on
+  // success the guest gains a Supabase session (user.email set) and this section
+  // auto-hides. No native, AuthContext, or backend changes.
+  const [contactEmail, setContactEmail] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpStep, setOtpStep] = useState<'email' | 'code'>('email');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+  const otpCooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const otpCodeRef = useRef<TextInput>(null);
 
   // Load addresses from Supabase when the authenticated user is known
   useEffect(() => {
@@ -392,6 +408,60 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const addrFormValid = addrFirstName.trim() && addrLastName.trim() && addrPhone.trim() &&
     addrLine1.trim() && addrCity.trim() && addrStateVal.trim() && addrZip.trim();
 
+  // A Supabase session email counts as verified (logged-in users and guests who
+  // completed the OTP step below). Payment is blocked until this is true.
+  const isEmailVerified = !!user?.email;
+  const CHECKOUT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const contactEmailValid = CHECKOUT_EMAIL_RE.test(contactEmail.trim());
+
+  const startOtpCooldown = (seconds = 30) => {
+    if (otpCooldownRef.current) clearInterval(otpCooldownRef.current);
+    setOtpCooldown(seconds);
+    otpCooldownRef.current = setInterval(() => {
+      setOtpCooldown(prev => {
+        if (prev <= 1) {
+          if (otpCooldownRef.current) clearInterval(otpCooldownRef.current);
+          otpCooldownRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+  useEffect(() => () => { if (otpCooldownRef.current) clearInterval(otpCooldownRef.current); }, []);
+
+  // When the step advances to 'code' (only after sendOtp succeeds), the 6-digit
+  // input has just rendered — focus it on the next frame so the number keyboard
+  // opens and the iOS one-time-code autofill suggestion can appear. On send
+  // failure the step stays 'email', so this never fires.
+  useEffect(() => {
+    if (otpStep !== 'code') return;
+    const id = requestAnimationFrame(() => otpCodeRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [otpStep]);
+
+  async function handleSendOtp() {
+    if (!contactEmailValid || otpSending || otpCooldown > 0) return;
+    setOtpSending(true);
+    setOtpError(null);
+    const { error } = await sendOtp(contactEmail.trim().toLowerCase());
+    setOtpSending(false);
+    if (error) { setOtpError('Could not send a code. Please try again.'); return; }
+    setOtpStep('code');
+    startOtpCooldown(30);
+  }
+
+  async function handleVerifyOtp() {
+    if (otpCode.length < 6 || otpVerifying) return;
+    setOtpVerifying(true);
+    setOtpError(null);
+    // On success, AuthContext.applySession sets `user` → isEmailVerified flips true
+    // and the contact-email section auto-hides.
+    const { error } = await verifyOtp(contactEmail.trim().toLowerCase(), otpCode);
+    setOtpVerifying(false);
+    if (error) { setOtpError('Invalid or expired code. Please try again.'); return; }
+  }
+
   type PaymentMethod = 'apple_pay' | 'card' | 'affirm';
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
 
@@ -564,6 +634,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // ── Affirm payment handler ────────────────────────────────────────────────
   async function handleAffirmPayment() {
     if (affirmLoading || placing) return;
+    if (!isEmailVerified) return;
     if (!selectedAddress) { setShowAddForm(true); setAddrModalVisible(true); return; }
     if (!activePlan || fulfillmentChoice === null) return;
 
@@ -679,6 +750,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     if (deliveryLoading) return fulfillmentPlan ? 'Updating delivery…' : 'Checking delivery…';
     if (rechecking) return 'Verifying inventory…';
     if (placing) return 'Processing…';
+    if (!isEmailVerified || !selectedAddress) return 'Add contact & delivery details';
     // Hard blocks: server gave us no usable plan (covers isInventoryStale,
     // geocode failures, and any other valid:false response). Pre-flight gaps
     // (no address, no fulfillment choice, incomplete card) fall through so
@@ -698,16 +770,20 @@ export default function CheckoutScreen({ route, navigation }: any) {
         <Text style={styles.title}>Checkout</Text>
         <Text style={styles.titleSub}>Review your order before placing</Text>
 
-        {/* Shipping Address */}
+        {/* Contact & Delivery — one combined section. Email, name, phone, and
+            address are all fulfillment details, collected together in the bottom
+            sheet (email verified by OTP at the top of that sheet). Payment stays
+            locked until the email is verified AND delivery details are saved. */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Delivery</Text>
-          {selectedAddress ? (
+          <Text style={styles.sectionTitle}>Contact & Delivery</Text>
+          {isEmailVerified && selectedAddress ? (
             <View style={styles.card}>
               <View style={styles.addrRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.addrName}>{selectedAddress.first_name} {selectedAddress.last_name}  ·  {selectedAddress.phone}</Text>
                   <Text style={styles.addrLine}>{selectedAddress.address_line_1}{selectedAddress.address_line_2 ? `, ${selectedAddress.address_line_2}` : ''}</Text>
                   <Text style={styles.addrLine}>{selectedAddress.city}, {selectedAddress.state} {selectedAddress.zip}</Text>
+                  <Text style={styles.emailVerifiedNote}>Email verified</Text>
                 </View>
                 <TouchableOpacity onPress={() => { setShowAddForm(false); setAddrModalVisible(true); }}>
                   <Text style={styles.addrChangeBtn}>Change</Text>
@@ -715,9 +791,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
               </View>
             </View>
           ) : (
-            <TouchableOpacity style={styles.addrEmpty} onPress={() => { setShowAddForm(true); setAddrModalVisible(true); }}>
-              <Ionicons name="add-circle-outline" size={18} color="#CA8A04" />
-              <Text style={styles.addrEmptyText}>Add shipping address</Text>
+            <TouchableOpacity style={styles.card} onPress={() => { setShowAddForm(true); setAddrModalVisible(true); }} activeOpacity={0.7}>
+              <View style={styles.addrRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addrName}>Add contact &amp; delivery details</Text>
+                  <Text style={[styles.otpHelp, { marginBottom: 0, marginTop: 4 }]}>Required before checkout</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#CA8A04" />
+              </View>
             </TouchableOpacity>
           )}
         </View>
@@ -728,15 +809,6 @@ export default function CheckoutScreen({ route, navigation }: any) {
           {deliveryLoading && (
             <View style={styles.card}>
               <Text style={styles.fulfillSub}>Checking availability…</Text>
-            </View>
-          )}
-
-          {!deliveryLoading && !fulfillmentPlan && !selectedAddress && (
-            <View style={styles.fulfillInfoBanner}>
-              <Ionicons name="location-outline" size={16} color="#6B7280" />
-              <Text style={styles.fulfillInfoText}>
-                Please add or update your shipping address to see delivery options.
-              </Text>
             </View>
           )}
 
@@ -932,8 +1004,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
               ) : null}
               <TouchableOpacity
-                style={[styles.affirmBtn, (affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale) && { opacity: 0.6 }]}
-                disabled={affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale}
+                style={[styles.affirmBtn, (affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified) && { opacity: 0.6 }]}
+                disabled={affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified}
                 onPress={handleAffirmPayment}
                 activeOpacity={0.8}
               >
@@ -1071,8 +1143,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           {paymentMethod !== 'affirm' && (<><TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified}
             onPress={async () => {
               console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
               if (!selectedAddress) {
@@ -1081,6 +1153,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
               }
               if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) {
                 console.log('[Payment] blocked:', { placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice });
+                return;
+              }
+              if (!isEmailVerified) {
+                console.log('[Payment] blocked: contact email not verified');
                 return;
               }
 
@@ -1245,7 +1321,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     <TouchableOpacity onPress={() => setShowAddForm(false)} style={{ marginRight: 8 }}>
                       <Ionicons name="arrow-back" size={20} color="#6B7280" />
                     </TouchableOpacity>
-                    <Text style={styles.addrPanelTitle}>New Address</Text>
+                    <Text style={styles.addrPanelTitle}>Contact &amp; Delivery</Text>
                   </View>
 
                   <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -1263,6 +1339,71 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     <View style={styles.addrFormField}>
                       <Text style={styles.infoLabel}>Phone</Text>
                       <TextInput style={styles.infoInput} value={addrPhone} onChangeText={setAddrPhone} placeholder="(555) 000-0000" placeholderTextColor="#9CA3AF" keyboardType="phone-pad" />
+                    </View>
+                    {/* Email + OTP — verified contact email (logged-in session, or a
+                        guest who completes the code here). Email input + Send share one
+                        row; the code + Verify row appears only once a code is sent.
+                        Editing the email after sending resets back to the send step. */}
+                    <View style={styles.addrFormField}>
+                      <Text style={styles.infoLabel}>Email</Text>
+                      {isEmailVerified ? (
+                        <View style={styles.otpVerifiedRow}>
+                          <Ionicons name="checkmark-circle" size={15} color="#059669" />
+                          <Text style={styles.otpVerifiedText} numberOfLines={1}>Verified · {user?.email}</Text>
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.otpEmailRow}>
+                            <TextInput
+                              style={[styles.infoInput, { flex: 1 }]}
+                              value={contactEmail}
+                              onChangeText={t => { setContactEmail(t); if (otpStep === 'code') { setOtpStep('email'); setOtpCode(''); setOtpError(null); } }}
+                              editable={!otpSending && !otpVerifying}
+                              placeholder="you@email.com"
+                              placeholderTextColor="#9CA3AF"
+                              keyboardType="email-address"
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              textContentType="emailAddress"
+                            />
+                            <TouchableOpacity
+                              style={[styles.otpSendBtn, (!contactEmailValid || otpSending || otpCooldown > 0) && { opacity: 0.5 }]}
+                              disabled={!contactEmailValid || otpSending || otpCooldown > 0}
+                              onPress={handleSendOtp}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.otpSendBtnText}>
+                                {otpSending ? 'Sending…' : otpCooldown > 0 ? `${otpCooldown}s` : otpStep === 'code' ? 'Resend' : 'Send'}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                          {otpStep === 'code' && (
+                            <View style={styles.otpCodeRow}>
+                              <TextInput
+                                ref={otpCodeRef}
+                                style={[styles.infoInput, { flex: 1, letterSpacing: 4, textAlign: 'center' }]}
+                                value={otpCode}
+                                onChangeText={t => setOtpCode(t.replace(/\D/g, '').slice(0, 6))}
+                                placeholder="6-digit code"
+                                placeholderTextColor="#9CA3AF"
+                                keyboardType="number-pad"
+                                maxLength={6}
+                                textContentType="oneTimeCode"
+                                autoComplete="one-time-code"
+                              />
+                              <TouchableOpacity
+                                style={[styles.otpSendBtn, (otpCode.length < 6 || otpVerifying) && { opacity: 0.5 }]}
+                                disabled={otpCode.length < 6 || otpVerifying}
+                                onPress={handleVerifyOtp}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={styles.otpSendBtnText}>{otpVerifying ? 'Verifying…' : 'Verify'}</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                          {otpError ? <Text style={styles.otpErrorText}>{otpError}</Text> : null}
+                        </>
+                      )}
                     </View>
                     <View style={styles.addrFormField}>
                       <Text style={styles.infoLabel}>Address Line 1</Text>
@@ -1289,8 +1430,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                       </View>
                     </View>
                     <TouchableOpacity
-                      style={[styles.addrSaveBtn, (!addrFormValid || addrSaving) && { opacity: 0.5 }]}
-                      disabled={!addrFormValid || addrSaving}
+                      style={[styles.addrSaveBtn, (!addrFormValid || addrSaving || !isEmailVerified) && { opacity: 0.5 }]}
+                      disabled={!addrFormValid || addrSaving || !isEmailVerified}
                       onPress={async () => {
                         if (addrSaving) return;
                         setAddrSaveError(null);
@@ -1354,6 +1495,19 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F1EB' },
   title: { fontSize: 22, fontWeight: '600', color: '#1C1917', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 2 },
   titleSub: { fontSize: 13, color: '#9CA3AF', paddingHorizontal: 20, paddingBottom: 10 },
+
+  // Contact-email OTP verify (guest checkout)
+  otpHelp: { fontSize: 12, color: '#6B7280', marginBottom: 10, lineHeight: 17 },
+  otpErrorText: { fontSize: 12, color: '#B45309', marginTop: 8 },
+  otpVerifiedRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ECFDF5', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12 },
+  otpVerifiedText: { fontSize: 13, color: '#065F46', fontWeight: '500', flex: 1 },
+  emailVerifiedNote: { fontSize: 11, color: '#9CA3AF', marginTop: 6 },
+  // Email + Send / code + Verify share a row; default stretch makes the compact
+  // button match the input height.
+  otpEmailRow: { flexDirection: 'row', gap: 8 },
+  otpCodeRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  otpSendBtn: { backgroundColor: '#EAB320', borderRadius: 6, paddingHorizontal: 16, minWidth: 80, alignItems: 'center', justifyContent: 'center' },
+  otpSendBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
 
   section: { paddingHorizontal: 20, paddingBottom: 8 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
@@ -1442,8 +1596,6 @@ const styles = StyleSheet.create({
   addrName: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginBottom: 3 },
   addrLine: { fontSize: 13, color: '#6B7280', lineHeight: 18 },
   addrChangeBtn: { fontSize: 13, color: '#CA8A04', fontWeight: '600', paddingLeft: 12 },
-  addrEmpty: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'white', borderRadius: 6, padding: 16, borderWidth: 1, borderColor: '#E5E7EB' },
-  addrEmptyText: { fontSize: 14, color: '#CA8A04', fontWeight: '500' },
   addrOverlay: { flex: 1, backgroundColor: 'rgba(64,63,61,0.4)', justifyContent: 'flex-end' },
   addrPanel: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, maxHeight: '85%' as any },
   addrHandleBar: { width: 36, height: 4, backgroundColor: '#C8C6BF', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
@@ -1468,8 +1620,6 @@ const styles = StyleSheet.create({
   fulfillItemQty: { fontSize: 12, color: '#9CA3AF', fontWeight: '500' },
   fulfillErrorBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEF2F2', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#FECACA' },
   fulfillErrorText: { flex: 1, fontSize: 13, color: '#B45309', lineHeight: 18 },
-  fulfillInfoBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#F9FAFB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#E5E7EB' },
-  fulfillInfoText: { flex: 1, fontSize: 13, color: '#6B7280', lineHeight: 18 },
   placeOrderErrorNote: { backgroundColor: '#FEF2F2', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 10, borderWidth: 1, borderColor: '#FECACA' },
   placeOrderErrorText: { fontSize: 12, color: '#B45309', textAlign: 'center' as const, lineHeight: 17 },
   fulfillFallbackBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: '#FFFBEB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9, borderWidth: 1, borderColor: '#FDE68A' },

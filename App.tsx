@@ -903,7 +903,7 @@ function HomeScreen({ navigation }) {
                   Check your connection and try again.
                 </Text>
                 <TouchableOpacity
-                  style={{ marginTop: 16, backgroundColor: '#CA8A04', paddingVertical: 10, paddingHorizontal: 22, borderRadius: 22 }}
+                  style={{ marginTop: 16, backgroundColor: '#EAB320', paddingVertical: 10, paddingHorizontal: 22, borderRadius: 22 }}
                   onPress={() => { setLoadState('loading'); setAllProducts((p) => p); /* trigger refetch via remount */ navigation.replace?.('Main'); }}
                 >
                   <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>Try again</Text>
@@ -1876,7 +1876,7 @@ function ProductDetailScreen({ route, navigation }) {
             });
           }}
         >
-          <Ionicons name="chatbubble-ellipses" size={21} color="#CA8A04" />
+          <Ionicons name="chatbubble-ellipses" size={26} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
     </View>
@@ -3453,11 +3453,10 @@ const styles = StyleSheet.create({
   floatCtaBtnText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
   msgFabWrap: {
     position: 'absolute', bottom: 90, right: 20,
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    borderWidth: 1, borderColor: 'rgba(0,0,0,0.05)',
-    shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
-    elevation: 5,
+    width: 58, height: 58, borderRadius: 29,
+    backgroundColor: '#EAB320',
+    shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   msgFabBtn: {
     width: '100%', height: '100%',
