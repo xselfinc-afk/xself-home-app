@@ -627,6 +627,73 @@ check('Delivery account separation', () => {
   return failures;
 });
 
+// ── Check 15: Delivery dynamic fee (no hardcoded $99) ────────────────────────
+// The temporary $99 placeholder must be gone; the Delivery fee is server-authoritative
+// from GIGA product/price/v1 (read-only) and create-checkout-order must fail-closed (no
+// $99 fallback). Pickup stays free and locked (Check 13). See docs/delivery-architecture.md.
+check('Delivery dynamic fee', () => {
+  const failures: string[] = [];
+
+  // (a) Frontend: no hardcoded Delivery fee, no customer-facing "$99"/"Home Delivery"/"Shipping —".
+  const fulfill = read('src/types/fulfillment.ts') ?? '';
+  if (/SHIPPING_FEE/.test(fulfill)) failures.push('src/types/fulfillment.ts: SHIPPING_FEE must be removed (Delivery fee is dynamic)');
+  const checkout = read('src/screens/CheckoutScreen.tsx') ?? '';
+  if (/SHIPPING_FEE/.test(checkout)) failures.push('CheckoutScreen.tsx: must not reference SHIPPING_FEE');
+  if (/Home Delivery/.test(checkout)) failures.push('CheckoutScreen.tsx: customer-facing "Home Delivery" must be removed (use "Delivery")');
+  if (/\$99(?![0-9])/.test(checkout)) failures.push('CheckoutScreen.tsx: must not display "$99"');
+  if (/Shipping — \$/.test(checkout)) failures.push('CheckoutScreen.tsx: customer-facing "Shipping — $" must be removed (use "Delivery")');
+
+  // (b) plan-fulfillment: computes dynamic fee; no $99 constant; no order/dropship call.
+  const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
+  if (/SHIPPING_FEE\s*=\s*99/.test(plan)) failures.push('plan-fulfillment: SHIPPING_FEE = 99 must be removed');
+  if (!/computeDeliveryFee/.test(plan) || !/deliveryProductPrice/.test(plan)) failures.push('plan-fulfillment: must compute the Delivery fee via deliveryProductPrice + computeDeliveryFee');
+  if (!/deliveryFeeCents/.test(plan)) failures.push('plan-fulfillment: must return deliveryFeeCents');
+  if (/dropShip-sync|order\/create|pickUpSelfLabel-sync/.test(plan)) failures.push('plan-fulfillment: must not reference any order/dropship endpoint');
+
+  // (c) create-checkout-order: no "?? 99" fallback; uses server fee; fail-closed.
+  const cco = read('supabase/functions/create-checkout-order/index.ts') ?? '';
+  if (/\?\?\s*99\b/.test(cco)) failures.push('create-checkout-order: the "?? 99" Delivery fallback must be removed');
+  if (!/deliveryFeeCents/.test(cco)) failures.push('create-checkout-order: must use planData.deliveryFeeCents');
+  if (!/delivery_fee_unavailable/.test(cco)) failures.push('create-checkout-order: must fail-closed (delivery_fee_unavailable) when no Delivery fee');
+  if (/dropShip-sync|order\/create/.test(cco)) failures.push('create-checkout-order: must not reference dropship/create-order endpoint');
+
+  // (d) Shared fee module + read-only Delivery price helper exist.
+  if (read('supabase/functions/_shared/deliveryFee.ts') === null) failures.push('supabase/functions/_shared/deliveryFee.ts: missing');
+  const dc = read('supabase/functions/_shared/gigaDeliveryClient.ts') ?? '';
+  if (!/product\/price\/v1/.test(dc)) failures.push('gigaDeliveryClient.ts: must expose the read-only product/price/v1 helper');
+
+  return failures;
+});
+
+// ── Check 16: Delivery version gate (old builds safe, new builds dynamic) ────
+// The client-capability gate (clientSupportsDynamicDelivery) must exist so a production
+// deploy serves old shipped builds legacy-compatible behavior (numeric shipping, never 422)
+// and new builds the dynamic GIGA fee. See docs/delivery-architecture.md + deliveryGate.test.ts.
+check('Delivery version gate', () => {
+  const failures: string[] = [];
+
+  const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
+  if (!/clientSupportsDynamicDelivery/.test(plan)) failures.push('plan-fulfillment: missing clientSupportsDynamicDelivery gate');
+  if (!/LEGACY_DELIVERY_FEE_DOLLARS/.test(plan)) failures.push('plan-fulfillment: missing legacy fee branch (LEGACY_DELIVERY_FEE_DOLLARS)');
+
+  const cco = read('supabase/functions/create-checkout-order/index.ts') ?? '';
+  if (!/clientSupportsDynamicDelivery/.test(cco)) failures.push('create-checkout-order: missing clientSupportsDynamicDelivery gate');
+  if (!/LEGACY_DELIVERY_FEE_DOLLARS/.test(cco)) failures.push('create-checkout-order: missing legacy fee branch');
+  // Must propagate the flag to its internal plan-fulfillment invoke.
+  if (!/plan-fulfillment'[\s\S]{0,400}clientSupportsDynamicDelivery/.test(cco)) failures.push('create-checkout-order: must propagate clientSupportsDynamicDelivery to plan-fulfillment');
+
+  // Frontend must send the flag to BOTH edge functions (≥2 occurrences of `:true`).
+  const co = read('src/screens/CheckoutScreen.tsx') ?? '';
+  const sends = (co.match(/clientSupportsDynamicDelivery:\s*true/g) ?? []).length;
+  if (sends < 2) failures.push('CheckoutScreen.tsx: must send clientSupportsDynamicDelivery:true to BOTH plan-fulfillment and create-checkout-order');
+
+  // Pure, testable gate helpers must exist.
+  const df = read('supabase/functions/_shared/deliveryFee.ts') ?? '';
+  if (!/resolveCheckoutShippingCents/.test(df) || !/resolvePlanShippingDollars/.test(df)) failures.push('_shared/deliveryFee.ts: missing pure gate helpers');
+
+  return failures;
+});
+
 // ── Check 9: Splash / prebuild blocker ──────────────────────────────────────
 
 check('Splash/prebuild blocker', () => {

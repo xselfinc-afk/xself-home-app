@@ -18,6 +18,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -77,6 +78,8 @@ interface RequestBody {
   address: Address;
   /** Default: 'delivery' */
   fulfillmentMethod?: 'delivery' | 'pickup';
+  /** 🔒 Version gate: only NEW app builds send true. Absent/false → legacy-compatible behavior. */
+  clientSupportsDynamicDelivery?: boolean;
   /** Authenticated Supabase user ID — omit for guest */
   userId?: string;
   /** Resume token from a previous guest checkout attempt */
@@ -131,6 +134,7 @@ serve(async (req: Request) => {
       paymentMethodSelected = '',
       customerName,
       quoteToken,
+      clientSupportsDynamicDelivery = false,
     } = body;
 
     // ── Input validation ──────────────────────────────────────────────────────
@@ -317,7 +321,9 @@ serve(async (req: Request) => {
     };
 
     const { data: planData, error: planError } = await supabase.functions.invoke('plan-fulfillment', {
-      body: { items: planItems, address: planAddress },
+      // Propagate the client capability flag so plan-fulfillment serves this caller the same
+      // (dynamic vs legacy) behavior the app expects. Old clients omit it → legacy shipping.
+      body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery },
     });
 
     if (planError || !planData?.valid || !planData?.selectedWarehouse) {
@@ -331,10 +337,29 @@ serve(async (req: Request) => {
 
     // ── Compute totals ────────────────────────────────────────────────────────
     const subtotalCents = items.reduce((sum, i) => sum + i.qty * i.unitPriceCents, 0);
-    // plan-fulfillment returns shipping in dollars; convert to cents. Pickup = free.
-    const shippingCents = planData.usePickup ? 0 : Math.round((planData.shipping ?? 99) * 100);
-    const taxCents      = 0; // Tax calculation TBD — placeholder
-    const totalCents    = subtotalCents + shippingCents + taxCents;
+    // Delivery fee is SERVER-AUTHORITATIVE from plan-fulfillment (GIGA product/price/v1).
+    // 🔒 Pickup is always free ($0) — the `usePickup ? 0 :` form is required by the Pickup-lock guard.
+    const pickupShippingCents = planData.usePickup ? 0 : null;
+    let shippingCents: number;
+    if (pickupShippingCents !== null) {
+      shippingCents = pickupShippingCents;                       // Pickup → $0
+    } else if (clientSupportsDynamicDelivery) {
+      // NEW client: require the verified dynamic GIGA fee. No $99 fallback — fail closed.
+      if (typeof planData.deliveryFeeCents === 'number' && planData.deliveryAvailable) {
+        shippingCents = planData.deliveryFeeCents;
+      } else {
+        console.error('[create-checkout-order] New client + Delivery fee unavailable — blocking order (no fallback).');
+        return jsonResponse({ error: 'delivery_fee_unavailable' }, 422);
+      }
+    } else {
+      // 🔒 LEGACY compatibility — old shipped builds ONLY (they don't send clientSupportsDynamicDelivery).
+      // Keep shipping numeric and NEVER 422 so old Delivery checkout keeps working until the new
+      // app is rolled out. plan-fulfillment already returned a numeric legacy `shipping` here.
+      const legacyDollars = typeof planData.shipping === 'number' ? planData.shipping : LEGACY_DELIVERY_FEE_DOLLARS;
+      shippingCents = Math.round(legacyDollars * 100);
+    }
+    const taxCents   = 0; // Tax: server charges 0; the app displays 0 to match (see CheckoutScreen).
+    const totalCents = subtotalCents + shippingCents + taxCents;
 
     if (totalCents < 50) {
       return jsonResponse({ error: 'Order total is below the minimum charge amount ($0.50)' }, 400);

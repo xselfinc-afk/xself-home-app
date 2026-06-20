@@ -1,5 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { deliveryProductPrice } from '../_shared/gigaDeliveryClient.ts';
+import { computeDeliveryFee, LEGACY_DELIVERY_FEE_DOLLARS, type DeliveryFeeResult, type GigaPriceRow } from '../_shared/deliveryFee.ts';
 
 // Built-in Supabase env vars — always present in Edge Functions
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -8,7 +10,11 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '
 const GOOGLE_MAPS_API_KEY = Deno.env.get('GOOGLE_MAPS_API_KEY') ?? '';
 
 const STALE_THRESHOLD_HOURS = 24;
-const SHIPPING_FEE = 99;
+// Delivery fee is computed dynamically from GIGA product/price/v1 — never hardcoded.
+// SUPPLIER_DELIVERY_PRICE_ENV selects which Delivery-account (Buyer 82482447) credentials
+// the read-only price lookup uses ('sandbox' default | 'production'). Pickup stays free ($0).
+const DELIVERY_PRICE_ENV: 'sandbox' | 'production' =
+  Deno.env.get('SUPPLIER_DELIVERY_PRICE_ENV') === 'production' ? 'production' : 'sandbox';
 // Customers within this distance may CHOOSE pickup or delivery; beyond it,
 // pickup is hidden and only delivery is offered. Bumped from 30 → 100 to give
 // nearby customers the option without forcing pickup on them.
@@ -83,9 +89,27 @@ interface PlanResponse {
   };
   distanceMiles?: number;
   pickupEligible?: boolean;
+  /** Alias of pickupEligible — whether Warehouse Pickup is offered (≤100 mi + supports_pickup). Independent of Delivery. */
+  pickupAvailable?: boolean;
   deliveryEligible?: boolean;
   usePickup?: boolean;
-  shipping?: number;
+  shipping?: number | null;
+  /** Server-authoritative Delivery fee (cents) from GIGA product/price/v1. null = unavailable → client blocks Delivery (no $99 fallback). */
+  deliveryFeeCents?: number | null;
+  deliveryAvailable?: boolean;
+  deliveryFeeBreakdown?: {
+    shippingFeeCents: number | null;
+    packingFeeCents: number | null;
+    feeMinCents: number | null;
+    feeMaxCents: number | null;
+    isRange: boolean;
+    currency: string;
+  } | null;
+  deliveryQuoteSource?: string;
+  deliveryFeeFetchedAt?: string;
+  deliveryUnavailableSkus?: string[] | null;
+  /** Why Delivery is unavailable (diagnostic): credentials_missing | api_error | sku_not_found | sku_unavailable | no_fee | currency_mismatch | no_items. null when available. */
+  deliveryUnavailableReason?: string | null;
   estimatedDelivery?: string;
   pickupWindow?: { earliest: string; latest: string } | null;
   availableQty?: number;
@@ -172,7 +196,7 @@ serve(async (req: Request) => {
 
   try {
     // ── Parse + validate input ───────────────────────────────────────────────
-    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: 'pickup' | 'delivery' | null };
+    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: 'pickup' | 'delivery' | null; clientSupportsDynamicDelivery?: boolean };
     try {
       body = await req.json();
     } catch {
@@ -180,6 +204,10 @@ serve(async (req: Request) => {
     }
 
     const { items, address, preferredMethod } = body;
+    // 🔒 Client-capability version gate. Only NEW builds send this flag. Old shipped builds
+    // (and create-checkout-order's internal call on behalf of an old client) omit it and get
+    // the legacy-compatible response. See docs/delivery-architecture.md + deliveryGate.test.ts.
+    const clientSupportsDynamicDelivery = body.clientSupportsDynamicDelivery === true;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return jsonResponse({ valid: false, error: 'items array is required' }, 400);
@@ -531,6 +559,38 @@ serve(async (req: Request) => {
         }
       : null;
 
+    // ── Server-authoritative Delivery fee (GIGA product/price/v1) ────────────
+    // Read-only price lookup via the Delivery account (SUPPLIER_DELIVERY_*). Never uses
+    // Pickup credentials, never calls an order/dropship endpoint. Fail-closed: on ANY
+    // error or missing fee the Delivery fee is null and the client blocks Delivery
+    // checkout — there is NO $99 fallback. Pickup is unaffected (free).
+    // Delivery fee is computed for NEW (dynamic-capable) clients ONLY, and INDEPENDENTLY of
+    // Pickup (usePickup never gates it). Old clients skip the GIGA call entirely and receive
+    // the legacy numeric shipping with NO dynamic fields.
+    let deliveryFee: DeliveryFeeResult | null = null;
+    let deliveryErrorReason: string | null = null;
+    if (clientSupportsDynamicDelivery) {
+      try {
+        const priceResp = (await deliveryProductPrice(
+          items.map((i) => i.productId),
+          DELIVERY_PRICE_ENV,
+        )) as { data?: GigaPriceRow[] } | null;
+        const rows = Array.isArray(priceResp?.data) ? (priceResp!.data as GigaPriceRow[]) : [];
+        deliveryFee = computeDeliveryFee(rows, items.map((i) => ({ sku: i.productId, qty: i.qty })));
+      } catch (feeErr) {
+        const msg = (feeErr as Error).message ?? '';
+        // gigaDeliveryClient throws "[gigaDelivery] missing SUPPLIER_DELIVERY_*" when creds absent.
+        deliveryErrorReason = /SUPPLIER_DELIVERY/.test(msg) ? 'credentials_missing' : 'api_error';
+        console.error(`[plan-fulfillment] delivery fee lookup failed (fail-closed, reason=${deliveryErrorReason}):`, msg);
+        deliveryFee = null;
+      }
+    }
+    const deliveryAvailable = clientSupportsDynamicDelivery && !!deliveryFee?.available;
+    const deliveryFeeCents = deliveryAvailable ? deliveryFee!.deliveryFeeCents : null;
+    const deliveryUnavailableReason = !clientSupportsDynamicDelivery
+      ? null
+      : (deliveryAvailable ? null : (deliveryErrorReason ?? deliveryFee?.reason ?? 'api_error'));
+
     const plan: PlanResponse = {
       valid: true,
       fulfillmentStatus: 'ok',
@@ -543,9 +603,37 @@ serve(async (req: Request) => {
       },
       distanceMiles: Math.round(selectedEntry.distanceMiles * 10) / 10,
       pickupEligible,
+      pickupAvailable: pickupEligible,
       deliveryEligible,
       usePickup,
-      shipping: usePickup ? 0 : SHIPPING_FEE,
+      // Pickup = free ($0). NEW clients: dynamic GIGA fee (dollars) or null when unavailable.
+      // OLD clients: legacy numeric fee (never null) so old builds don't break. (Pickup-lock
+      // guard requires the `usePickup ? 0 :` ternary to remain.)
+      shipping: usePickup
+        ? 0
+        : (clientSupportsDynamicDelivery
+            ? (deliveryFeeCents != null ? deliveryFeeCents / 100 : null)
+            : LEGACY_DELIVERY_FEE_DOLLARS),
+      // Dynamic Delivery fields go to NEW clients ONLY; `undefined` is omitted from JSON, so the
+      // legacy response shape is preserved exactly for old clients.
+      deliveryFeeCents: clientSupportsDynamicDelivery ? deliveryFeeCents : undefined,
+      deliveryAvailable: clientSupportsDynamicDelivery ? deliveryAvailable : undefined,
+      deliveryFeeBreakdown: clientSupportsDynamicDelivery
+        ? (deliveryAvailable && deliveryFee
+            ? {
+                shippingFeeCents: deliveryFee.shippingFeeCents,
+                packingFeeCents: deliveryFee.packingFeeCents,
+                feeMinCents: deliveryFee.feeMinCents,
+                feeMaxCents: deliveryFee.feeMaxCents,
+                isRange: deliveryFee.isRange,
+                currency: deliveryFee.currency,
+              }
+            : null)
+        : undefined,
+      deliveryQuoteSource: clientSupportsDynamicDelivery ? 'giga_openapi_price_v1' : undefined,
+      deliveryFeeFetchedAt: clientSupportsDynamicDelivery ? new Date().toISOString() : undefined,
+      deliveryUnavailableSkus: clientSupportsDynamicDelivery ? (deliveryFee?.unavailableSkus ?? null) : undefined,
+      deliveryUnavailableReason: clientSupportsDynamicDelivery ? deliveryUnavailableReason : undefined,
       estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles, usePickup),
       pickupWindow,
       availableQty: totalAvailableAtWarehouse(selectedEntry.warehouse.code),
@@ -555,7 +643,9 @@ serve(async (req: Request) => {
 
     console.log(
       `[plan-fulfillment] Plan: ${plan.selectedWarehouse!.code} ${plan.distanceMiles}mi` +
-        ` pickup=${plan.pickupEligible} delivery=${plan.deliveryEligible} shipping=$${plan.shipping}`,
+        ` dynamicClient=${clientSupportsDynamicDelivery} pickupAvailable=${plan.pickupEligible}` +
+        ` deliveryAvailable=${deliveryAvailable} deliveryFeeCents=${deliveryFeeCents}` +
+        ` reason=${deliveryUnavailableReason ?? 'none'} shipping=${plan.shipping} env=${DELIVERY_PRICE_ENV}`,
     );
 
     return jsonResponse(plan);

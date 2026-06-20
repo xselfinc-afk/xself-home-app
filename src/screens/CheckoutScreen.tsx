@@ -11,7 +11,7 @@ import { useRewards } from '../context/RewardsContext';
 import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
-import { SHIPPING_FEE, type FulfillmentPlan, type FulfillmentGroup } from '../types/fulfillment';
+import { type FulfillmentPlan, type FulfillmentGroup } from '../types/fulfillment';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -42,16 +42,20 @@ function planFingerprint(plan: FulfillmentPlan): string {
 
 /**
  * When the user selects "Delivery" on a plan that originally recommended pickup,
- * convert all pickup groups into shipping groups using the same warehouses.
+ * convert all pickup groups into delivery groups using the same warehouses. The Delivery
+ * fee is the server-authoritative GIGA fee carried on the plan (deliveryFeeCents) — never
+ * a hardcoded value. When the fee is unavailable, the fee shows as 0 here but Delivery is
+ * blocked downstream via plan.deliveryAvailable (no charge happens).
  */
 function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
+  const feeDollars = plan.deliveryAvailable && plan.deliveryFeeCents != null ? plan.deliveryFeeCents / 100 : 0;
   const groups = plan.groups.map(g => {
     if (!g.isPickup) return g;
     const d = g.distanceMiles;
     const eta = d <= 100 ? '1–2 business days' : d <= 300 ? '2–4 business days' : '3–7 business days';
-    return { ...g, isPickup: false as const, shipping: SHIPPING_FEE, estimatedDelivery: eta, pickupWindow: undefined };
+    return { ...g, isPickup: false as const, shipping: feeDollars, estimatedDelivery: eta, pickupWindow: undefined };
   });
-  return { ...plan, groups, totalShipping: groups.reduce((s, g) => s + g.shipping, 0) };
+  return { ...plan, groups, totalShipping: feeDollars };
 }
 
 export default function CheckoutScreen({ route, navigation }: any) {
@@ -175,9 +179,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const isPickup = activePlan !== null && activePlan.groups.length > 0 && activePlan.groups.every(g => g.isPickup);
   // Only non-pickup groups count as "shipments" for the label
   const shippingGroupCount = activePlan ? activePlan.groups.filter(g => !g.isPickup).length : 0;
+  // Delivery selected but the server could not provide a GIGA fee → block checkout. There is
+  // NO hardcoded fallback: payment is disabled and the fee shows "unavailable".
+  const deliveryUnavailable = fulfillmentChoice === 'delivery' && activePlan !== null && !isPickup && !activePlan.deliveryAvailable;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
-  const tax = Math.round(subtotal * 0.075);
+  // The server charges $0 tax (create-checkout-order taxCents = 0). Display $0 so the shown
+  // total ALWAYS equals the Stripe charge. (Real tax is a separate, future change.)
+  const tax = 0;
   // Cart mode: credit was toggled in CartScreen and passed here.
   // Buy Now mode: user toggles credit directly on this screen.
   // These two states are fully isolated — isBuyNow gates which applies.
@@ -296,7 +305,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           payload: { items: planItems, address: planAddress },
         });
         const { data, error } = await supabase.functions.invoke('plan-fulfillment', {
-          body: { items: planItems, address: planAddress },
+          // This (new) build supports the dynamic GIGA Delivery fee — opt into the new server
+          // behavior via the version gate. Old builds omit this and get legacy behavior.
+          body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery: true },
         });
 
         if (cancelled) return;
@@ -329,25 +340,35 @@ export default function CheckoutScreen({ route, navigation }: any) {
           return;
         }
 
+        // Server-authoritative Delivery fee (GIGA product/price/v1). Null/unavailable →
+        // Delivery is blocked in the UI; there is NO hardcoded fallback.
+        const deliveryAvailable = data.deliveryAvailable === true && typeof data.deliveryFeeCents === 'number';
+        const deliveryFeeCents: number | null = deliveryAvailable ? data.deliveryFeeCents : null;
+        const deliveryFeeDollars = deliveryFeeCents != null ? deliveryFeeCents / 100 : 0;
+        const deliveryUnavailableReason: string | null = deliveryAvailable ? null : (data.deliveryUnavailableReason ?? 'unavailable');
+
         const group: FulfillmentGroup = {
           warehouse: data.selectedWarehouse,
           distanceMiles: data.distanceMiles,
           isPickup: data.usePickup,
-          shipping: data.shipping,
+          shipping: data.usePickup ? 0 : deliveryFeeDollars,
           items: orderItems.map(i => ({ sku: i.sku, name: i.name, qty: i.qty, price: i.price, img: i.img })),
           estimatedDelivery: data.estimatedDelivery,
           pickupWindow: data.pickupWindow ?? undefined,
         };
         const plan: FulfillmentPlan = {
           groups: [group],
-          totalShipping: data.shipping,
+          totalShipping: data.usePickup ? 0 : deliveryFeeDollars,
+          deliveryFeeCents,
+          deliveryAvailable,
+          deliveryUnavailableReason,
           isSingleWarehouse: true,
           // Surface the existing "Live inventory unavailable" banner whenever
           // the server reports anything other than fresh inventory.
           isFallback: data.inventoryFreshness !== 'fresh',
         };
 
-        console.log(`[Checkout] Fulfillment plan: warehouse=${data.selectedWarehouse.code} dist=${data.distanceMiles.toFixed(1)}mi pickup=${data.usePickup} ship=$${data.shipping} freshness=${data.inventoryFreshness}`);
+        console.log(`[Checkout] Fulfillment plan: warehouse=${data.selectedWarehouse.code} dist=${data.distanceMiles.toFixed(1)}mi pickup=${data.usePickup} deliveryAvailable=${deliveryAvailable} deliveryFeeCents=${deliveryFeeCents} deliveryReason=${deliveryUnavailableReason ?? 'none'} freshness=${data.inventoryFreshness}`);
         setFulfillmentPlan(plan);
       } catch (err) {
         if (cancelled) return;
@@ -610,6 +631,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
         fulfillmentMethod: fulfillmentChoice ?? 'delivery',
         userId: user?.id ?? null,
         paymentMethodSelected,
+        // Version gate: this build charges the dynamic GIGA Delivery fee (no hardcoded fallback).
+        // Old builds omit this flag and keep legacy checkout behavior.
+        clientSupportsDynamicDelivery: true,
         ...(customerName ? { customerName } : {}),
         // Optional: present only when SupportScreen forwarded a special-offer
         // quote on Buy Now, OR when a cart line carries a quoteToken.
@@ -636,7 +660,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     if (affirmLoading || placing) return;
     if (!isEmailVerified) return;
     if (!selectedAddress) { setShowAddForm(true); setAddrModalVisible(true); return; }
-    if (!activePlan || fulfillmentChoice === null) return;
+    if (!activePlan || fulfillmentChoice === null || deliveryUnavailable) return;
 
     setAffirmError(null);
     setAffirmDevDetail(null);
@@ -751,6 +775,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     if (rechecking) return 'Verifying inventory…';
     if (placing) return 'Processing…';
     if (!isEmailVerified || !selectedAddress) return 'Add contact & delivery details';
+    if (deliveryUnavailable) return 'Delivery unavailable';
     // Hard blocks: server gave us no usable plan (covers isInventoryStale,
     // geocode failures, and any other valid:false response). Pre-flight gaps
     // (no address, no fulfillment choice, incomplete card) fall through so
@@ -812,7 +837,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
 
-          {!deliveryLoading && !fulfillmentPlan && selectedAddress && (
+          {!deliveryLoading && !fulfillmentPlan && selectedAddress && !isInventoryStale && (
             <View style={styles.fulfillErrorBanner}>
               <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
               <Text style={styles.fulfillErrorText}>
@@ -866,13 +891,19 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   {fulfillmentChoice === 'delivery' && <View style={styles.radioDot} />}
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.fulfillOptionLabel}>Home Delivery — ${SHIPPING_FEE}</Text>
+                  <Text style={styles.fulfillOptionLabel}>
+                    {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
+                      ? `Delivery — $${formatPrice(fulfillmentPlan.deliveryFeeCents / 100)}`
+                      : 'Delivery — unavailable'}
+                  </Text>
                   <Text style={styles.fulfillOptionSub}>
-                    {fulfillmentPlan.groups[0]
-                      ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
-                        : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'
-                        : '3–7 business days')
-                      : '3–7 business days'}
+                    {!fulfillmentPlan.deliveryAvailable
+                      ? `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
+                      : fulfillmentPlan.groups[0]
+                        ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
+                          : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'
+                          : '3–7 business days')
+                        : '3–7 business days'}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -888,9 +919,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     <Ionicons name="cube-outline" size={15} color="#CA8A04" />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
-                        {group.shipping === 0 ? 'Free shipping' : `Shipping — $${group.shipping}`}
+                        {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
+                          ? `Delivery — $${formatPrice(fulfillmentPlan.deliveryFeeCents / 100)}`
+                          : 'Delivery — unavailable'}
                       </Text>
-                      <Text style={styles.fulfillWarehouse}>{group.estimatedDelivery}</Text>
+                      <Text style={styles.fulfillWarehouse}>
+                        {fulfillmentPlan.deliveryAvailable ? group.estimatedDelivery : `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
+                      </Text>
                     </View>
                   </View>
                 </View>
@@ -1008,8 +1043,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={{ fontSize: 11, color: '#92400E', marginTop: 4, fontFamily: 'monospace' }}>[dev] {affirmDevDetail}</Text>
               ) : null}
               <TouchableOpacity
-                style={[styles.affirmBtn, (affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified) && { opacity: 0.6 }]}
-                disabled={affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified}
+                style={[styles.affirmBtn, (affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified || deliveryUnavailable) && { opacity: 0.6 }]}
+                disabled={affirmLoading || liveVerifying || !selectedAddress || !activePlan || fulfillmentChoice === null || (isInventoryFallback && !liveVerified) || isInventoryStale || !isEmailVerified || deliveryUnavailable}
                 onPress={handleAffirmPayment}
                 activeOpacity={0.8}
               >
@@ -1078,15 +1113,17 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>
-                {deliveryLoading ? 'Shipping' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Shipping (${shippingGroupCount} warehouses)` : 'Shipping'}
+                {deliveryLoading ? 'Delivery' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Delivery (${shippingGroupCount} warehouses)` : 'Delivery'}
               </Text>
               {deliveryLoading
                 ? <Text style={styles.summaryCalculating}>Calculating…</Text>
                 : !fulfillmentPlan
                   ? <Text style={styles.summaryCalculating}>–</Text>
-                  : shipping === 0
+                  : isPickup
                     ? <Text style={[styles.summaryFree, { color: '#CA8A04' }]}>Free</Text>
-                    : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
+                    : deliveryUnavailable
+                      ? <Text style={[styles.summaryCalculating, { color: '#B45309' }]}>Unavailable</Text>
+                      : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tax</Text>
@@ -1147,15 +1184,15 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
           {paymentMethod !== 'affirm' && (<><TouchableOpacity
-            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified) && { opacity: 0.6 }]}
-            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified}
+            style={[styles.placeOrderBtn, (!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified || deliveryUnavailable) && { opacity: 0.6 }]}
+            disabled={!selectedAddress || placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || (paymentMethod === 'card' && !cardDetails?.complete) || isInventoryStale || !isEmailVerified || deliveryUnavailable}
             onPress={async () => {
               console.log('[Payment] button pressed', { hasAddress: !!selectedAddress, placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice, amountCents: Math.round(total * 100) });
               if (!selectedAddress) {
                 console.log('[Payment] blocked: no address selected');
                 setShowAddForm(true); setAddrModalVisible(true); return;
               }
-              if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null) {
+              if (placing || deliveryLoading || rechecking || !activePlan || fulfillmentChoice === null || deliveryUnavailable) {
                 console.log('[Payment] blocked:', { placing, deliveryLoading, rechecking, hasActivePlan: !!activePlan, fulfillmentChoice });
                 return;
               }

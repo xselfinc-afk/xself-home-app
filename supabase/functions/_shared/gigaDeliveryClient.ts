@@ -99,6 +99,16 @@ export function deliveryProductPriceSandbox(skus: string[]): Promise<unknown> {
   return gigaDeliveryRequest('/b2b-overseas-api/v1/buyer/product/price/v1', { skus }, { env: 'sandbox' });
 }
 
+/**
+ * Read-only Delivery fee/price lookup. `env` selects sandbox vs production credentials
+ * (defaults to sandbox for safety). This is the Product Price Query endpoint — read-only,
+ * NOT money-moving. Used by plan-fulfillment to compute the server-authoritative Delivery
+ * fee. Returns the raw GIGA response ({ success, code, data:[...] }).
+ */
+export function deliveryProductPrice(skus: string[], env: Env = 'sandbox'): Promise<unknown> {
+  return gigaDeliveryRequest('/b2b-overseas-api/v1/buyer/product/price/v1', { skus }, { env });
+}
+
 /** Read-only sandbox helper — order status / tracking by our orderNo (no money movement). */
 export function deliveryOrderStatusQuerySandbox(orderNo: string): Promise<unknown> {
   return gigaDeliveryRequest('/b2b-overseas-api/v1/buyer/order/status/v1', { orderNo }, { env: 'sandbox' });
