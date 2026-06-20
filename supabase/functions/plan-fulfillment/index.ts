@@ -1,7 +1,14 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { deliveryProductPrice } from '../_shared/gigaDeliveryClient.ts';
-import { computeDeliveryFee, LEGACY_DELIVERY_FEE_DOLLARS, type DeliveryFeeResult, type GigaPriceRow } from '../_shared/deliveryFee.ts';
+import {
+  computeDeliveryFee,
+  computeDeliveryFeeFromCache,
+  LEGACY_DELIVERY_FEE_DOLLARS,
+  type DeliveryFeeResult,
+  type GigaPriceRow,
+  type GigaCacheRow,
+} from '../_shared/deliveryFee.ts';
 
 // Built-in Supabase env vars — always present in Edge Functions
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -15,6 +22,12 @@ const STALE_THRESHOLD_HOURS = 24;
 // the read-only price lookup uses ('sandbox' default | 'production'). Pickup stays free ($0).
 const DELIVERY_PRICE_ENV: 'sandbox' | 'production' =
   Deno.env.get('SUPPLIER_DELIVERY_PRICE_ENV') === 'production' ? 'production' : 'sandbox';
+// Delivery fee SOURCE for new dynamic-delivery clients. Default 'portal_cache' = read the
+// cached Drop Shipping Fulfillment Fee from public.giga_delivery_fee_cache (NO GIGA call at
+// checkout; official product/price/v1 is B20003-blocked). Set DELIVERY_FEE_SOURCE=openapi to
+// switch back to the live OpenAPI lookup once GIGA enables it — no code change needed.
+const DELIVERY_FEE_SOURCE: 'portal_cache' | 'openapi' =
+  Deno.env.get('DELIVERY_FEE_SOURCE') === 'openapi' ? 'openapi' : 'portal_cache';
 // Customers within this distance may CHOOSE pickup or delivery; beyond it,
 // pickup is hidden and only delivery is offered. Bumped from 30 → 100 to give
 // nearby customers the option without forcing pickup on them.
@@ -559,29 +572,53 @@ serve(async (req: Request) => {
         }
       : null;
 
-    // ── Server-authoritative Delivery fee (GIGA product/price/v1) ────────────
-    // Read-only price lookup via the Delivery account (SUPPLIER_DELIVERY_*). Never uses
-    // Pickup credentials, never calls an order/dropship endpoint. Fail-closed: on ANY
-    // error or missing fee the Delivery fee is null and the client blocks Delivery
-    // checkout — there is NO $99 fallback. Pickup is unaffected (free).
+    // ── Server-authoritative Delivery fee ────────────────────────────────────
+    // Default source = cached Drop Shipping Fulfillment Fee in giga_delivery_fee_cache
+    // (DELIVERY_FEE_SOURCE=portal_cache). NO GIGA call at checkout. The optional
+    // 'openapi' source (read-only product/price/v1 via SUPPLIER_DELIVERY_*) is kept for
+    // when B20003 clears. Either way: never Pickup creds, never an order/dropship endpoint.
+    // Fail-closed: on ANY error or missing fee the Delivery fee is null and the client
+    // blocks Delivery checkout — there is NO $99 fallback. Pickup is unaffected (free).
     // Delivery fee is computed for NEW (dynamic-capable) clients ONLY, and INDEPENDENTLY of
     // Pickup (usePickup never gates it). Old clients skip the GIGA call entirely and receive
     // the legacy numeric shipping with NO dynamic fields.
     let deliveryFee: DeliveryFeeResult | null = null;
     let deliveryErrorReason: string | null = null;
+    let deliveryFeeFetchedAt: string | null = null;
+    const deliveryFeeSource: 'giga_portal_price_list_cache' | 'giga_openapi_price_v1' =
+      DELIVERY_FEE_SOURCE === 'openapi' ? 'giga_openapi_price_v1' : 'giga_portal_price_list_cache';
     if (clientSupportsDynamicDelivery) {
       try {
-        const priceResp = (await deliveryProductPrice(
-          items.map((i) => i.productId),
-          DELIVERY_PRICE_ENV,
-        )) as { data?: GigaPriceRow[] } | null;
-        const rows = Array.isArray(priceResp?.data) ? (priceResp!.data as GigaPriceRow[]) : [];
-        deliveryFee = computeDeliveryFee(rows, items.map((i) => ({ sku: i.productId, qty: i.qty })));
+        if (DELIVERY_FEE_SOURCE === 'portal_cache') {
+          // Read the cached Drop Shipping Fulfillment Fee — NO GIGA call at checkout. Keyed by
+          // supplier_product_id (= item.productId). Fee age is ignored (cached fees never expire).
+          // RLS: service role only. Reads ONLY giga_delivery_fee_cache — never product/catalog tables.
+          const { data: feeRows, error: feeErr } = await supabase
+            .from('giga_delivery_fee_cache')
+            .select('supplier_product_id, charged_fee_cents, currency, last_success_at, packing_fee_cents, shipping_fee_cents, fulfillment_fee_cents')
+            .in('supplier_product_id', productIds);
+          if (feeErr) throw new Error(`giga_delivery_fee_cache read failed: ${feeErr.message}`);
+          const cacheRows = (feeRows ?? []) as GigaCacheRow[];
+          deliveryFee = computeDeliveryFeeFromCache(cacheRows, items.map((i) => ({ sku: i.productId, qty: i.qty })));
+          // Most-recent successful refresh among the cart's cached rows (admin diagnostic only).
+          const successTimes = cacheRows.map((r) => r.last_success_at).filter((t): t is string => typeof t === 'string');
+          deliveryFeeFetchedAt = successTimes.length ? successTimes.reduce((m, t) => (t > m ? t : m)) : null;
+        } else {
+          // Future path: live OpenAPI product/price/v1 (Delivery account, read-only). Re-enabled
+          // via DELIVERY_FEE_SOURCE=openapi once GIGA clears B20003.
+          const priceResp = (await deliveryProductPrice(
+            items.map((i) => i.productId),
+            DELIVERY_PRICE_ENV,
+          )) as { data?: GigaPriceRow[] } | null;
+          const priceRows = Array.isArray(priceResp?.data) ? (priceResp!.data as GigaPriceRow[]) : [];
+          deliveryFee = computeDeliveryFee(priceRows, items.map((i) => ({ sku: i.productId, qty: i.qty })));
+          deliveryFeeFetchedAt = new Date().toISOString();
+        }
       } catch (feeErr) {
         const msg = (feeErr as Error).message ?? '';
         // gigaDeliveryClient throws "[gigaDelivery] missing SUPPLIER_DELIVERY_*" when creds absent.
         deliveryErrorReason = /SUPPLIER_DELIVERY/.test(msg) ? 'credentials_missing' : 'api_error';
-        console.error(`[plan-fulfillment] delivery fee lookup failed (fail-closed, reason=${deliveryErrorReason}):`, msg);
+        console.error(`[plan-fulfillment] delivery fee lookup failed (fail-closed, reason=${deliveryErrorReason}, source=${deliveryFeeSource}):`, msg);
         deliveryFee = null;
       }
     }
@@ -630,8 +667,8 @@ serve(async (req: Request) => {
               }
             : null)
         : undefined,
-      deliveryQuoteSource: clientSupportsDynamicDelivery ? 'giga_openapi_price_v1' : undefined,
-      deliveryFeeFetchedAt: clientSupportsDynamicDelivery ? new Date().toISOString() : undefined,
+      deliveryQuoteSource: clientSupportsDynamicDelivery ? deliveryFeeSource : undefined,
+      deliveryFeeFetchedAt: clientSupportsDynamicDelivery ? (deliveryFeeFetchedAt ?? new Date().toISOString()) : undefined,
       deliveryUnavailableSkus: clientSupportsDynamicDelivery ? (deliveryFee?.unavailableSkus ?? null) : undefined,
       deliveryUnavailableReason: clientSupportsDynamicDelivery ? deliveryUnavailableReason : undefined,
       estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles, usePickup),

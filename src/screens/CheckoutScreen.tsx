@@ -894,11 +894,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   <Text style={styles.fulfillOptionLabel}>
                     {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
                       ? `Delivery — $${formatPrice(fulfillmentPlan.deliveryFeeCents / 100)}`
-                      : 'Delivery — unavailable'}
+                      : 'Delivery — Quote required'}
                   </Text>
                   <Text style={styles.fulfillOptionSub}>
                     {!fulfillmentPlan.deliveryAvailable
-                      ? `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
+                      ? `Quote required for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
                       : fulfillmentPlan.groups[0]
                         ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
                           : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'

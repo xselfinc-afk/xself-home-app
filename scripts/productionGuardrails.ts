@@ -694,6 +694,26 @@ check('Delivery version gate', () => {
   return failures;
 });
 
+// ── Check 17: Delivery fee cache source (portal cache; not giga_products/sku_custom) ──
+// Step 4: new dynamic-delivery clients read the cached Delivery fee from
+// giga_delivery_fee_cache (keyed by supplier_product_id). The checkout path must NOT touch
+// the stale catalog table or the customized SKU fields. See docs/delivery-architecture.md.
+check('Delivery fee cache source', () => {
+  const failures: string[] = [];
+  const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
+  if (!/giga_delivery_fee_cache/.test(plan)) failures.push('plan-fulfillment: must read giga_delivery_fee_cache');
+  if (!/computeDeliveryFeeFromCache/.test(plan)) failures.push('plan-fulfillment: must use computeDeliveryFeeFromCache');
+  if (/giga_products/.test(plan)) failures.push('plan-fulfillment: must NOT reference giga_products (stale catalog table)');
+  // Match column/field USE (quoted select or property access) — not a benign comment mention.
+  if (/['"`]sku_(custom|search)\b|\.sku_(custom|search)\b/.test(plan)) failures.push('plan-fulfillment: must NOT use sku_custom/sku_search as a column/field for GIGA lookup');
+
+  const df = read('supabase/functions/_shared/deliveryFee.ts') ?? '';
+  if (!/computeDeliveryFeeFromCache/.test(df)) failures.push('_shared/deliveryFee.ts: missing computeDeliveryFeeFromCache');
+  if (!/charged_fee_cents/.test(df)) failures.push('_shared/deliveryFee.ts: cache helper must charge from charged_fee_cents');
+
+  return failures;
+});
+
 // ── Check 9: Splash / prebuild blocker ──────────────────────────────────────
 
 check('Splash/prebuild blocker', () => {

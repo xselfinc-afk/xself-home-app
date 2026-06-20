@@ -18,6 +18,7 @@
     "fees:refresh": "tsx scripts/refreshGigaDeliveryFees.ts",
     "fees:refresh:all": "tsx scripts/refreshGigaDeliveryFees.ts --all",
     "test:delivery-fee-refresh": "tsx src/__tests__/deliveryFeeRefresh.test.ts",
+    "test:delivery-fee-cache": "tsx src/__tests__/deliveryFeeCache.test.ts",
     "guard:prod": "tsx scripts/productionGuardrails.ts",
     "verify:before-final": "npm run guard:prod",
     "ios:clean-rebuild": "bash scripts/iosCleanRebuild.sh",
