@@ -568,6 +568,65 @@ check('Pickup rule lock', () => {
   return failures;
 });
 
+// ── Check 14: Delivery account separation ───────────────────────────────────
+// Keeps the Delivery (dropship, Buyer 82482447) integration separate from Pickup
+// (Buyer 76938981), keeps Delivery secrets out of the frontend bundle, and prevents any
+// production dropShip-sync call from tests/scripts. See docs/delivery-architecture.md.
+
+check('Delivery account separation', () => {
+  const failures: string[] = [];
+
+  // (a) Account-separation registry + safety guard exist.
+  failures.push(...fileMust('src/config/supplierAccounts.ts',
+    'SUPPLIER_DELIVERY_SANDBOX_CLIENT_ID',
+    'assertSafeDiscoveryRequest',
+  ));
+
+  // (b) Server-side Delivery client uses ONLY SUPPLIER_DELIVERY_* (never Pickup creds).
+  const dc = read('supabase/functions/_shared/gigaDeliveryClient.ts');
+  if (dc === null) {
+    failures.push('supabase/functions/_shared/gigaDeliveryClient.ts: file missing');
+  } else {
+    if (!/SUPPLIER_DELIVERY_/.test(dc)) failures.push('gigaDeliveryClient.ts: does not reference SUPPLIER_DELIVERY_* creds');
+    if (/SUPPLIER_CLIENT_(ID|SECRET)/.test(dc)) failures.push('gigaDeliveryClient.ts: must NOT reference Pickup creds (SUPPLIER_CLIENT_*)');
+  }
+
+  // (c) Pickup client must NOT reference Delivery creds.
+  const pc = read('src/services/gigaApiClient.ts') ?? '';
+  if (/SUPPLIER_DELIVERY_/.test(pc)) {
+    failures.push('src/services/gigaApiClient.ts: Pickup client must NOT reference SUPPLIER_DELIVERY_*');
+  }
+
+  // (d) No frontend file READS a Delivery secret, and none imports the server Delivery client.
+  for (const file of frontendFiles()) {
+    const text = read(file);
+    if (text === null) continue;
+    if (/(process\.env\.SUPPLIER_DELIVERY_\w*SECRET|Deno\.env\.get\(\s*['"]SUPPLIER_DELIVERY_\w*SECRET)/.test(text)) {
+      failures.push(`${file}: frontend must not read a Delivery secret`);
+    }
+    if (/(?:from|require\()\s*['"][^'"]*gigaDeliveryClient/.test(text)) {
+      failures.push(`${file}: frontend must not import the server-side Delivery client`);
+    }
+  }
+
+  // (e) No script or test pairs the production host with a money-moving endpoint.
+  const toolingFiles = [
+    ...listFilesRecursive('scripts',       f => /\.(ts|tsx|js)$/.test(f)),
+    ...listFilesRecursive('src/__tests__', f => /\.(ts|tsx)$/.test(f)),
+  ];
+  const MM = ['dropShip-sync', 'pickUpSelfLabel-sync', 'order/create', 'order/giScSupplyLabel-sync'];
+  for (const file of toolingFiles) {
+    if (file === 'scripts/productionGuardrails.ts') continue; // this guard legitimately lists the patterns
+    const text = read(file);
+    if (text === null) continue;
+    if (text.includes('openapi.gigab2b.com') && MM.some(m => text.includes(m))) {
+      failures.push(`${file}: pairs production host with a money-moving endpoint — forbidden in tooling/tests`);
+    }
+  }
+
+  return failures;
+});
+
 // ── Check 9: Splash / prebuild blocker ──────────────────────────────────────
 
 check('Splash/prebuild blocker', () => {
