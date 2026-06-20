@@ -1,6 +1,16 @@
 import type { PickupWindow } from '../services/pickupDateService';
 
+// ── Fulfillment fees ─────────────────────────────────────────────────────────
+// SHIPPING_FEE is the DELIVERY (home-delivery / "shipping") fee. Delivery is being
+// redesigned separately and this value may change with that work.
 export const SHIPPING_FEE = 99;
+
+// 🔒 LOCKED PICKUP RULE — warehouse pickup is always FREE ($0). Do NOT change while
+// redesigning Delivery. The server enforces this independently in
+// supabase/functions/create-checkout-order (usePickup ? 0). Guarded by
+// scripts/productionGuardrails.ts + src/__tests__/pickupRules.test.ts.
+// See docs/fulfillment-rules.md.
+export const PICKUP_FEE = 0;
 
 export type Warehouse = {
   code: string;

@@ -24,6 +24,11 @@ export const WAREHOUSES: Warehouse[] = [
   },
 ];
 
+// 🔒 LOCKED PICKUP RULE — pickup radius is 100 miles. Do NOT change while redesigning
+// Delivery. Must stay in sync with PICKUP_THRESHOLD_MILES (100) in
+// supabase/functions/plan-fulfillment/index.ts (sync is enforced by
+// scripts/productionGuardrails.ts). See docs/fulfillment-rules.md.
+//
 // Buyers within this radius of the nearest warehouse can use pickup.
 // Buyers beyond this radius are offered shipping instead (shipping is never blocked
 // by distance). Customer-facing messaging/eligibility radius — kept in sync with the

@@ -520,6 +520,54 @@ check('Fulfillment rules', () => {
   return failures;
 });
 
+// ── Check 13: Pickup rule lock ──────────────────────────────────────────────
+// Freezes the LOCKED Pickup business rules so a Delivery redesign cannot silently
+// change pickup radius / fee / time window / date offsets / option / pass.
+// See docs/fulfillment-rules.md.
+
+check('Pickup rule lock', () => {
+  const failures: string[] = [];
+
+  // Radius: edge (authoritative) + frontend mirror are both 100 and in sync.
+  const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
+  const cfg  = read('src/config/delivery.ts') ?? '';
+  const edgeRadius = plan.match(/PICKUP_THRESHOLD_MILES\s*=\s*(\d+)/)?.[1];
+  const feRadius   = cfg.match(/PICKUP_RADIUS_MILES\s*=\s*(\d+)/)?.[1];
+  if (edgeRadius !== '100') failures.push(`supabase/functions/plan-fulfillment/index.ts: PICKUP_THRESHOLD_MILES must be 100 (found ${edgeRadius ?? 'none'})`);
+  if (feRadius !== '100')   failures.push(`src/config/delivery.ts: PICKUP_RADIUS_MILES must be 100 (found ${feRadius ?? 'none'})`);
+  if (edgeRadius && feRadius && edgeRadius !== feRadius) {
+    failures.push(`pickup radius out of sync: edge=${edgeRadius} frontend=${feRadius}`);
+  }
+
+  // Fee: server computes free pickup, and the locked frontend constant is 0.
+  failures.push(...fileMust('supabase/functions/create-checkout-order/index.ts', /usePickup\s*\?\s*0\s*:/));
+  failures.push(...fileMust('src/types/fulfillment.ts', /PICKUP_FEE\s*=\s*0\b/));
+
+  // Time window + business-day offsets (frontend) and the edge ETA string.
+  failures.push(...fileMust('src/services/pickupDateService.ts',
+    "PICKUP_TIME_WINDOW = '10:00 AM – 2:00 PM'",
+    /PICKUP_EARLIEST_BUSINESS_DAYS\s*=\s*1\b/,
+    /PICKUP_LATEST_BUSINESS_DAYS\s*=\s*4\b/,
+  ));
+  failures.push(...fileMust('supabase/functions/plan-fulfillment/index.ts', '10:00 AM – 2:00 PM'));
+
+  // Checkout still renders the pickup option.
+  failures.push(...fileMust('src/screens/CheckoutScreen.tsx',
+    'planHasPickup',
+    'Warehouse Pickup',
+    /setFulfillmentChoice\(['"]pickup['"]\)/,
+  ));
+
+  // My Orders still has the pickup pass + status flow.
+  failures.push(...fileMust('src/screens/OrdersScreen.tsx',
+    'Pickup Pass',
+    'Preparing Pickup',
+    'Pickup Ready',
+  ));
+
+  return failures;
+});
+
 // ── Check 9: Splash / prebuild blocker ──────────────────────────────────────
 
 check('Splash/prebuild blocker', () => {

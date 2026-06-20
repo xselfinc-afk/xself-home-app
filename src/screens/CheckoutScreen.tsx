@@ -823,6 +823,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
             </View>
           )}
 
+          {/* 🔒 LOCKED PICKUP RULE — do NOT change pickup eligibility, the "Warehouse
+              Pickup" label, the pickup window/fee, or the planHasPickup gate /
+              setFulfillmentChoice('pickup') call below while redesigning Delivery.
+              Guarded by scripts/productionGuardrails.ts. See docs/fulfillment-rules.md. */}
           {/* Pickup available — delivery pre-selected, user can switch to pickup */}
           {!deliveryLoading && fulfillmentPlan && planHasPickup && (
             <>

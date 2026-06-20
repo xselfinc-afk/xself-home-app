@@ -18,6 +18,13 @@ export type PickupWindow = {
 
 export const PICKUP_TIME_WINDOW = '10:00 AM – 2:00 PM';
 
+// 🔒 LOCKED PICKUP RULE — pickup date window is +1 to +4 business days after the
+// order day (Day 1 = order day, NO same-day pickup; weekends skipped, Mon–Fri only).
+// Do NOT change while redesigning Delivery. Guarded by scripts/productionGuardrails.ts
+// + src/__tests__/pickupRules.test.ts. See docs/fulfillment-rules.md.
+export const PICKUP_EARLIEST_BUSINESS_DAYS = 1;
+export const PICKUP_LATEST_BUSINESS_DAYS = 4;
+
 function isWeekend(d: Date): boolean {
   const day = d.getDay();
   return day === 0 || day === 6; // 0=Sunday, 6=Saturday
@@ -53,8 +60,8 @@ function toLocalISO(d: Date): string {
 export function getPickupWindow(orderDate?: Date): PickupWindow {
   const base = orderDate ?? new Date();
   return {
-    earliest: toLocalISO(addBusinessDays(base, 1)),
-    latest:   toLocalISO(addBusinessDays(base, 4)),
+    earliest: toLocalISO(addBusinessDays(base, PICKUP_EARLIEST_BUSINESS_DAYS)),
+    latest:   toLocalISO(addBusinessDays(base, PICKUP_LATEST_BUSINESS_DAYS)),
   };
 }
 
