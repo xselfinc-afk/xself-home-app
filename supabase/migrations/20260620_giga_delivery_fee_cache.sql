@@ -29,14 +29,17 @@
 
 -- ── 1. Table ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.giga_delivery_fee_cache (
-  supplier_product_id   text PRIMARY KEY,                       -- app SKU, e.g. W3204P484603
-  giga_product_id       text,                                   -- resolved numeric portal id, e.g. 1420191
+  supplier_product_id   text PRIMARY KEY,                       -- ORIGINAL GIGA SKU (= app primary key); never sku_custom/sku_search
+  dropship_giga_product_id text,                                -- resolved numeric portal id under the DROPSHIP account, e.g. 1420191
+  product_id_source     text,                                   -- how the numeric id was obtained: manual_csv|playwright_resolve|search_xhr|admin|cli|db
+  product_id_resolved_at timestamptz,                           -- when dropship_giga_product_id was last resolved
   packing_fee_cents     integer,                                -- from drop_ship.package_fee_show
   shipping_fee_cents    integer,                                -- from drop_ship.shipping_fee_show
   fulfillment_fee_cents integer,                                -- round(drop_ship.total_amount*100) — raw GIGA Fulfillment Fee
   charged_fee_cents     integer,                                -- fulfillment + 8% buffer, round up to $ — customer display + Stripe charge
   currency              text    NOT NULL DEFAULT 'USD',
   source                text    NOT NULL DEFAULT 'giga_portal_price_list',
+  fee_source_account    text,                                   -- which GIGA account provided the fee, e.g. 'dropship_82482447'
   -- ── admin-only diagnostics (NONE of these gate checkout) ──
   fetched_at            timestamptz,                            -- when the fee value was last written
   last_success_at       timestamptz,                            -- last successful refresh for this SKU
