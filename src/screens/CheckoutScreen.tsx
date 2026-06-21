@@ -143,7 +143,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [rechecking, setRechecking] = useState(false);
   const [recheckError, setRecheckError] = useState<string | null>(null);
   // Tracks WHY the fulfillment plan is missing — drives the correct error message in the UI
-  const [deliveryErrorKind, setDeliveryErrorKind] = useState<'inventory_failed' | 'geocode_failed' | null>(null);
+  const [deliveryErrorKind, setDeliveryErrorKind] = useState<'inventory_failed' | 'geocode_failed' | 'fulfillment_unavailable' | null>(null);
   // True when Edge Function returned stale: true — blocks checkout until user retries
   const [isInventoryStale, setIsInventoryStale] = useState(false);
 
@@ -338,8 +338,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
             status === 'warehouse_data_unavailable';
           if (isInventoryStatus) {
             setIsInventoryStale(true);
-          } else {
+          } else if (status === 'geocode_failed') {
+            // Real address/geocode failure — the address copy is accurate here.
             setDeliveryErrorKind('geocode_failed');
+          } else {
+            // no_eligible_warehouse (e.g. inventory parked under a non-canonical
+            // warehouse code) or any other non-address failure — NOT the address.
+            setDeliveryErrorKind('fulfillment_unavailable');
           }
           setFulfillmentPlan(null);
           return;
@@ -378,7 +383,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
       } catch (err) {
         if (cancelled) return;
         console.log('[Checkout] plan-fulfillment failed:', (err as Error).message);
-        setDeliveryErrorKind('geocode_failed');
+        // Network/exception — transient, NOT an address problem → generic retry copy.
+        setDeliveryErrorKind(null);
         setFulfillmentPlan(null);
       } finally {
         if (!cancelled) setDeliveryLoading(false);
@@ -848,6 +854,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.fulfillErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
                   ? "We couldn't confirm delivery for this address. Please check the address or choose pickup if available."
+                  : deliveryErrorKind === 'fulfillment_unavailable'
+                  ? "This item is not available for delivery right now. Please choose another item or contact us for help."
                   : "We're unable to retrieve inventory information right now. Please try again later."}
               </Text>
             </View>
@@ -1161,6 +1169,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.placeOrderErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
                   ? "We couldn't verify this address. Please check the address and try again."
+                  : deliveryErrorKind === 'fulfillment_unavailable'
+                  ? "This item isn't available for delivery right now. Please choose another item or contact us."
                   : "We're having trouble checking this item right now. Please try again in a moment."}
               </Text>
             </View>
