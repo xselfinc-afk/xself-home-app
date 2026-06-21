@@ -161,15 +161,12 @@ async function geocodeAddress(address: string): Promise<Coords> {
 }
 
 /** Estimated delivery / pickup string — mirrors fulfillmentPlanner.ts.
- *  When the order is being fulfilled by pickup, returns the pickup window.
- *  Otherwise, returns a distance-based delivery ETA. We gate on usePickup
- *  (not distance) so a delivery-mode order at 50mi correctly shows
- *  "1–2 business days" rather than a pickup window. */
-function estimatedDelivery(distanceMiles: number, usePickup: boolean): string {
-  if (usePickup)              return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
-  if (distanceMiles <= 100)   return '1–2 business days';
-  if (distanceMiles <= 300)   return '2–4 business days';
-  return '3–7 business days';
+ *  When the order is being fulfilled by pickup, returns the real pickup window.
+ *  For delivery we do NOT promise an ETA: no guaranteed carrier/handling estimate
+ *  is available, so we return conservative copy instead of a distance-based guess. */
+function estimatedDelivery(_distanceMiles: number, usePickup: boolean): string {
+  if (usePickup) return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
+  return 'Delivery timing confirmed after checkout';
 }
 
 /** Add business days (Mon–Fri), skipping weekends. */

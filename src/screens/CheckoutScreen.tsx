@@ -47,13 +47,15 @@ function planFingerprint(plan: FulfillmentPlan): string {
  * a hardcoded value. When the fee is unavailable, the fee shows as 0 here but Delivery is
  * blocked downstream via plan.deliveryAvailable (no charge happens).
  */
+// Conservative delivery-timing copy. We do NOT promise a delivery ETA: no guaranteed
+// carrier/handling estimate is available, so checkout shows this instead of a distance guess.
+const DELIVERY_TIMING_COPY = 'Delivery timing confirmed after checkout';
+
 function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
   const feeDollars = plan.deliveryAvailable && plan.deliveryFeeCents != null ? plan.deliveryFeeCents / 100 : 0;
   const groups = plan.groups.map(g => {
     if (!g.isPickup) return g;
-    const d = g.distanceMiles;
-    const eta = d <= 100 ? '1–2 business days' : d <= 300 ? '2–4 business days' : '3–7 business days';
-    return { ...g, isPickup: false as const, shipping: feeDollars, estimatedDelivery: eta, pickupWindow: undefined };
+    return { ...g, isPickup: false as const, shipping: feeDollars, estimatedDelivery: DELIVERY_TIMING_COPY, pickupWindow: undefined };
   });
   return { ...plan, groups, totalShipping: feeDollars };
 }
@@ -899,11 +901,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   <Text style={styles.fulfillOptionSub}>
                     {!fulfillmentPlan.deliveryAvailable
                       ? `Quote required for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
-                      : fulfillmentPlan.groups[0]
-                        ? (fulfillmentPlan.groups[0].distanceMiles <= 100 ? '1–2 business days'
-                          : fulfillmentPlan.groups[0].distanceMiles <= 300 ? '2–4 business days'
-                          : '3–7 business days')
-                        : '3–7 business days'}
+                      : DELIVERY_TIMING_COPY}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -924,7 +922,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                           : 'Delivery — unavailable'}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>
-                        {fulfillmentPlan.deliveryAvailable ? group.estimatedDelivery : `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
+                        {fulfillmentPlan.deliveryAvailable ? DELIVERY_TIMING_COPY : `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
                       </Text>
                     </View>
                   </View>
