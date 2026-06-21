@@ -50,6 +50,9 @@ function planFingerprint(plan: FulfillmentPlan): string {
 // Conservative delivery-timing copy. We do NOT promise a delivery ETA: no guaranteed
 // carrier/handling estimate is available, so checkout shows this instead of a distance guess.
 const DELIVERY_TIMING_COPY = 'Delivery timing confirmed after checkout';
+// Honest copy when a plan EXISTS but delivery is unavailable (no cached GIGA fee /
+// deliveryFeeCents null). The address is NOT the problem — the item needs a quote or pickup.
+const DELIVERY_QUOTE_UNAVAILABLE_COPY = 'Delivery quote is not available for this item yet. Please choose pickup if available or contact us for delivery help.';
 
 function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
   const feeDollars = plan.deliveryAvailable && plan.deliveryFeeCents != null ? plan.deliveryFeeCents / 100 : 0;
@@ -844,7 +847,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Ionicons name="alert-circle-outline" size={16} color="#B45309" />
               <Text style={styles.fulfillErrorText}>
                 {deliveryErrorKind === 'geocode_failed'
-                  ? 'Delivery is not available for this address. Please choose another address or select pickup if available.'
+                  ? "We couldn't confirm delivery for this address. Please check the address or choose pickup if available."
                   : "We're unable to retrieve inventory information right now. Please try again later."}
               </Text>
             </View>
@@ -900,7 +903,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   </Text>
                   <Text style={styles.fulfillOptionSub}>
                     {!fulfillmentPlan.deliveryAvailable
-                      ? `Quote required for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
+                      ? `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
                       : DELIVERY_TIMING_COPY}
                   </Text>
                 </View>
@@ -922,7 +925,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                           : 'Delivery — unavailable'}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>
-                        {fulfillmentPlan.deliveryAvailable ? DELIVERY_TIMING_COPY : `Delivery unavailable for these items${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
+                        {fulfillmentPlan.deliveryAvailable ? DELIVERY_TIMING_COPY : `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
                       </Text>
                     </View>
                   </View>
