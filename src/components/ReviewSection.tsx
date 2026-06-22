@@ -20,6 +20,7 @@ import { colors, spacing, radius } from '../theme';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { submitReview } from '../services/reviewSubmitter';
+import { resolveReviewerName } from '../services/reviewerName';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -149,6 +150,8 @@ export default function ReviewSection({ product }: { product: any }) {
   const [writeSubmitting, setWriteSubmitting] = useState(false);
   const [writeResult, setWriteResult] = useState<string | null>(null);
   const [writeResultType, setWriteResultType] = useState<'success' | 'info' | 'error' | null>(null);
+  const [resolvingName, setResolvingName] = useState(false);
+  const nameEditedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -244,14 +247,29 @@ export default function ReviewSection({ product }: { product: any }) {
     setWriteRating(5);
     setWriteTitle('');
     setWriteBody('');
-    setWriteName(user?.displayName ?? '');
+    setWriteName('');
+    nameEditedRef.current = false;
     setWriteResult(null);
     setWriteResultType(null);
     setShowWriteModal(true);
+    // Suggest a privacy-safe real name (default address → latest order → metadata →
+    // "Customer"). NEVER the email prefix. Editable; only applied if the user hasn't typed.
+    setResolvingName(true);
+    resolveReviewerName(user?.id ?? null)
+      .then(({ suggestedName }) => { if (!nameEditedRef.current) setWriteName(suggestedName); })
+      .catch(() => { if (!nameEditedRef.current) setWriteName('Customer'); })
+      .finally(() => setResolvingName(false));
   }
 
   async function handleSubmitReview() {
     if (writeSubmitting) return;
+    // Reviews are insert-gated to authenticated users (RLS). Guide guests to sign in
+    // instead of surfacing an opaque RLS failure.
+    if (!user?.id) {
+      setWriteResult('Please sign in to write a review.');
+      setWriteResultType('error');
+      return;
+    }
     setWriteSubmitting(true);
     setWriteResult(null);
     setWriteResultType(null);
@@ -261,8 +279,8 @@ export default function ReviewSection({ product }: { product: any }) {
       rating: writeRating,
       title: writeTitle,
       body: writeBody,
-      reviewerName: writeName.trim() || 'Anonymous',
-      userId: user?.id ?? null,
+      reviewerName: writeName.trim() || 'Customer',
+      userId: user.id,
     });
 
     console.log('[ReviewSubmit] result:', result.ok ? 'ok' : 'fail');
@@ -361,10 +379,10 @@ export default function ReviewSection({ product }: { product: any }) {
           <Text style={styles.modalLabel}>Your Name</Text>
           <TextInput
             style={styles.modalInput}
-            placeholder="Your name (optional)"
+            placeholder={resolvingName ? 'Loading your name…' : 'Your name (optional)'}
             placeholderTextColor={colors.textTertiary}
             value={writeName}
-            onChangeText={setWriteName}
+            onChangeText={(t) => { nameEditedRef.current = true; setWriteName(t); }}
             maxLength={40}
             editable={!writeSubmitting}
           />
@@ -372,24 +390,39 @@ export default function ReviewSection({ product }: { product: any }) {
           {writeResult !== null && (
             <Text style={[
               styles.writeResult,
-              writeResultType === 'success' ? styles.writeResultSuccess : styles.writeResultInfo,
+              writeResultType === 'success' ? styles.writeResultSuccess
+                : writeResultType === 'error' ? styles.writeResultError
+                : styles.writeResultInfo,
             ]}>
               {writeResult}
             </Text>
           )}
 
           {(() => {
-            const canSubmit = writeRating > 0 && writeBody.trim().length >= 10 && !writeSubmitting;
+            // Align with reviewModerator (title ≥4, body ≥20) so a valid submission is
+            // never silently routed to a hidden/pending state by the server.
+            const titleOk = writeTitle.trim().length >= 4;
+            const bodyOk = writeBody.trim().length >= 20;
+            const canSubmit = writeRating > 0 && titleOk && bodyOk && !writeSubmitting;
+            const hints: string[] = [];
+            if (writeRating < 1) hints.push('a star rating');
+            if (!titleOk) hints.push('a title (4+ characters)');
+            if (!bodyOk) hints.push('a review (20+ characters)');
             return (
-              <TouchableOpacity
-                style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
-                onPress={handleSubmitReview}
-                disabled={!canSubmit}
-              >
-                <Text style={styles.submitBtnText}>
-                  {writeSubmitting ? 'Submitting…' : 'Submit Review'}
-                </Text>
-              </TouchableOpacity>
+              <>
+                {hints.length > 0 && !writeSubmitting && (
+                  <Text style={styles.validationHint}>Add {hints.join(', ')} to submit.</Text>
+                )}
+                <TouchableOpacity
+                  style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
+                  onPress={handleSubmitReview}
+                  disabled={!canSubmit}
+                >
+                  <Text style={styles.submitBtnText}>
+                    {writeSubmitting ? 'Submitting…' : 'Submit Review'}
+                  </Text>
+                </TouchableOpacity>
+              </>
             );
           })()}
         </View>
@@ -1126,6 +1159,15 @@ const styles = StyleSheet.create({
   },
   writeResultInfo: {
     color: colors.textSecondary,
+  },
+  writeResultError: {
+    color: '#DC2626',
+  },
+  validationHint: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    marginTop: spacing.md,
+    textAlign: 'center',
   },
   submitBtn: {
     marginTop: spacing.lg,
