@@ -16,6 +16,12 @@ set -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Per-warehouse inventory is visible ONLY to the PICKUP account (Buyer 76938981).
+# The dropship account (scripts/.giga-session.json, Buyer 82482447) returns no
+# per-warehouse rows and is reserved for delivery-fee/dropship workflows. An
+# external GIGA_SESSION_FILE still overrides this default.
+export GIGA_SESSION_FILE="${GIGA_SESSION_FILE:-$REPO_ROOT/scripts/.giga-session-pickup.json}"
+
 LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
 
@@ -68,7 +74,7 @@ echo "  REPO_ROOT  : $REPO_ROOT"
 echo "  PATH       : $PATH"
 echo "  Node bin   : $NODE_BIN ($("$NODE_BIN" --version 2>/dev/null))"
 echo "  tsx bin    : $TSX_BIN"
-echo "  SESSION    : $REPO_ROOT/scripts/.giga-session.json"
+echo "  SESSION    : $GIGA_SESSION_FILE"
 echo "════════════════════════════════════════════════════════════"
 
 if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
@@ -76,8 +82,8 @@ if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
   exit 1
 fi
 
-if [ ! -f "$REPO_ROOT/scripts/.giga-session.json" ]; then
-  echo "FATAL: scripts/.giga-session.json missing — run npx tsx scripts/saveGigaSession.ts first."
+if [ ! -f "$GIGA_SESSION_FILE" ]; then
+  echo "FATAL: $GIGA_SESSION_FILE missing — run: GIGA_SESSION_FILE=\"$GIGA_SESSION_FILE\" npx tsx scripts/saveGigaSession.ts"
   exit 1
 fi
 

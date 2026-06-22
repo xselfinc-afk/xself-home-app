@@ -27,7 +27,7 @@ android/
 *.log
 
 # Sessions / secrets
-scripts/.giga-session.json
+scripts/.giga-session*.json
 scripts/.giga-chrome-profile/
 logs/
 tmp/

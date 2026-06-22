@@ -40,7 +40,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const SESSION_FILE = process.env.GIGA_SESSION_FILE
-  ?? path.join(process.cwd(), 'scripts', '.giga-session.json');
+  ?? path.join(process.cwd(), 'scripts', '.giga-session-pickup.json'); // per-warehouse stock requires the PICKUP account (Buyer 76938981); override with GIGA_SESSION_FILE
 
 const USER_AGENT = process.env.GIGA_USER_AGENT
   ?? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';

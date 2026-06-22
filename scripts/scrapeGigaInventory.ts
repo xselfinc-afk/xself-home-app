@@ -29,7 +29,7 @@ import * as fs from 'fs';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const SESSION_FILE = process.env.GIGA_SESSION_FILE
-  ?? path.join(process.cwd(), 'scripts', '.giga-session.json');
+  ?? path.join(process.cwd(), 'scripts', '.giga-session-pickup.json'); // per-warehouse stock requires the PICKUP account (Buyer 76938981); override with GIGA_SESSION_FILE
 
 const PRODUCT_URL = process.env.PRODUCT_URL ?? '';
 const HEADED      = process.env.HEADED === '1';

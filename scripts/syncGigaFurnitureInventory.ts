@@ -43,7 +43,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 
 const SESSION_FILE =
   process.env.GIGA_SESSION_FILE ??
-  path.join(process.cwd(), 'scripts', '.giga-session.json');
+  path.join(process.cwd(), 'scripts', '.giga-session-pickup.json'); // pickup account (Buyer 76938981) for per-warehouse stock; override with GIGA_SESSION_FILE
 
 const DRY_RUN        = process.env.DRY_RUN === '1';
 const HEADED         = process.env.HEADED === '1';
