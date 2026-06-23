@@ -14,6 +14,8 @@
     "giga:newly-saved:plan": "tsx scripts/planGigaNewlySavedCandidates.ts",
     "giga:newly-saved:sync:dry": "DRY_RUN=1 tsx scripts/syncGigaNewlySavedCandidates.ts",
     "giga:newly-saved:sync": "tsx scripts/syncGigaNewlySavedCandidates.ts --sync",
+    "giga:saved-to-live:plan": "tsx scripts/gigaSavedToLiveOrchestrator.ts",
+    "giga:saved-to-live:apply": "tsx scripts/gigaSavedToLiveOrchestrator.ts --apply",
     "fees:refresh:dry": "DRY_RUN=1 tsx scripts/refreshGigaDeliveryFeesHybrid.ts",
     "fees:refresh": "tsx scripts/refreshGigaDeliveryFeesHybrid.ts",
     "fees:refresh:all": "tsx scripts/refreshGigaDeliveryFeesHybrid.ts --all",
