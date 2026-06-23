@@ -36,3 +36,8 @@ tmp/
 
 # Local planner report artifacts (regenerated; not source)
 reports/giga-auto-publish/
+
+# Local backups, debug output, and Deno lockfile (not part of the app/release)
+backups/
+scripts/debug-output/
+deno.lock

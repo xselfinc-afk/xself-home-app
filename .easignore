@@ -31,7 +31,11 @@ android/
 
 # Scraper local state — never ship these to a remote builder
 scripts/.giga-chrome-profile/
-scripts/.giga-session.json
+scripts/.giga-session*.json
+
+# Debug output + Deno lockfile (local only; not needed by the iOS build)
+scripts/debug-output/
+deno.lock
 
 # Local archives
 *.tar
