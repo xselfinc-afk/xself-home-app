@@ -207,7 +207,7 @@ export function pickProductId(opts: { forced?: string | null; seeded?: string | 
 
 // ── Session cookie (read-only; never printed) ──────────────────────────────────
 interface SessionCookie { name: string; value: string; domain: string; }
-function loadCookieHeader(): string {
+export function loadCookieHeader(): string {
   if (!fs.existsSync(SESSION_FILE)) {
     throw new Error(`Session file not found: ${SESSION_FILE} — run: npm run inventory:save-session`);
   }
@@ -229,7 +229,7 @@ function buildHeaders(productId: string, cookieHeader: string): Record<string, s
 }
 
 // ── Fetch + parse one product_id's fee (read-only) ─────────────────────────────
-async function fetchFee(gigaProductId: string, cookieHeader: string): Promise<ParsedFee> {
+export async function fetchFee(gigaProductId: string, cookieHeader: string): Promise<ParsedFee> {
   const url = `https://www.gigab2b.com/index.php?route=/product/info/price/list&product_id=${gigaProductId}`;
   assertReadOnlyUrl(url);
   const res = await fetch(url, { method: 'GET', headers: buildHeaders(gigaProductId, cookieHeader), redirect: 'follow' });
