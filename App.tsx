@@ -2569,7 +2569,7 @@ function AccountScreen({ navigation }) {
     <Text style={styles.accountFooter}>
       <Text style={styles.accountFooterLink} onPress={() => Linking.openURL('https://pouncing-quotation-0f0.notion.site/Terms-of-Service-358e0472a4e28030bb0ce6258d50a1c9?source=copy_link')}>Terms</Text>
       <Text> · </Text>
-      <Text style={styles.accountFooterLink} onPress={() => Linking.openURL('https://pouncing-quotation-0f0.notion.site/Privacy-Policy-351e0472a4e2805aa8f1dbd6a6555bf2?source=copy_link')}>Privacy</Text>
+      <Text style={styles.accountFooterLink} onPress={() => Linking.openURL('https://xselfhome.com/privacy.html')}>Privacy</Text>
     </Text>
   );
 
@@ -2775,16 +2775,7 @@ function MembershipScreen({ navigation }) {
               <Text style={{ fontSize: 10, fontWeight: '600', color: '#9CA3AF' }}>PREVIEW</Text>
             </View>
           </View>
-          <TouchableOpacity
-            style={styles.menuItem}
-            activeOpacity={0.7}
-            onPress={() => Linking.openURL('https://xselfhome.com/membership')}>
-            <Ionicons name="settings-outline" size={20} color="#9CA3AF" />
-            <View style={styles.menuTextWrap}>
-              <Text style={styles.menuText}>Manage Plan</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color="#D1CFC9" />
-          </TouchableOpacity>
+          {/* "Manage Plan" CTA hidden for 1.0.10 — https://xselfhome.com/membership is not published yet (was a 404). Restore when the membership page exists. */}
         </View>
 
         {/* Your Benefits */}
