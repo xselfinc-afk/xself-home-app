@@ -10,7 +10,7 @@ reused by every release command. This is an Expo **bare** workflow (an `ios/` pr
 cd /Users/heliu/xself-home-app
 npm run release:ios:prepare -- --version 1.0.10 --build 31   # align version/build/runtime files + focused commit
 npm run release:ios:build   -- --confirm-build               # gated EAS production build (no submit)
-npm run release:ios:submit  -- --confirm-submit              # verify built artifact == prepared, then submit  [Phase 5 — not yet implemented]
+npm run release:ios:submit  -- --confirm-submit              # verify the recorded EAS build artifact == prepared, then submit that build id
 ```
 `prepare` runs the same gates internally (before and after writing), so **`release:ios:plan` is NOT
 required in the daily flow** — it is a **read-only diagnostic/preflight** you can run anytime (or in
@@ -77,15 +77,16 @@ the produced EAS build id to `reports/release/ios-release-state.json` for submit
 - **Do not print** Apple credentials, EAS tokens, ASC API keys, env values, or provisioning details.
 
 ## Legacy one-shot — DEPRECATED
-`scripts/releaseIosProduction.sh` (currently `npm run release:ios:submit`) is a **deprecated** one-shot
-that **auto-bumps + builds + submits** in a single command. **Do not use it for new releases** — use
-the staged flow above. It is kept temporarily as a reference (its post-build verify + submit logic
-will be harvested into the staged `release:ios:submit` in Phase 5), then retired. `release:ios:submit`
-will be repointed to the staged submit when Phase 5 lands.
+`scripts/releaseIosProduction.sh` is a **deprecated** one-shot that **auto-bumps + builds + submits** in
+a single command. **Do not use it for new releases** — use the staged flow above. As of Phase 5,
+`npm run release:ios:submit` is **repointed to the staged submit** (`scripts/iosReleaseSubmit.ts`); the
+one-shot has **no npm alias** and is kept only as a runnable-by-path reference (with a deprecation
+banner). It will be retired after the staged flow ships a real release.
 
 ## Phase status
 - Phase 1 ✅ `release:ios:plan` (read-only gates)
 - Phase 2 ✅ `release:ios:prepare` (align files + commit)
-- Phase 4 ✅ `release:ios:build` (gated EAS production build; no submit) ← this doc
-- Phase 5 ⏳ `release:ios:submit` (verify built artifact + submit; retire the one-shot)
+- Phase 4 ✅ `release:ios:build` (gated EAS production build; no submit)
+- Phase 5 ✅ `release:ios:submit` (verify the recorded EAS build artifact, submit that specific id; one-shot deprecated + de-aliased) ← this doc
+- (later) retire `scripts/releaseIosProduction.sh` once the staged flow ships a real release
 - Phase 6 ⏳ OTA `release:ota:plan` / `release:ota:publish`
