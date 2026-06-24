@@ -50,6 +50,7 @@
     "inventory:xhr:sync:dry": "DRY_RUN=1 INVENTORY_LIMIT=5 tsx scripts/syncGigaInventoryXhr.ts",
     "sync:ios-version": "node scripts/syncIosNativeVersion.js",
     "version:bump": "node scripts/bumpReleaseVersion.js",
+    "release:ios:plan": "tsx scripts/iosReleasePlan.ts",
     "release:ios:submit": "bash scripts/releaseIosProduction.sh"
   },
   "dependencies": {
