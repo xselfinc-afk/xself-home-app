@@ -5,6 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import { evaluateGates, compareSemver, recommendNextBuild, parseSemver, type ReleaseState } from '../../scripts/iosReleasePlan';
+import { computePrepareEdits, runtimePolicyReason, checkDirtyTrackedAllowlist, editPlistRuntime, setJsonStringValue, setPbxValue } from '../../scripts/iosReleasePrepare';
 
 let passed = 0;
 function it(name: string, fn: () => void): void { fn(); passed++; console.log(`  ✓ ${name}`); }
@@ -87,6 +88,56 @@ it('compareSemver + recommendNextBuild + parseSemver work', () => {
   assert.ok(Number.isNaN(recommendNextBuild('abc')));
   assert.deepEqual(parseSemver('1.0.10'), [1, 0, 10]);
   assert.equal(parseSemver('1.0'), null);
+});
+
+// ── Phase 2: prepare helpers ──
+const target = { version: '1.0.10', build: '31', runtime: '1.0.10' };
+
+// 1) prepare changes plist runtime when app runtime is newer than the plist
+it('computePrepareEdits: plist runtime stale → emits plist_runtime edit (1.0.9 → 1.0.10)', () => {
+  const s = good(); s.plistRuntime = '1.0.9';
+  const edits = computePrepareEdits(s, target);
+  const pl = edits.find(e => e.id === 'plist_runtime');
+  assert.ok(pl, 'expected a plist_runtime edit');
+  assert.equal(pl!.from, '1.0.9'); assert.equal(pl!.to, '1.0.10');
+});
+
+// 2) prepare does not change already-matching state
+it('computePrepareEdits: fully-consistent state → no edits', () => {
+  assert.deepEqual(computePrepareEdits(good(), target), []);
+});
+
+// also covers version/build/pbxproj edit emission
+it('computePrepareEdits: version+build+pbxproj diffs all emit edits', () => {
+  const s = good(); s.appVersion = '1.0.9'; s.appBuild = '30'; s.runtimeVersion = '1.0.9';
+  s.marketingVersions = ['1.0.9', '1.0.9']; s.currentProjectVersions = ['30', '30']; s.plistRuntime = '1.0.9';
+  const ids = computePrepareEdits(s, target).map(e => e.id).sort();
+  assert.deepEqual(ids, ['app_build', 'app_runtime', 'app_version', 'pbx_build', 'pbx_marketing', 'plist_runtime'].sort());
+});
+
+// 3) prepare refuses runtimeVersion policy object
+it('runtimePolicyReason: object → reason; string → null', () => {
+  assert.ok(runtimePolicyReason({ policy: 'appVersion' }));
+  assert.equal(runtimePolicyReason('1.0.10'), null);
+});
+
+// 4) prepare refuses unexpected dirty TRACKED files; allows untracked + allowlisted
+it('checkDirtyTrackedAllowlist: tracked file outside allowlist → not ok; untracked/allowlisted → ok', () => {
+  const allow = ['app.json', 'ios/XselfHome.xcodeproj/project.pbxproj', 'ios/XselfHome/Supporting/Expo.plist'];
+  const bad = checkDirtyTrackedAllowlist([' M src/App.tsx', ' M app.json'], allow);
+  assert.equal(bad.ok, false); assert.deepEqual(bad.offending, ['src/App.tsx']);
+  const okCase = checkDirtyTrackedAllowlist([' M app.json', '?? scripts/whatever.ts', '?? docs/x.md'], allow);
+  assert.equal(okCase.ok, true); assert.deepEqual(okCase.offending, []);
+});
+
+// 5) pure string transforms
+it('editPlistRuntime / setJsonStringValue / setPbxValue are correct, minimal transforms', () => {
+  const plist = '<key>EXUpdatesRuntimeVersion</key>\n    <string>1.0.9</string>';
+  assert.ok(editPlistRuntime(plist, '1.0.10').includes('<string>1.0.10</string>'));
+  assert.equal(editPlistRuntime(plist, '1.0.10').includes('1.0.9'), false);
+  assert.equal(setJsonStringValue('"buildNumber": "31"', 'buildNumber', '32'), '"buildNumber": "32"');
+  assert.equal(setPbxValue('MARKETING_VERSION = 1.0.9;\nMARKETING_VERSION = 1.0.9;', 'MARKETING_VERSION', '1.0.10'),
+    'MARKETING_VERSION = 1.0.10;\nMARKETING_VERSION = 1.0.10;');
 });
 
 console.log(`\n${passed} iOS release gate assertions passed.`);

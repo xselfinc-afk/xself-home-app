@@ -109,7 +109,7 @@ function plistString(xml: string, key: string): string | null {
   const m = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(xml);
   return m ? m[1] : null;
 }
-function gatherState(): ReleaseState {
+export function gatherState(): ReleaseState {
   const root = process.cwd();
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'))?.expo ?? {};
   const eas = JSON.parse(fs.readFileSync(path.join(root, 'eas.json'), 'utf8')) ?? {};

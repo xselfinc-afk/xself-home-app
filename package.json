@@ -51,6 +51,7 @@
     "sync:ios-version": "node scripts/syncIosNativeVersion.js",
     "version:bump": "node scripts/bumpReleaseVersion.js",
     "release:ios:plan": "tsx scripts/iosReleasePlan.ts",
+    "release:ios:prepare": "tsx scripts/iosReleasePrepare.ts",
     "release:ios:submit": "bash scripts/releaseIosProduction.sh"
   },
   "dependencies": {
