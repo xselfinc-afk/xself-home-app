@@ -4,7 +4,7 @@
  * Run: npx tsx src/__tests__/savedToLiveApply.test.ts
  */
 import assert from 'node:assert/strict';
-import { classifyPublishApply, collectLiveAndHeld, classifyFeeText, computeApplyScopes } from '../../scripts/gigaSavedToLiveOrchestrator';
+import { classifyPublishApply, collectLiveAndHeld, classifyFeeText, computeApplyScopes, isEmptyProposedBatch, collectPlannerHolds } from '../../scripts/gigaSavedToLiveOrchestrator';
 import { maskClientId, deliveryCredsStatus, MISSING_CREDS_HELP } from '../../scripts/lib/deliveryCreds';
 
 let passed = 0;
@@ -121,6 +121,44 @@ it('computeApplyScopes: would_import row → import scope; out_of_stock excluded
   assert.deepEqual(s.importSkus, ['NEW1']);                                 // only would_import
   assert.deepEqual([...s.publishSkus].sort(), ['NEW1', 'OLD1']);            // new (after import) + already-imported
   assert.deepEqual(s.preHeldSkus.map(h => h.sku), ['OOS1']);               // missing_inventory pre-held
+});
+
+// Publish soft-skip: empty proposed_batch detection
+it('isEmptyProposedBatch: true for sku_count 0 / empty / missing; false for non-empty', () => {
+  assert.equal(isEmptyProposedBatch({ proposed_batch: { sku_count: 0, skus: [] } }), true);
+  assert.equal(isEmptyProposedBatch({ proposed_batch: { skus: [] } }), true);
+  assert.equal(isEmptyProposedBatch({ proposed_batch: null }), true);
+  assert.equal(isEmptyProposedBatch({}), true);
+  assert.equal(isEmptyProposedBatch({ proposed_batch: { sku_count: 2, skus: ['A', 'B'] } }), false);
+});
+
+// Planner hold reasons merged into held_skus (the real failing run's 5 SKUs)
+it('collectPlannerHolds: extracts held candidates with bucket/reasons; excludes proposed', () => {
+  const plan = {
+    proposed_batch: { skus: ['PROP1'] },
+    candidates: [
+      { id: 'PROP1', bucket: 'SAFE', reasons: [] },
+      { id: 'SJ000159AAN', bucket: 'HOLD_PHASE2', reasons: ['cfgmissing_fragmented'] },
+      { id: 'N711P410389B', bucket: 'HOLD_PHASE2', reasons: ['fragmented_cluster'] },
+      { id: 'N711P345166B', bucket: 'HOLD_INVENTORY', reasons: ['no_live_sibling_standalone', 'no_current_stock'] },
+    ],
+  };
+  const holds = collectPlannerHolds(plan);
+  assert.equal(holds.find(h => h.sku === 'PROP1'), undefined); // proposed → not held
+  const sj = holds.find(h => h.sku === 'SJ000159AAN');
+  assert.ok(sj && /HOLD_PHASE2/.test(sj.reason) && /cfgmissing_fragmented/.test(sj.reason));
+  const inv = holds.find(h => h.sku === 'N711P345166B');
+  assert.ok(inv && /HOLD_INVENTORY/.test(inv.reason) && /no_current_stock/.test(inv.reason));
+  assert.equal(holds.length, 3);
+});
+
+// Merge: planner reason replaces the generic DB-derived held reason (mirrors the orchestrator merge)
+it('planner-hold merge: planner reason wins over generic DB-derived reason', () => {
+  const dbHeld = collectLiveAndHeld(['SJ000159AAN'], new Set<string>(), new Map()); // not in std → generic reason
+  const plannerBySku = new Map([['SJ000159AAN', 'HOLD_PHASE2: cfgmissing_fragmented']]);
+  const merged = dbHeld.heldSkus.map(h => plannerBySku.has(h.sku) ? { sku: h.sku, reason: plannerBySku.get(h.sku) as string } : h);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].reason, 'HOLD_PHASE2: cfgmissing_fragmented');
 });
 
 console.log(`\n${passed} saved-to-live apply assertions passed.`);

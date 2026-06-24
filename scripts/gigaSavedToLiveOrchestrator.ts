@@ -215,6 +215,29 @@ export function classifyFeeText(output: string): FeeTextClass {
   };
 }
 
+// ── PURE: empty proposed_batch detection + planner hold extraction (publish soft-skip) ───────────────
+export function isEmptyProposedBatch(planJson: any): boolean {
+  const b = planJson?.proposed_batch;
+  if (!b) return true;
+  const count = typeof b.sku_count === 'number' ? b.sku_count : (Array.isArray(b.skus) ? b.skus.length : 0);
+  return count === 0;
+}
+/** Held candidates from a planGigaAutoPublish plan (everything not in proposed_batch), with rich reasons
+ *  like "HOLD_PHASE2: cfgmissing_fragmented" / "HOLD_INVENTORY: no_current_stock". */
+export function collectPlannerHolds(planJson: any): HeldSku[] {
+  const cands = Array.isArray(planJson?.candidates) ? planJson.candidates : [];
+  const proposed = new Set<string>((planJson?.proposed_batch?.skus ?? []).map((s: any) => String(s)));
+  const out: HeldSku[] = [];
+  for (const c of cands) {
+    const sku = String(c?.id ?? c?.sku ?? '').trim();
+    if (!sku || proposed.has(sku)) continue;   // proposed (publishable) SKUs are not held
+    const bucket = c?.bucket ?? c?.classification ?? 'HOLD';
+    const reasons = Array.isArray(c?.reasons) ? c.reasons : (Array.isArray(c?.hold_reasons) ? c.hold_reasons : []);
+    out.push({ sku, reason: `${bucket}${reasons.length ? `: ${reasons.join(', ')}` : ''}` });
+  }
+  return out;
+}
+
 function readJson(file: string): any | null { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 
 // ── DB reads used by APPLY (scoped, read-only) ───────────────────────────────────────────────────────
@@ -583,6 +606,8 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
   let feeSuccessSkus: string[] = [];
   let feeFailedSkus: string[] = [];
   let importSkipped: string | false = false;
+  let publishSkipped: string | false = false;
+  let plannerHolds: HeldSku[] = [];
 
   if (!aborted) {
     // 1) IMPORT — only genuinely-new SKUs (would_import). Skip = soft success when nothing is new
@@ -603,29 +628,43 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
       steps.push({ step: 'import', script: '(skipped)', args: [], exit_code: 0, ok: true, stop_reason: null, summary_line: 'skipped: nothing_new_to_import' });
     }
 
-    // 2) PUBLISH — scoped to publishable SKUs (eligible MINUS missing_inventory). Skip if none publishable.
+    // 2) PUBLISH — scoped to publishable SKUs (eligible MINUS missing_inventory).
     if (!aborted && publishSkus.length > 0) {
       const onlyPublish = publishSkus.join(',');
-      const publishChain: { step: string; script: string; args: string[] }[] = [
-        { step: 'publish_plan', script: 'scripts/planGigaAutoPublish.ts', args: [`--only=${onlyPublish}`, `--max-skus=${MAX_SKUS}`, '--summary'] },
-        { step: 'publish_dry_run', script: 'scripts/runGigaAutoPublish.ts', args: ['--plan', PLAN_FILE_AUTOPUB, '--dry-run', '--summary'] },
-      ];
-      for (const c of publishChain) {
-        const { result } = runChild(c.step, c.script, c.args);
-        steps.push(result);
-        if (!result.ok) { stopReason = result.stop_reason ?? `step_failed:${c.step}(exit=${result.exit_code})`; aborted = true; break; }
-      }
-      // publish_apply — do NOT auto-abort on non-zero exit. Classify hard-stop vs partial success.
-      if (!aborted) {
-        const { result: applyStep } = runChild('publish_apply', 'scripts/runGigaAutoPublish.ts', ['--plan', PLAN_FILE_AUTOPUB, '--apply', '--summary']);
-        steps.push(applyStep);
-        const cls = classifyPublishApply(applyStep, readJson(APPLY_FILE_AUTOPUB));
-        partialSuccess = cls.partialSuccess;
-        fullSuccess = cls.fullSuccess;
-        if (cls.hardStop) { aborted = true; stopReason = cls.stopReason; }
-        else if (!applyStep.ok) stopReason = cls.stopReason; // recorded, but we continue to read ACTUAL DB state
+      // 2a) Plan first.
+      const { result: planStep } = runChild('publish_plan', 'scripts/planGigaAutoPublish.ts', [`--only=${onlyPublish}`, `--max-skus=${MAX_SKUS}`, '--summary']);
+      steps.push(planStep);
+      if (!planStep.ok) {
+        stopReason = planStep.stop_reason ?? `step_failed:publish_plan(exit=${planStep.exit_code})`;
+        aborted = true;
+      } else if (isEmptyProposedBatch(readJson(PLAN_FILE_AUTOPUB))) {
+        // 2b) The planner held every publishable SKU → empty proposed_batch. runGigaAutoPublish would
+        //     exit 1 on its "no proposed_batch.skus" guard, so SOFT-SKIP dry-run + apply (no hard abort).
+        const planJson = readJson(PLAN_FILE_AUTOPUB);
+        publishSkipped = 'nothing_publishable_after_planner_holds';
+        plannerHolds = collectPlannerHolds(planJson);
+        stopReason = stopReason ?? 'nothing_publishable_after_planner_holds';
+        steps.push({ step: 'publish_dry_run', script: '(skipped)', args: [], exit_code: 0, ok: true, stop_reason: null, summary_line: 'skipped: nothing_publishable_after_planner_holds' });
+      } else {
+        // 2c) Dry-run, then apply.
+        const { result: dryStep } = runChild('publish_dry_run', 'scripts/runGigaAutoPublish.ts', ['--plan', PLAN_FILE_AUTOPUB, '--dry-run', '--summary']);
+        steps.push(dryStep);
+        if (!dryStep.ok) {
+          stopReason = dryStep.stop_reason ?? `step_failed:publish_dry_run(exit=${dryStep.exit_code})`;
+          aborted = true;
+        } else {
+          // publish_apply — do NOT auto-abort on non-zero exit. Classify hard-stop vs partial success.
+          const { result: applyStep } = runChild('publish_apply', 'scripts/runGigaAutoPublish.ts', ['--plan', PLAN_FILE_AUTOPUB, '--apply', '--summary']);
+          steps.push(applyStep);
+          const cls = classifyPublishApply(applyStep, readJson(APPLY_FILE_AUTOPUB));
+          partialSuccess = cls.partialSuccess;
+          fullSuccess = cls.fullSuccess;
+          if (cls.hardStop) { aborted = true; stopReason = cls.stopReason; }
+          else if (!applyStep.ok) stopReason = cls.stopReason; // recorded, but we continue to read ACTUAL DB state
+        }
       }
     } else if (!aborted && publishSkus.length === 0) {
+      publishSkipped = 'nothing_publishable_after_scope';
       stopReason = stopReason ?? 'nothing_publishable_after_scope';
       steps.push({ step: 'publish', script: '(skipped)', args: [], exit_code: 0, ok: true, stop_reason: null, summary_line: 'skipped: nothing_publishable (all eligible were missing_inventory)' });
     }
@@ -635,7 +674,10 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
       const { liveSet, stdBySku } = await readPostPublishState(publishSkus);
       const r = collectLiveAndHeld(publishSkus, liveSet, stdBySku);
       actualLiveSkus = r.actualLiveSkus;
-      heldSkus = [...preHeldSkus, ...r.heldSkus];   // pre-held missing_inventory + any publish-scope holds
+      // Prefer richer planner hold reasons (HOLD_PHASE2 / HOLD_INVENTORY) over generic DB-derived ones.
+      const plannerBySku = new Map(plannerHolds.map(h => [h.sku, h.reason]));
+      const mergedHeld = r.heldSkus.map(h => plannerBySku.has(h.sku) ? { sku: h.sku, reason: plannerBySku.get(h.sku) as string } : h);
+      heldSkus = [...preHeldSkus, ...mergedHeld];   // pre-held missing_inventory + publish-scope holds (planner reasons preferred)
 
       // 4) Fee refresh for ACTUAL live SKUs only (soft-fail; never rolls back publish).
       if (actualLiveSkus.length > 0) {
@@ -675,6 +717,7 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
     import_skus: importSkus,
     import_skipped: importSkipped,
     publish_skus: publishSkus,
+    publish_skipped: publishSkipped,
     actual_live_skus: actualLiveSkus,
     held_skus: heldSkus,
     published_in_scope: actualLiveSkus,            // reflects ACTUAL live results — never 0 when live SKUs exist
@@ -702,7 +745,7 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
   md.push(`- partial_success: ${partialSuccess}   full_success: ${fullSuccess}`);
   md.push(`- scope_skus (${scopeSkus.length}): ${scopeSkus.join(', ') || '(none)'}`);
   md.push(`- import_skus (${importSkus.length}): ${importSkus.join(', ') || '(none)'}${importSkipped ? `  — import ${importSkipped}` : ''}`);
-  md.push(`- publish_skus (${publishSkus.length}, excludes missing_inventory): ${publishSkus.join(', ') || '(none)'}`);
+  md.push(`- publish_skus (${publishSkus.length}, excludes missing_inventory): ${publishSkus.join(', ') || '(none)'}${publishSkipped ? `  — publish ${publishSkipped}` : ''}`);
   md.push(`- actual_live_skus / published_in_scope (${actualLiveSkus.length}): ${actualLiveSkus.join(', ') || '(none)'}`);
   md.push(`- delivery_checkout_ready_skus (${deliveryReady.length}): ${deliveryReady.join(', ') || '(none)'}`);
   md.push(`- sellable_missing_fee_skus (${feeFailedSkus.length}): ${feeFailedSkus.join(', ') || '(none)'}`, '');
@@ -732,6 +775,7 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
   console.log(`import_skus=${importSkus.length}`);
   console.log(`import_skipped=${importSkipped || false}`);
   console.log(`publish_skus=${publishSkus.length}`);
+  console.log(`publish_skipped=${publishSkipped || false}`);
   console.log(`actual_live_skus=${actualLiveSkus.length}`);
   console.log(`published_in_scope=${actualLiveSkus.length}`);
   console.log(`held_skus=${heldSkus.length}`);
