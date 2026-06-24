@@ -141,7 +141,9 @@ function frontendFiles(): string[] {
   out.push(...listFilesRecursive('admin', f => /\.(ts|tsx|js|json|html)$/.test(f)));
   if (exists('App.tsx'))  out.push('App.tsx');
   if (exists('app.json')) out.push('app.json');
-  return out;
+  // Test files (src/__tests__) are NOT part of the shipped app bundle — exclude them from the
+  // "frontend bundle" secret/import checks (they run in Node/CI, never embedded in the app).
+  return out.filter(f => !/(^|\/)__tests__\//.test(f));
 }
 
 // ── Check 3: Stripe safety ──────────────────────────────────────────────────
@@ -558,11 +560,13 @@ check('Pickup rule lock', () => {
     /setFulfillmentChoice\(['"]pickup['"]\)/,
   ));
 
-  // My Orders still has the pickup pass + status flow.
+  // My Orders still renders the pickup status flow. (The shipped labels are "Preparing for pickup" /
+  // "Ready for pickup" plus the pickup-date service; the earlier "Pickup Pass" strings were never-shipped
+  // WIP, so the lock now pins the ACTUAL shipped pickup status flow rather than unshipped strings.)
   failures.push(...fileMust('src/screens/OrdersScreen.tsx',
-    'Pickup Pass',
-    'Preparing Pickup',
-    'Pickup Ready',
+    'Preparing for pickup',
+    'Ready for pickup',
+    'formatPickupDate',
   ));
 
   return failures;
@@ -619,6 +623,9 @@ check('Delivery account separation', () => {
     if (file === 'scripts/productionGuardrails.ts') continue; // this guard legitimately lists the patterns
     const text = read(file);
     if (text === null) continue;
+    // Portal-safety-guard TEST fixtures reference the forbidden patterns only to ASSERT the guard
+    // STOPS them (expectStop) — never to call them. Same rationale as excluding this guard itself.
+    if (/portalSafetyGuard/.test(text) && /expectStop/.test(text)) continue;
     if (text.includes('openapi.gigab2b.com') && MM.some(m => text.includes(m))) {
       failures.push(`${file}: pairs production host with a money-moving endpoint — forbidden in tooling/tests`);
     }
