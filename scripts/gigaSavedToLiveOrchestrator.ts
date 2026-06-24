@@ -52,7 +52,8 @@ import { config as loadEnv } from 'dotenv';
 import * as fsForEnv from 'node:fs';
 {
   const forceDefault = process.env.GIGA_SAVED_USE_ALT_CREDS === '0';
-  if (!forceDefault && fsForEnv.existsSync('.env.giga-alt.local')) loadEnv({ path: '.env.giga-alt.local' });
+  if (!forceDefault && fsForEnv.existsSync('.env.giga-alt.local')) loadEnv({ path: '.env.giga-alt.local' });   // pickup/saved-list creds (SUPPLIER_CLIENT_*)
+  if (fsForEnv.existsSync('.env.giga-delivery.local')) loadEnv({ path: '.env.giga-delivery.local' });          // dropship delivery-fee creds (SUPPLIER_DELIVERY_*) for the inherited-env fee subprocess path; never overrides exported env
   loadEnv({ path: '.env.local' });
   loadEnv({ path: '.env' });
 }
@@ -61,6 +62,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fetchAllSavedItems, GigaSavedItemsError, ENDPOINT_PATH, SKU_FIELD } from './lib/gigaSavedItems';
+import { deliveryCredsStatus } from './lib/deliveryCreds';
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -120,14 +122,108 @@ type StepResult = {
  * tokens. Returns a structured StepResult. NEVER prints/persists raw child output (could be verbose) —
  * only the SUMMARY marker line + exit code + detected stop reason, so no secrets/headers leak.
  */
-function runChild(step: string, script: string, args: string[]): StepResult {
+function runChild(step: string, script: string, args: string[]): { result: StepResult; output: string } {
   const full = ['tsx', script, ...args];
   const r = spawnSync('npx', full, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: process.env });
   const combined = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
   const stop = detectStop(combined);
   const summaryLine = combined.split('\n').find(l => /_SUMMARY$/.test(l.trim())) ?? null;
   const exit = r.status;
-  return { step, script, args, exit_code: exit, ok: exit === 0 && !stop, stop_reason: stop, summary_line: summaryLine };
+  // `output` is returned ONLY for in-process classification (e.g. fee tokens). It is NEVER persisted
+  // in the report — only step/exit/stop_reason/summary_line are. Child scripts never print secrets.
+  return { result: { step, script, args, exit_code: exit, ok: exit === 0 && !stop, stop_reason: stop, summary_line: summaryLine }, output: combined };
+}
+
+// ── PURE: publish_apply classification (B) ──────────────────────────────────────────────────────────
+export interface PublishApplyClass { hardStop: boolean; stopReason: string | null; partialSuccess: boolean; fullSuccess: boolean; }
+/** A non-zero publish_apply exit is NOT automatically a total failure. Hard-stop tokens abort; otherwise
+ *  any meaningful progress in the auto-publish report = partial success (continue to read-only verify). */
+export function classifyPublishApply(
+  step: { ok: boolean; exit_code: number | null; stop_reason: string | null },
+  autoApply: { results?: Record<string, number> | null; reached_stage?: string | null } | null,
+): PublishApplyClass {
+  if (step.stop_reason) return { hardStop: true, stopReason: step.stop_reason, partialSuccess: false, fullSuccess: false };
+  if (step.ok) return { hardStop: false, stopReason: null, partialSuccess: false, fullSuccess: true };
+  const r = autoApply?.results ?? {};
+  const PROGRESS_STAGES = ['publish', 'normalize', 'title', 'pricing', 'mirror', 'blurhash', 'inventory', 'reviews'];
+  const progressed =
+    (r.published ?? 0) > 0 || (r.normalized ?? 0) > 0 || (r.titled ?? 0) > 0 || (r.priced ?? 0) > 0 ||
+    (r.inventory_in_stock ?? 0) > 0 ||
+    (autoApply?.reached_stage != null && PROGRESS_STAGES.includes(String(autoApply.reached_stage)));
+  return { hardStop: false, stopReason: `publish_apply_exit_${step.exit_code ?? '?'}`, partialSuccess: progressed, fullSuccess: false };
+}
+
+// ── PURE: actual live vs held collection with reasons (C) ─────────────────────────────────────────────
+export interface HeldSku { sku: string; reason: string; }
+export interface StdLike {
+  normalization_status?: string | null; published?: boolean | null;
+  inventory_status?: string | null; total_available_qty?: number | null;
+  product_title?: string | null; primary_image?: string | null;
+  price?: number | null; selling_price?: number | null;
+}
+/** liveSet = sellable_products membership (authoritative). Held SKUs get a best-available reason. */
+export function collectLiveAndHeld(
+  scopeSkus: string[], liveSet: Set<string>, stdBySku: Map<string, StdLike>,
+): { actualLiveSkus: string[]; heldSkus: HeldSku[] } {
+  const actualLiveSkus: string[] = [];
+  const heldSkus: HeldSku[] = [];
+  for (const sku of scopeSkus) {
+    if (liveSet.has(sku)) { actualLiveSkus.push(sku); continue; }
+    const d = stdBySku.get(sku);
+    let reason: string;
+    if (!d) reason = 'not in standardized_products (unpublished / not imported)';
+    else if (d.normalization_status !== 'done') reason = `normalization_status=${d.normalization_status ?? 'null'}`;
+    else if (d.inventory_status !== 'in_stock' || (d.total_available_qty ?? 0) <= 0) reason = `inventory ${d.inventory_status ?? 'null'} qty=${d.total_available_qty ?? 0}`;
+    else if (d.published === false) reason = 'published=false';
+    else if (d.product_title !== undefined && !d.product_title) reason = 'missing title';
+    else if (d.primary_image !== undefined && (d.primary_image == null || d.primary_image === '')) reason = 'missing image';
+    else if ((d.price !== undefined || d.selling_price !== undefined) && (!((d.price ?? 0) > 0) || !((d.selling_price ?? 0) > 0))) reason = `price/selling not >0 (price=${d.price ?? 'null'} selling=${d.selling_price ?? 'null'})`;
+    else reason = 'not in sellable_products (data-quality gate)';
+    heldSkus.push({ sku, reason });
+  }
+  return { actualLiveSkus, heldSkus };
+}
+
+// ── PURE: classify fee-refresh output text (D) ────────────────────────────────────────────────────────
+export interface FeeTextClass { credsMissing: boolean; noMapping: boolean; officialNoRow: boolean; hardStop: string | null; }
+export function classifyFeeText(output: string): FeeTextClass {
+  return {
+    credsMissing: /official_creds_missing|NO creds/i.test(output),
+    noMapping: /no portal mapping|no_mapping/i.test(output),
+    officialNoRow: /no_row|official=unavailable/i.test(output),
+    hardStop: detectStop(output),
+  };
+}
+
+function readJson(file: string): any | null { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
+
+// ── DB reads used by APPLY (scoped, read-only) ───────────────────────────────────────────────────────
+async function readPostPublishState(skus: string[]): Promise<{ liveSet: Set<string>; stdBySku: Map<string, StdLike> }> {
+  if (skus.length === 0) return { liveSet: new Set(), stdBySku: new Map() };
+  const { createClient } = await import('@supabase/supabase-js');
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) die('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing from env (.env.local)');
+  const sb = createClient(url, key, { auth: { persistSession: false } });
+  const std = await sb.from('standardized_products')
+    .select('supplier_product_id,normalization_status,published,inventory_status,total_available_qty,product_title,primary_image,price,selling_price')
+    .in('supplier_product_id', skus);
+  if (std.error) die(`supabase read failed on standardized_products: ${std.error.message}`);
+  const sell = await sb.from('sellable_products').select('supplier_product_id').in('supplier_product_id', skus);
+  if (sell.error) die(`supabase read failed on sellable_products: ${sell.error.message}`);
+  const stdBySku = new Map<string, StdLike>((std.data ?? []).map((r: any) => [String(r.supplier_product_id), r]));
+  const liveSet = new Set<string>((sell.data ?? []).map((r: any) => String(r.supplier_product_id)));
+  return { liveSet, stdBySku };
+}
+
+async function readFeePresence(skus: string[]): Promise<Set<string>> {
+  if (skus.length === 0) return new Set();
+  const { createClient } = await import('@supabase/supabase-js');
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return new Set();
+  const sb = createClient(url, key, { auth: { persistSession: false } });
+  const { data, error } = await sb.from('giga_delivery_fee_cache').select('supplier_product_id,charged_fee_cents').in('supplier_product_id', skus);
+  if (error) return new Set();
+  return new Set((data ?? []).filter((r: any) => r.charged_fee_cents != null).map((r: any) => String(r.supplier_product_id)));
 }
 
 // ── Readiness types ───────────────────────────────────────────────────────────────────────────────
@@ -433,13 +529,15 @@ function printPlanSummary(p: Awaited<ReturnType<typeof computePlan>>): void {
   console.log(`recommend_baseline_advance=${!p.credsDrift && p.processed.length > 0}`);
 }
 
-// ── APPLY: drive the existing pipeline, scoped to the capped SKUs ────────────────────────────────────
+// ── APPLY: drive the existing pipeline; collect ACTUAL live SKUs; fee-refresh them (soft-fail) ────────
 async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<void> {
   const runId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
   const steps: StepResult[] = [];
   let stopReason: string | null = null;
   let aborted = false;
+  let partialSuccess = false;
+  let fullSuccess = false;
 
   // Hard safety gate before touching anything.
   if (p.credsDrift) { stopReason = 'creds_drift_vs_baseline'; aborted = true; }
@@ -448,116 +546,161 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
   if (capped.length === 0 && !aborted) { stopReason = 'no_newly_saved_skus'; aborted = true; }
 
   // SKUs we would import/publish (the existing child scripts re-verify with their own gates + --only).
-  const scopeSkus = p.rows
-    .filter(r => r.would_import || r.would_publish)
-    .map(r => r.sku);
+  const scopeSkus = p.rows.filter(r => r.would_import || r.would_publish).map(r => r.sku);
   if (scopeSkus.length === 0 && !aborted) { stopReason = 'nothing_eligible_to_import_or_publish'; aborted = true; }
-
   const onlyArg = scopeSkus.join(',');
-  let publishedInScope: string[] = [];
+
+  // Delivery-creds status (masked; never the secret).
+  const creds = deliveryCredsStatus();
+  console.log(`${PREFIX}_DELIVERY_CREDS: ${creds.line}`);
+
+  let actualLiveSkus: string[] = [];
+  let heldSkus: HeldSku[] = [];
   let feeRefresh: StepResult | null = null;
+  let feeText: FeeTextClass | null = null;
+  let feeSuccessSkus: string[] = [];
+  let feeFailedSkus: string[] = [];
 
   if (!aborted) {
-    // Sequential chain. Abort on the first hard failure (exit!=0 or a hard-stop token).
-    const chain: { step: string; script: string; args: string[] }[] = [
+    // 1) Prerequisite chain — all must succeed to reach publish. Abort on the first failure.
+    const prereq: { step: string; script: string; args: string[] }[] = [
       { step: 'delta', script: 'scripts/giga-saved-delta.ts', args: ['--summary'] },
       { step: 'candidates_plan', script: 'scripts/planGigaNewlySavedCandidates.ts', args: ['--summary'] },
       { step: 'import', script: 'scripts/syncGigaNewlySavedCandidates.ts', args: ['--sync', `--only=${onlyArg}`, `--limit=${MAX_SKUS}`, '--summary'] },
       { step: 'publish_plan', script: 'scripts/planGigaAutoPublish.ts', args: [`--only=${onlyArg}`, `--max-skus=${MAX_SKUS}`, '--summary'] },
       { step: 'publish_dry_run', script: 'scripts/runGigaAutoPublish.ts', args: ['--plan', PLAN_FILE_AUTOPUB, '--dry-run', '--summary'] },
-      { step: 'publish_apply', script: 'scripts/runGigaAutoPublish.ts', args: ['--plan', PLAN_FILE_AUTOPUB, '--apply', '--summary'] },
     ];
-    let failures = 0;
-    for (const c of chain) {
-      const res = runChild(c.step, c.script, c.args);
-      steps.push(res);
-      if (!res.ok) {
-        failures++;
-        stopReason = res.stop_reason ?? `step_failed:${c.step}(exit=${res.exit_code})`;
-        if (failures >= MAX_STEP_FAILURES) { aborted = true; break; }
-      }
+    for (const c of prereq) {
+      const { result } = runChild(c.step, c.script, c.args);
+      steps.push(result);
+      if (!result.ok) { stopReason = result.stop_reason ?? `step_failed:${c.step}(exit=${result.exit_code})`; aborted = true; break; }
     }
 
-    // Collect published SKUs (only if the publish chain completed without abort).
+    // 2) publish_apply — do NOT auto-abort on non-zero exit. Classify hard-stop vs partial success.
     if (!aborted) {
-      try {
-        const planned: string[] = fs.existsSync(PLAN_FILE_AUTOPUB)
-          ? (JSON.parse(fs.readFileSync(PLAN_FILE_AUTOPUB, 'utf8'))?.proposed_batch?.skus ?? [])
-          : [];
-        const applyRep = fs.existsSync(APPLY_FILE_AUTOPUB) ? JSON.parse(fs.readFileSync(APPLY_FILE_AUTOPUB, 'utf8')) : null;
-        const publishedCount = applyRep?.results?.published ?? 0;
-        // The runner publishes all planned at the publish stage; treat planned (scoped by --only) as
-        // published when the apply reports a non-zero publish count. Intersect with the capped set.
-        const cappedSet = new Set(capped);
-        if (publishedCount > 0) publishedInScope = (planned as string[]).filter(s => cappedSet.has(s));
-      } catch (e) {
-        stopReason = stopReason ?? `apply_report_parse_failed:${e instanceof Error ? e.message : String(e)}`;
-      }
+      const { result: applyStep } = runChild('publish_apply', 'scripts/runGigaAutoPublish.ts', ['--plan', PLAN_FILE_AUTOPUB, '--apply', '--summary']);
+      steps.push(applyStep);
+      const cls = classifyPublishApply(applyStep, readJson(APPLY_FILE_AUTOPUB));
+      partialSuccess = cls.partialSuccess;
+      fullSuccess = cls.fullSuccess;
+      if (cls.hardStop) { aborted = true; stopReason = cls.stopReason; }
+      else if (!applyStep.ok) stopReason = cls.stopReason; // recorded, but we continue to read ACTUAL DB state
     }
 
-    // SOFT-FAIL delivery-fee refresh — only for published-in-scope SKUs, ONLY after publish.
-    // A fee failure is logged and recorded but NEVER rolls back the publish or fails the run.
-    if (publishedInScope.length > 0) {
-      feeRefresh = runChild('fee_refresh', 'scripts/refreshGigaDeliveryFeesHybrid.ts', ['--skus', publishedInScope.join(',')]);
-      steps.push(feeRefresh);
-      // Note: intentionally NOT setting aborted/stopReason from feeRefresh — soft-fail by design.
+    // 3) Collect ACTUAL live/held from the DB (authoritative — never trust the exit code alone).
+    if (!aborted) {
+      const { liveSet, stdBySku } = await readPostPublishState(scopeSkus);
+      const r = collectLiveAndHeld(scopeSkus, liveSet, stdBySku);
+      actualLiveSkus = r.actualLiveSkus;
+      heldSkus = r.heldSkus;
+
+      // 4) Fee refresh for ACTUAL live SKUs only (soft-fail; never rolls back publish).
+      if (actualLiveSkus.length > 0) {
+        const fr = runChild('fee_refresh', 'scripts/refreshGigaDeliveryFeesHybrid.ts', ['--skus', actualLiveSkus.join(',')]);
+        feeRefresh = fr.result;
+        steps.push(fr.result);
+        feeText = classifyFeeText(fr.output);
+        // DB-authoritative success/failure (do not trust stdout alone). A hard stop inside the fee step
+        // is recorded but remains SOFT for the overall run — publish already happened and is never rolled back.
+        const feePresent = await readFeePresence(actualLiveSkus);
+        feeSuccessSkus = actualLiveSkus.filter(s => feePresent.has(s));
+        feeFailedSkus = actualLiveSkus.filter(s => !feePresent.has(s));
+      }
     }
   }
 
-  // Write the APPLY report.
+  // ── Operator-action buckets ──
+  const needsFavoriteOrMapping = feeFailedSkus;
+  const needsFavorite = (feeText?.officialNoRow || feeText?.credsMissing) ? feeFailedSkus : [];
+  const needsMapping = feeText?.noMapping ? feeFailedSkus : [];
+  const deliveryReady = feeSuccessSkus; // live AND fee cached
+  // Conservative baseline (F): only when nothing is unresolved.
+  const recommendBaselineAdvance = !aborted && actualLiveSkus.length > 0 && heldSkus.length === 0 && feeFailedSkus.length === 0;
+  const recovery = feeFailedSkus.length
+    ? { dry_run: `DRY_RUN=1 npm run fees:refresh -- --skus ${feeFailedSkus.join(',')}`,
+        live: `npm run fees:refresh -- --skus ${feeFailedSkus.join(',')}   (run only after the dry-run shows official_ok)` }
+    : null;
+  const NOTE = 'Dropship official price/v1 returns a fee only for SKUs saved/favorited/accessible in the DROPSHIP account. Newly added pickup SKUs may need a dropship favorite (then official) or a seed-CSV portal mapping. Missing fee never hides the product; delivery checkout fails-closed while pickup still works.';
+
+  // ── Write the APPLY report ──
   fs.mkdirSync(REPORT_DIR, { recursive: true });
   const json = {
-    mode: 'apply',
-    run_id: runId,
-    timestamp,
-    plan_run_id: p.runId,
-    creds_source: p.credsSource,
-    max_skus: MAX_SKUS,
-    aborted,
-    stop_reason: stopReason,
+    mode: 'apply', run_id: runId, timestamp, plan_run_id: p.runId, creds_source: p.credsSource, max_skus: MAX_SKUS,
+    delivery_creds_present: creds.present,
+    aborted, stop_reason: stopReason, partial_success: partialSuccess, full_success: fullSuccess,
     scope_skus: scopeSkus,
-    steps,
-    published_in_scope: publishedInScope,
-    fee_refresh: feeRefresh
-      ? { ran: true, ok: feeRefresh.ok, exit_code: feeRefresh.exit_code, stop_reason: feeRefresh.stop_reason, soft_fail: true }
-      : { ran: false, reason: publishedInScope.length === 0 ? 'no published-in-scope SKUs' : 'not reached' },
+    actual_live_skus: actualLiveSkus,
+    held_skus: heldSkus,
+    published_in_scope: actualLiveSkus,            // reflects ACTUAL live results — never 0 when live SKUs exist
+    fee_refresh_attempted: feeRefresh != null,
+    fee_refresh_success_skus: feeSuccessSkus,
+    fee_refresh_failed_skus: feeFailedSkus,
+    needs_dropship_favorite_skus: needsFavorite,
+    needs_fee_mapping_skus: needsMapping,
+    needs_dropship_favorite_or_mapping_skus: needsFavoriteOrMapping,
+    delivery_checkout_ready_skus: deliveryReady,
+    sellable_missing_fee_skus: feeFailedSkus,
     baseline_advanced: false,
-    recommend_baseline_advance: !aborted,
+    recommend_baseline_advance: recommendBaselineAdvance,
+    recovery_commands: recovery,
+    note: NOTE,
+    steps,
   };
   fs.writeFileSync(STL_APPLY_JSON, JSON.stringify(json, null, 2));
 
   const md: string[] = [];
   md.push('# GIGA Saved-to-Live APPLY', '');
   md.push(`- run_id: ${runId}`, `- timestamp: ${timestamp}`, `- creds_source: ${p.credsSource}`, `- max_skus: ${MAX_SKUS}`);
+  md.push(`- delivery_creds_present: ${creds.present}`);
   md.push(`- aborted: ${aborted}${stopReason ? ` (stop_reason=${stopReason})` : ''}`);
+  md.push(`- partial_success: ${partialSuccess}   full_success: ${fullSuccess}`);
   md.push(`- scope_skus (${scopeSkus.length}): ${scopeSkus.join(', ') || '(none)'}`);
-  md.push(`- published_in_scope (${publishedInScope.length}): ${publishedInScope.join(', ') || '(none)'}`, '');
-  md.push('## Steps', '', '| step | exit | ok | stop_reason | summary |', '|---|---|---|---|---|');
-  for (const s of steps) md.push(`| ${s.step} | ${s.exit_code ?? '?'} | ${s.ok ? 'Y' : 'N'} | ${s.stop_reason ?? '-'} | ${(s.summary_line ?? '').slice(0, 50)} |`);
+  md.push(`- actual_live_skus / published_in_scope (${actualLiveSkus.length}): ${actualLiveSkus.join(', ') || '(none)'}`);
+  md.push(`- delivery_checkout_ready_skus (${deliveryReady.length}): ${deliveryReady.join(', ') || '(none)'}`);
+  md.push(`- sellable_missing_fee_skus (${feeFailedSkus.length}): ${feeFailedSkus.join(', ') || '(none)'}`, '');
+  md.push('## Held SKUs (not live — owned by inventory/quality gates, NOT downlisted here)', '');
+  if (heldSkus.length) { md.push('| SKU | reason |', '|---|---|'); for (const h of heldSkus) md.push(`| ${h.sku} | ${h.reason} |`); }
+  else md.push('_(none)_');
   md.push('', '## Delivery-fee refresh (soft-fail)',
-    feeRefresh
-      ? `- ran=true ok=${feeRefresh.ok} exit=${feeRefresh.exit_code} stop_reason=${feeRefresh.stop_reason ?? '-'} (failures never roll back publish)`
-      : `- not run (${publishedInScope.length === 0 ? 'no published-in-scope SKUs' : 'chain aborted before publish'})`);
-  md.push('', '## Baseline', '- NOT advanced by this run. To advance after verifying: `npm run giga:saved:baseline -- --force`');
+    feeRefresh ? `- ran=true ok=${feeRefresh.ok} exit=${feeRefresh.exit_code} stop_reason=${feeRefresh.stop_reason ?? '-'} (failures never roll back publish)`
+               : `- not run (${actualLiveSkus.length === 0 ? 'no live SKUs' : 'chain aborted before publish'})`,
+    `- success (${feeSuccessSkus.length}): ${feeSuccessSkus.join(', ') || '(none)'}`,
+    `- failed/missing (${feeFailedSkus.length}): ${feeFailedSkus.join(', ') || '(none)'}`);
+  if (needsFavoriteOrMapping.length) md.push('', '## Needs dropship favorite OR fee mapping', `- ${needsFavoriteOrMapping.join(', ')}`);
+  if (recovery) md.push('', '## Recovery commands', '```bash', recovery.dry_run, recovery.live, '```');
+  md.push('', '## Baseline', `- baseline_advanced=false`, `- recommend_baseline_advance=${recommendBaselineAdvance}${recommendBaselineAdvance ? ' — `npm run giga:saved:baseline -- --force`' : ' (unresolved held / missing-fee items remain)'}`);
+  md.push('', `> ${NOTE}`);
+  md.push('', '## Steps', '', '| step | exit | ok | stop_reason | summary |', '|---|---|---|---|---|');
+  for (const s of steps) md.push(`| ${s.step} | ${s.exit_code ?? '?'} | ${s.ok ? 'Y' : 'N'} | ${s.stop_reason ?? '-'} | ${(s.summary_line ?? '').slice(0, 50)} |`);
   fs.writeFileSync(STL_APPLY_MD, md.join('\n'));
 
   console.log(`${PREFIX}_APPLY_SUMMARY`);
   console.log(`run_id=${runId}`);
   console.log(`aborted=${aborted}`);
   console.log(`stop_reason=${stopReason ?? '-'}`);
+  console.log(`partial_success=${partialSuccess}`);
+  console.log(`full_success=${fullSuccess}`);
   console.log(`scope_skus=${scopeSkus.length}`);
-  console.log(`published_in_scope=${publishedInScope.length}`);
-  console.log(`fee_refresh_ran=${feeRefresh ? true : false}`);
-  console.log(`fee_refresh_ok=${feeRefresh ? feeRefresh.ok : '-'}`);
+  console.log(`actual_live_skus=${actualLiveSkus.length}`);
+  console.log(`published_in_scope=${actualLiveSkus.length}`);
+  console.log(`held_skus=${heldSkus.length}`);
+  console.log(`fee_refresh_attempted=${feeRefresh != null}`);
+  console.log(`fee_refresh_success=${feeSuccessSkus.length}`);
+  console.log(`fee_refresh_failed=${feeFailedSkus.length}`);
+  console.log(`delivery_checkout_ready=${deliveryReady.length}`);
+  console.log(`needs_dropship_favorite_or_mapping=${needsFavoriteOrMapping.length}`);
+  console.log(`baseline_advanced=false`);
+  console.log(`recommend_baseline_advance=${recommendBaselineAdvance}`);
   console.log(`report_json=${rel(STL_APPLY_JSON)}`);
   console.log(`report_md=${rel(STL_APPLY_MD)}`);
-  console.log(`baseline_advanced=false`);
+  if (recovery) console.log(`recovery_dry_run=${recovery.dry_run}`);
 
+  // Exit non-zero ONLY on a hard abort. Partial success / held / missing-fee are reported as warnings.
   if (aborted) process.exit(1);
 }
 
 // ── main ────────────────────────────────────────────────────────────────────────────────────────────
-(async () => {
+async function main(): Promise<void> {
   const plan = await computePlan();
   writePlanReport(plan);
   printPlanSummary(plan);
@@ -567,4 +710,10 @@ async function runApply(p: Awaited<ReturnType<typeof computePlan>>): Promise<voi
   } else {
     console.log(`${PREFIX}_MODE=plan (read-only; pass --apply to run the gated pipeline)`);
   }
-})().catch(e => { console.error(`${PREFIX}_ERROR`); console.error(`error=${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
+}
+
+// Import-safe: only run the pipeline when invoked directly, so tests can import the pure helpers above
+// without triggering a GIGA call. (Matches refreshGigaDeliveryFeesHybrid.ts.)
+if (require.main === module) {
+  main().catch(e => { console.error(`${PREFIX}_ERROR`); console.error(`error=${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
+}

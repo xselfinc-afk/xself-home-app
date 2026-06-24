@@ -99,3 +99,52 @@ iteration so each run is observed. A future schedule — **once daily first, the
 after it is stable** — can be added later (local launchd preferred over cloud CI for portal/session
 consistency). The **full** delivery-fee refresh (`npm run fees:refresh:all`) should run **weekly or
 every two weeks**, not daily.
+
+## Credentials / environment files
+Two distinct **untracked** credential files (never commit secrets):
+
+| file | account | used for |
+|---|---|---|
+| `.env.giga-alt.local` | **pickup / saved-list** (`SUPPLIER_CLIENT_*`) | reading the pickup saved list (`product/skus/v1`) |
+| `.env.giga-delivery.local` | **dropship delivery-fee** (`SUPPLIER_DELIVERY_*`) | official `price/v1` delivery-fee refresh |
+
+Copy `.env.giga-delivery.local.example` → `.env.giga-delivery.local` and fill real values:
+```env
+SUPPLIER_DELIVERY_PRODUCTION_CLIENT_ID=...
+SUPPLIER_DELIVERY_PRODUCTION_CLIENT_SECRET=...
+SUPPLIER_DELIVERY_API_BASE_URL=https://openapi.gigab2b.com
+```
+It loads automatically (no terminal exports needed) in `refreshGigaDeliveryFeesHybrid.ts` and the
+saved-to-live apply fee-refresh subprocess; `.env.local` still supplies Supabase. Loading never
+overrides an already-exported env var, and the two files are kept separate — **pickup and dropship
+creds are never mixed**. If delivery creds are missing, the tools print (and never a secret):
+`Missing dropship delivery credentials. Create .env.giga-delivery.local or export SUPPLIER_DELIVERY_PRODUCTION_CLIENT_ID/SECRET.`
+
+**The dropship account must favorite/access a SKU** for official `price/v1` to return its fee. Newly
+added pickup SKUs the dropship account has not favorited are reported by APPLY as
+`needs_dropship_favorite_skus` (favorite, then re-run fee refresh) or `needs_fee_mapping_skus`
+(seed `scripts/data/dropship-fee-seed.csv`). Missing fee never hides the product; **delivery checkout
+fails-closed while pickup still works**.
+
+## Partial-success handling (APPLY)
+APPLY no longer treats a non-zero auto-publish exit as a total failure:
+- **Hard stop** (captcha / login / 401 / 403 / B20003 / rate-limit / unknown response) → abort, no fee
+  refresh, baseline not advanced.
+- **Partial success** (some SKUs published/normalized/live) → continue: read the **actual**
+  `sellable_products` membership for the scoped SKUs, set `published_in_scope` to the real live count
+  (**never 0 when live SKUs exist**), list `held_skus` with reasons, then run the **soft-fail** fee
+  refresh for the **live SKUs only**.
+- The apply report (`latest-saved-to-live-apply.json/md`) now includes: `partial_success`,
+  `actual_live_skus`, `held_skus`, `published_in_scope`, `fee_refresh_attempted`,
+  `fee_refresh_success_skus`, `fee_refresh_failed_skus`, `needs_dropship_favorite_skus`,
+  `needs_fee_mapping_skus`, `needs_dropship_favorite_or_mapping_skus`, `delivery_checkout_ready_skus`,
+  `sellable_missing_fee_skus`, `baseline_advanced`, `recommend_baseline_advance`, and exact
+  `recovery_commands`.
+- **Baseline stays conservative:** never auto-advanced; `recommend_baseline_advance=false` while any
+  held or missing-fee SKU remains.
+
+Recovery for any `sellable_missing_fee_skus` (after favoriting in dropship, or seeding mappings):
+```bash
+DRY_RUN=1 npm run fees:refresh -- --skus <comma-separated-live-skus>
+npm run fees:refresh -- --skus <comma-separated-live-skus>   # only after the dry-run shows official_ok
+```

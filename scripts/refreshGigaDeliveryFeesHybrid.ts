@@ -32,6 +32,10 @@
  *   DRY_RUN=1                                          no DB write
  */
 import * as dotenv from 'dotenv';
+// Dropship delivery-fee creds: .env.giga-delivery.local (untracked) loads FIRST so a fresh terminal
+// works without re-exporting secrets; dotenv never overrides already-exported env. .env.local still
+// supplies Supabase. (.env.giga-alt.local is the PICKUP/saved-list account — intentionally NOT loaded here.)
+dotenv.config({ path: '.env.giga-delivery.local' });
 dotenv.config({ path: '.env.local' });
 dotenv.config();
 
@@ -274,6 +278,7 @@ async function run(): Promise<void> {
   console.log(` Mode        : ${DRY_RUN ? 'DRY RUN (no DB write)' : 'LIVE (DB write)'}`);
   console.log(` Buffer      : ${BUFFER_PCT}%`);
   console.log(` Official    : ${OFFICIAL_CID ? `creds present (client-id ${OFFICIAL_CID.slice(0, 4)}…)` : 'NO creds → portal fallback only'}`);
+  if (!OFFICIAL_CID) console.log(' ⚠ Missing dropship delivery credentials. Create .env.giga-delivery.local or export SUPPLIER_DELIVERY_PRODUCTION_CLIENT_ID/SECRET.');
   console.log(` Targets     : ${skus.length} SKU(s)${args.productId ? `  (forced product_id ${args.productId})` : ''}`);
   console.log('═══════════════════════════════════════════════════════════');
   if (skus.length === 0) { console.log('No SKUs. Use --sku/--skus/--all.'); process.exit(2); }

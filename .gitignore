@@ -41,3 +41,8 @@ reports/giga-auto-publish/
 backups/
 scripts/debug-output/
 deno.lock
+
+# Dropship delivery-fee credentials (untracked); the .example placeholder IS tracked.
+# (.env.* already ignores the real file; this is explicit and re-includes the example.)
+.env.giga-delivery.local
+!.env.giga-delivery.local.example
