@@ -4,7 +4,7 @@
  * Run: npx tsx src/__tests__/savedToLiveApply.test.ts
  */
 import assert from 'node:assert/strict';
-import { classifyPublishApply, collectLiveAndHeld, classifyFeeText } from '../../scripts/gigaSavedToLiveOrchestrator';
+import { classifyPublishApply, collectLiveAndHeld, classifyFeeText, computeApplyScopes } from '../../scripts/gigaSavedToLiveOrchestrator';
 import { maskClientId, deliveryCredsStatus, MISSING_CREDS_HELP } from '../../scripts/lib/deliveryCreds';
 
 let passed = 0;
@@ -89,6 +89,38 @@ it('deliveryCredsStatus: missing creds → recovery help (no secret)', () => {
   assert.equal(s.line, MISSING_CREDS_HELP);
   if (savedId !== undefined) process.env.SUPPLIER_DELIVERY_PRODUCTION_CLIENT_ID = savedId;
   if (savedSec !== undefined) process.env.SUPPLIER_DELIVERY_PRODUCTION_CLIENT_SECRET = savedSec;
+});
+
+// A/B (D1/D2): would_import=0 → import skipped; 5 publishable; B062 (missing_inventory) held, not published
+it('computeApplyScopes: would_import=0 → import scope empty, 5 publishable, B062 pre-held', () => {
+  const already = ['SJ000159AAN', 'N721S000044K-1', 'N711P345166B', 'N711P410389B', 'N721S000064K']
+    .map(sku => ({ sku, status: 'already_imported', would_import: false, would_publish: true }));
+  const rows = [
+    ...already,
+    { sku: 'B062P331054', status: 'missing_inventory', would_import: false, would_publish: true, inventory_status: 'unknown', total_available_qty: 0 },
+    { sku: 'W409P327401', status: 'ready', would_import: false, would_publish: false }, // already live → not in scope at all
+  ];
+  const s = computeApplyScopes(rows);
+  assert.deepEqual(s.importSkus, []);                                       // nothing new → import skipped
+  assert.deepEqual([...s.publishSkus].sort(), [...already.map(r => r.sku)].sort()); // exactly the 5 publishable
+  assert.equal(s.publishSkus.includes('B062P331054'), false);              // missing_inventory excluded from publish
+  assert.equal(s.publishSkus.includes('W409P327401'), false);              // 'ready' (not in scope) excluded
+  assert.equal(s.preHeldSkus.length, 1);
+  assert.equal(s.preHeldSkus[0].sku, 'B062P331054');
+  assert.ok(/missing_inventory/.test(s.preHeldSkus[0].reason), `held reason should mention missing_inventory, got: ${s.preHeldSkus[0].reason}`);
+});
+
+// D3: import scope includes only would_import rows (and those are also publishable after import)
+it('computeApplyScopes: would_import row → import scope; out_of_stock excluded from publish', () => {
+  const rows = [
+    { sku: 'NEW1', status: 'new', would_import: true, would_publish: false },
+    { sku: 'OLD1', status: 'already_imported', would_import: false, would_publish: true },
+    { sku: 'OOS1', status: 'missing_inventory', would_import: false, would_publish: true, inventory_status: 'out_of_stock', total_available_qty: 0 },
+  ];
+  const s = computeApplyScopes(rows);
+  assert.deepEqual(s.importSkus, ['NEW1']);                                 // only would_import
+  assert.deepEqual([...s.publishSkus].sort(), ['NEW1', 'OLD1']);            // new (after import) + already-imported
+  assert.deepEqual(s.preHeldSkus.map(h => h.sku), ['OOS1']);               // missing_inventory pre-held
 });
 
 console.log(`\n${passed} saved-to-live apply assertions passed.`);
