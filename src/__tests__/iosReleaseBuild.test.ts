@@ -4,7 +4,8 @@
  * Run: npx tsx src/__tests__/iosReleaseBuild.test.ts
  */
 import assert from 'node:assert/strict';
-import { buildEasArgs, ascCheckpointText, evaluateBuildPreflight, RELEASE_STATE_PATH } from '../../scripts/iosReleaseBuild';
+import { readFileSync } from 'node:fs';
+import { buildEasArgs, buildListJsonArgs, buildStatusBanner, ascCheckpointText, evaluateBuildPreflight, RELEASE_STATE_PATH } from '../../scripts/iosReleaseBuild';
 import type { GateResult } from '../../scripts/iosReleasePlan';
 
 let passed = 0;
@@ -29,10 +30,21 @@ it('refuses if release gates fail', () => {
   assert.ok(r.refusals.some(x => /gates failed/.test(x)));
 });
 
-// 3) constructs the expected EAS build command WITHOUT executing it
-it('buildEasArgs constructs the production iOS build command', () => {
-  assert.deepEqual(buildEasArgs('production'), ['build', '--platform', 'ios', '--profile', 'production', '--non-interactive', '--json']);
-  assert.deepEqual(buildEasArgs('preview'), ['build', '--platform', 'ios', '--profile', 'preview', '--non-interactive', '--json']);
+// 3) constructs the expected EAS commands WITHOUT executing them
+it('buildEasArgs is streamed (no --json) for live progress', () => {
+  assert.deepEqual(buildEasArgs('production'), ['build', '--platform', 'ios', '--profile', 'production', '--non-interactive']);
+  assert.equal(buildEasArgs('production').includes('--json'), false);
+  assert.deepEqual(buildEasArgs('preview'), ['build', '--platform', 'ios', '--profile', 'preview', '--non-interactive']);
+});
+it('buildListJsonArgs captures the latest build as JSON (for id capture after a streamed build)', () => {
+  assert.deepEqual(buildListJsonArgs(), ['build:list', '--platform', 'ios', '--limit', '1', '--json', '--non-interactive']);
+});
+it('buildStatusBanner gives status + fallback command + no-duplicate help', () => {
+  const b = buildStatusBanner('production');
+  assert.ok(/Starting EAS build/.test(b));
+  assert.ok(/QUIET/.test(b));
+  assert.ok(/eas build:list --platform ios --limit 5/.test(b));
+  assert.ok(/do NOT re-run|DUPLICATE/i.test(b));
 });
 
 // 4) ASC build-number checkpoint text present + actionable
@@ -57,6 +69,15 @@ it('proceeds when confirmed + gates pass + clean tree; release-state path is loc
   assert.equal(r.proceed, true);
   assert.deepEqual(r.refusals, []);
   assert.equal(RELEASE_STATE_PATH, 'reports/release/ios-release-state.json');
+});
+
+// durable channel fix: app.json carries the production channel header so prebuild preserves it
+it('app.json carries the production channel header (durable Expo.plist channel fix)', () => {
+  const app = JSON.parse(readFileSync('app.json', 'utf8')).expo;
+  assert.equal(app.updates?.requestHeaders?.['expo-channel-name'], 'production');
+  assert.equal(app.runtimeVersion, '1.0.10');            // unchanged
+  assert.equal(typeof app.runtimeVersion, 'string');      // not a policy object
+  assert.equal(app.updates?.url, 'https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2'); // url unchanged
 });
 
 console.log(`\n${passed} iOS release build-stage assertions passed.`);

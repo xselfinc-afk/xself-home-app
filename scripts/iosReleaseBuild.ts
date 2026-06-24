@@ -21,9 +21,26 @@ import { checkDirtyTrackedAllowlist } from './iosReleasePrepare';
 export const RELEASE_STATE_PATH = 'reports/release/ios-release-state.json';
 
 // ── PURE: helpers (testable; no I/O, no EAS) ────────────────────────────────────────────────────────
-/** The exact `eas` argv for a production iOS build. Pure — used to construct, NOT execute, in tests. */
+/** The exact `eas` argv for a production iOS build. Streamed (NO --json) so EAS progress is visible
+ *  live instead of buffered+silent. Pure — used to construct, NOT execute, in tests. */
 export function buildEasArgs(profile = 'production'): string[] {
-  return ['build', '--platform', 'ios', '--profile', profile, '--non-interactive', '--json'];
+  return ['build', '--platform', 'ios', '--profile', profile, '--non-interactive'];
+}
+
+/** `eas` argv to read the most recent build as JSON — used to capture the id AFTER a streamed build. Pure. */
+export function buildListJsonArgs(): string[] {
+  return ['build:list', '--platform', 'ios', '--limit', '1', '--json', '--non-interactive'];
+}
+
+/** Operator status/help banner shown before the (quiet-capable) EAS build starts. Pure. */
+export function buildStatusBanner(profile = 'production'): string {
+  return [
+    `Starting EAS build (profile ${profile}). EAS streams progress below.`,
+    'It can be QUIET for a while during project upload and while queued — this is normal; do NOT Ctrl-C.',
+    'Once a build id / "Build details" URL appears, the build EXISTS — do NOT re-run this command',
+    '(re-running would create a DUPLICATE build).',
+    'Check status anytime in another terminal:  eas build:list --platform ios --limit 5',
+  ].join('\n');
 }
 
 /** App Store Connect build-number checkpoint text (no credentials, no network). Pure. */
@@ -106,7 +123,9 @@ function main(): void {
 
   if (args.dryRun) {
     console.log('\n── Dry run (no build) ──');
-    console.log(`  would_run: eas ${buildEasArgs(args.profile).join(' ')}`);
+    console.log(buildStatusBanner(args.profile));
+    console.log(`  would_run (streamed live, no --json): eas ${buildEasArgs(args.profile).join(' ')}`);
+    console.log(`  then capture id: eas ${buildListJsonArgs().join(' ')}`);
     console.log(`  release_state would be written to: ${RELEASE_STATE_PATH} (with the real EAS build id, on a real build)`);
     console.log(`  guard:prod: NOT run in dry-run (it is a HARD gate in a real build)`);
     console.log(`  preflight_proceed=${pre.proceed}${pre.proceed ? ' (a real run would then require guard:prod to pass)' : ''}`);
@@ -128,16 +147,32 @@ function main(): void {
   const guard = spawnSync('npm', ['run', 'guard:prod'], { stdio: 'inherit' });
   if (guard.status !== 0) { console.error('RELEASE_BUILD_RESULT=REFUSED (guard:prod failed)'); process.exit(1); }
 
-  // Execute the production build and capture the EAS build id (never fabricated).
-  console.log(`\n── eas ${buildEasArgs(args.profile).join(' ')} ──`);
-  const r = spawnSync('eas', buildEasArgs(args.profile), { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  // Execute the production build with LIVE output (no --json) so the operator sees upload/queue/build
+  // progress instead of a silent buffered run. The build id is captured afterward via build:list.
+  console.log('\n' + buildStatusBanner(args.profile));
+  console.log(`\n── eas ${buildEasArgs(args.profile).join(' ')} (live output) ──`);
+  const r = spawnSync('eas', buildEasArgs(args.profile), { stdio: 'inherit' });
   if (r.status !== 0) { console.error('RELEASE_BUILD_RESULT=BUILD_FAILED'); process.exit(2); }
-  let buildId: string | null = null, buildUrl: string | null = null;
+
+  // Capture the just-created build id/url/version from the most recent build (never fabricated).
+  console.log(`\n── capturing build id: eas ${buildListJsonArgs().join(' ')} ──`);
+  const lv = spawnSync('eas', buildListJsonArgs(), { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  let buildId: string | null = null, buildUrl: string | null = null, metaV: string | null = null, metaB: string | null = null;
   try {
-    const arr = JSON.parse(r.stdout || '[]');
+    const arr = JSON.parse(lv.stdout || '[]');
     const b = Array.isArray(arr) ? arr[0] : arr;
-    buildId = b?.id ?? null; buildUrl = b?.artifacts?.buildUrl ?? b?.buildUrl ?? null;
+    buildId = b?.id ?? null;
+    buildUrl = b?.artifacts?.buildUrl ?? b?.buildUrl ?? null;
+    metaV = b?.appVersion != null ? String(b.appVersion) : null;
+    metaB = b?.appBuildVersion != null ? String(b.appBuildVersion) : (b?.buildNumber != null ? String(b.buildNumber) : null);
   } catch { /* leave null — never fabricate */ }
+  // Guard: the most recent build must match the expected version/build before recording it.
+  if (buildId && (metaV !== state.appVersion || metaB !== state.appBuild)) {
+    console.error(`RELEASE_BUILD_RESULT=BUILT_BUT_MISMATCH (latest build ${metaV}/${metaB} != expected ${state.appVersion}/${state.appBuild}; not recording — check 'eas build:list')`);
+    process.exit(2);
+  }
+  if (buildId) console.log(`  EAS build id : ${buildId}`);
+  if (buildUrl) console.log(`  logs/artifact: ${buildUrl}`);
 
   fs.mkdirSync(path.join(root, 'reports', 'release'), { recursive: true });
   const stateOut = {

@@ -35,7 +35,10 @@
     },
     "runtimeVersion": "1.0.10",
     "updates": {
-      "url": "https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2"
+      "url": "https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     },
     "extra": {
       "eas": {
