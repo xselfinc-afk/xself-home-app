@@ -37,6 +37,9 @@ tmp/
 # Local planner report artifacts (regenerated; not source)
 reports/giga-auto-publish/
 
+# Local iOS release state (build id recorded for the submit stage; not source)
+reports/release/
+
 # Local backups, debug output, and Deno lockfile (not part of the app/release)
 backups/
 scripts/debug-output/

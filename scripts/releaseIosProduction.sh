@@ -1,6 +1,14 @@
 #!/bin/bash
 # releaseIosProduction.sh — one-shot, version-safe iOS production release.
 #
+# ⚠️ DEPRECATED (2026-06-24) — DO NOT USE FOR NEW RELEASES.
+#   This one-shot AUTO-BUMPS the version + BUILDS + SUBMITS in a single command.
+#   The supported path is the staged flow (see docs/IOS_RELEASE.md):
+#       npm run release:ios:prepare -- --version <x.y.z> --build <n>
+#       npm run release:ios:build   -- --confirm-build
+#       npm run release:ios:submit  -- --confirm-submit   (staged submit — Phase 5)
+#   Kept only as a reference until the staged submit lands; will be retired then.
+#
 # Refuses to submit any build whose version/buildNumber does not match the
 # values in app.json. Also refuses to build if eas.json is not using local
 # version sourcing (a remote-source build can silently override app.json).
@@ -23,6 +31,14 @@ set -o pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+echo "============================================================" >&2
+echo " ⚠️  DEPRECATED one-shot (auto-bump + build + submit)." >&2
+echo "     Preferred: staged flow — see docs/IOS_RELEASE.md:" >&2
+echo "       npm run release:ios:prepare -- --version <x.y.z> --build <n>" >&2
+echo "       npm run release:ios:build   -- --confirm-build" >&2
+echo "       npm run release:ios:submit  -- --confirm-submit" >&2
+echo "============================================================" >&2
 
 TMP_DIR="$REPO_ROOT/tmp"
 mkdir -p "$TMP_DIR"
