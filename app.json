@@ -3,7 +3,7 @@
     "name": "Xself Home",
     "slug": "xself-home",
     "scheme": "xselfhome",
-    "version": "1.0.10",
+    "version": "1.0.11",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.xself.home",
-      "buildNumber": "31",
+      "buildNumber": "32",
       "infoPlist": {
         "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support."
       }
@@ -33,7 +33,7 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "runtimeVersion": "1.0.10",
+    "runtimeVersion": "1.0.11",
     "updates": {
       "url": "https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2",
       "requestHeaders": {
