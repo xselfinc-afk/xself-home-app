@@ -2437,7 +2437,7 @@ function CartScreen({ navigation }) {
           <TouchableOpacity
             style={[styles.summaryCheckoutBtn, checkoutLoading && { opacity: 0.7 }]}
             disabled={checkoutLoading}
-            onPress={() => { setCheckoutLoading(true); navigation.navigate('Checkout', { mode: 'cart', creditAmount: creditDeduction }); }}
+            onPress={() => { setCheckoutLoading(true); (navigation.getParent('RootStack') ?? navigation).navigate('Checkout', { mode: 'cart', creditAmount: creditDeduction }); }}
           >
             {checkoutLoading
               ? <ActivityIndicator size="small" color="white" />
