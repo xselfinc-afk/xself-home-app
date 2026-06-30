@@ -40,6 +40,10 @@ reports/giga-auto-publish/
 # Local iOS release state (build id recorded for the submit stage; not source)
 reports/release/
 
+# Manual emergency product upload — generated plan/apply reports + operator-specific SKU inputs (not source)
+reports/giga-manual-product/
+scripts/manual-inputs/
+
 # Local backups, debug output, and Deno lockfile (not part of the app/release)
 backups/
 scripts/debug-output/
