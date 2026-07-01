@@ -39,6 +39,7 @@
  * module is import-safe for tests.
  */
 
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -346,6 +347,15 @@ export function buildPublicImageUrl(supabaseUrl: string, sku: string, file: stri
 }
 
 // ── IMPURE: env + DB orchestration ───────────────────────────────────────────────────────────────
+// ── REVIEW SEEDING (reuse the Protected Review System script; do NOT reimplement) ────────────────────
+// Mirrors runGigaAutoPublish Stage 8: after the SKU is published/in_stock, seed the same generated
+// cold-start reviews via scripts/seedGeneratedReviews.ts, scoped to ONLY this SKU. Pure/testable.
+export const REVIEW_SEED_SCRIPT = 'scripts/seedGeneratedReviews.ts';
+export function reviewSeedArgs(): string[] { return ['tsx', REVIEW_SEED_SCRIPT]; }
+export function reviewSeedEnvScope(sku: string): { ONLY_SKUS: string } { return { ONLY_SKUS: sku }; }
+/** Only seed when the SKU has no reviews yet (idempotent; avoids duplicate work). */
+export function shouldSeedReviews(existingReviewCount: number): boolean { return existingReviewCount === 0; }
+
 function die(msg: string): never { console.error(`MANUAL_UPLOAD_ERROR\n  ${msg}`); process.exit(1); }
 
 async function loadCanonicalCodes(sb: SupabaseClient): Promise<Set<string>> {
@@ -494,14 +504,31 @@ async function main(): Promise<void> {
   if (rpcErr) die(`refresh_product_inventory_status failed: ${rpcErr.message}`);
   console.log('  ✓ refresh_product_inventory_status called');
 
+  // Seed generated cold-start reviews for THIS SKU only, reusing the canonical (protected)
+  // seedGeneratedReviews.ts — mirrors runGigaAutoPublish Stage 8. SOFT: a seed failure does NOT
+  // undo the already-published product. Idempotent: skipped if the SKU already has reviews.
+  const { count: existingReviews } = await sb.from('product_reviews')
+    .select('id', { count: 'exact', head: true }).eq('supplier_product_id', args.sku);
+  if (shouldSeedReviews(existingReviews ?? 0)) {
+    console.log(`  seeding generated reviews (ONLY_SKUS=${args.sku}) …`);
+    const seed = spawnSync('npx', reviewSeedArgs(), { env: { ...process.env, ...reviewSeedEnvScope(args.sku) }, stdio: 'inherit' });
+    if (seed.status !== 0) console.warn(`  ⚠ review seed exited ${seed.status ?? 'null'} — product is live; re-seed later: ONLY_SKUS=${args.sku} npx tsx ${REVIEW_SEED_SCRIPT}`);
+    else console.log('  ✓ generated reviews seeded');
+  } else {
+    console.log(`  reviews already exist (${existingReviews}) — skipping seed`);
+  }
+
   // Read back final state.
   const { data: finalStd } = await sb.from('standardized_products')
     .select('normalization_status,published,inventory_status,total_available_qty,price,selling_price')
     .eq('supplier_product_id', args.sku).maybeSingle();
   const { data: finalSell } = await sb.from('sellable_products').select('supplier_product_id').eq('supplier_product_id', args.sku).maybeSingle();
+  const { count: activeReviews } = await sb.from('product_reviews')
+    .select('id', { count: 'exact', head: true }).eq('supplier_product_id', args.sku).eq('status', 'active');
   console.log('── Final state ──');
   console.log(`  standardized: ${JSON.stringify(finalStd)}`);
   console.log(`  sellable_products: ${finalSell ? 'LIVE ✅' : 'NOT live'}`);
+  console.log(`  active reviews: ${activeReviews ?? 0}`);
   console.log(`\nMANUAL_UPLOAD_RESULT=APPLIED (sku=${args.sku}; delivery fee cache untouched)`);
 }
 

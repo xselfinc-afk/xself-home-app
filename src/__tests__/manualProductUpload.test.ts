@@ -21,6 +21,10 @@ import {
   detectFolderImages,
   buildPublicImageUrl,
   MANUAL_STORAGE_PREFIX,
+  REVIEW_SEED_SCRIPT,
+  reviewSeedArgs,
+  reviewSeedEnvScope,
+  shouldSeedReviews,
   type ManualInput,
   type ValidateCtx,
 } from '../../scripts/gigaManualProductUpload';
@@ -200,6 +204,20 @@ it('buildPublicImageUrl uses the deny-safe prefix (never "manual")', () => {
   const u = buildPublicImageUrl('https://x.supabase.co', 'W80870283', 'main.png');
   assert.equal(u, `https://x.supabase.co/storage/v1/object/public/product-images/${MANUAL_STORAGE_PREFIX}/W80870283/main.png`);
   assert.equal(/(^|\/)manual(-|\/)/.test(u), false); // deny keyword 'manual' not in the path
+});
+
+// ── review seeding (APPLY reuses the protected seedGeneratedReviews.ts, scoped to one SKU) ──
+it('reviewSeedArgs reuses the existing protected script (not a reimplementation)', () => {
+  assert.deepEqual(reviewSeedArgs(), ['tsx', 'scripts/seedGeneratedReviews.ts']);
+  assert.equal(REVIEW_SEED_SCRIPT, 'scripts/seedGeneratedReviews.ts');
+});
+it('reviewSeedEnvScope scopes the seed to exactly ONE SKU via ONLY_SKUS', () => {
+  assert.deepEqual(reviewSeedEnvScope('W80870283'), { ONLY_SKUS: 'W80870283' });
+});
+it('shouldSeedReviews seeds only when none exist (skip/no-op if reviews already present)', () => {
+  assert.equal(shouldSeedReviews(0), true);
+  assert.equal(shouldSeedReviews(5), false);
+  assert.equal(shouldSeedReviews(1), false);
 });
 
 console.log(`\n${passed} manual product upload assertions passed.`);

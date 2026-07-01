@@ -76,7 +76,8 @@ and are counted even if not seeded in `public.warehouses` (you'll get a warning 
 2. `standardized_products` — `normalizeProduct()` output + explicit `selling_price`; `normalization_status='done'`.
 3. `inventory_cache` — one `source_type='website_scrape'`, `sync_status='ok'` row per warehouse.
 4. `refresh_product_inventory_status(sku)` — sets `inventory_status`/`published` (→ live when in_stock).
-5. `giga_delivery_fee_cache` — **never written**; an existing cached fee is preserved.
+5. `product_reviews` — **auto-seeds generated cold-start reviews for this SKU**, scoped `ONLY_SKUS=<sku>`, by reusing the canonical (protected) `scripts/seedGeneratedReviews.ts` — the same 5-per-SKU generated reviews the normal auto-publish flow creates (`runGigaAutoPublish` Stage 8). **Soft + idempotent:** it runs only after a successful publish, is skipped if the SKU already has reviews, and a seed failure logs a warning but does **not** undo the (already live) product. So `npm run manual:upload -- <SKU>` (and `manual:apply` / `giga:manual-product:apply`) now give the SKU reviews automatically — no separate `seedGeneratedReviews` run needed.
+6. `giga_delivery_fee_cache` — **never written**; an existing cached fee is preserved.
 
 ## Differences from saved-to-live
 - Emergency fallback only; used **only** when the GIGA API is down. Not wired to any cron/launchd.
