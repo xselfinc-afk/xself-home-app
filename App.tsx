@@ -2294,12 +2294,10 @@ function CartScreen({ navigation }) {
   }
 
   const rawTotal = cart.reduce((sum, p) => sum + p.price * p.qty, 0);
-  const freeShipThreshold = 500;
-  // Free shipping is based on merchandise subtotal, not post-credit amount
-  const remaining = Math.max(0, freeShipThreshold - rawTotal);
-  const shipping = remaining === 0 ? 0 : 29.99;
-  const creditDeduction = creditApplied ? Math.min(shoppingCredit, rawTotal + shipping) : 0;
-  const total = rawTotal + shipping - creditDeduction;
+  // Shipping/fulfillment (Warehouse Pickup = $0, or Delivery = the real cached GIGA fee) is
+  // selected and priced on CheckoutScreen — the cart intentionally shows no shipping charge yet.
+  const creditDeduction = creditApplied ? Math.min(shoppingCredit, rawTotal) : 0;
+  const total = rawTotal - creditDeduction;
   const cartIds = new Set(cart.map(p => p.productId));
   const cartCategories = [
     ...new Set(
@@ -2329,25 +2327,6 @@ function CartScreen({ navigation }) {
         </View>
       ) : null}
       <ScrollView contentContainerStyle={{ paddingTop: 8, paddingBottom: insets.bottom + 100 }}>
-        {/* Shipping banner */}
-        {remaining > 0 ? (
-          <View style={styles.shipBanner}>
-            <Ionicons name="cube-outline" size={14} color="#CA8A04" />
-            <Text style={styles.shipBannerText}>Add <Text style={styles.shipBannerAmt}>${formatPrice(remaining)}</Text> more for free shipping</Text>
-            <View style={styles.shipBarTrack}>
-              <View style={[styles.shipBarFill, { width: `${Math.min(100, (total / freeShipThreshold) * 100)}%` }]} />
-            </View>
-          </View>
-        ) : (
-          <View style={styles.shipBannerUnlocked}>
-            <Ionicons name="gift-outline" size={16} color="#CA8A04" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.shipBannerUnlockedTitle}>Free shipping unlocked</Text>
-              <Text style={styles.shipBannerUnlockedSub}>You're saving on delivery for this order</Text>
-            </View>
-          </View>
-        )}
-
         {cart.map(item => (
           <Animated.View
             key={item.sku}
@@ -2407,9 +2386,7 @@ function CartScreen({ navigation }) {
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Shipping</Text>
-              {shipping === 0
-                ? <Text style={styles.summaryFree}>Free</Text>
-                : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
+              <Text style={styles.summaryMuted}>Calculated at checkout</Text>
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tax</Text>
@@ -2431,7 +2408,6 @@ function CartScreen({ navigation }) {
           <View style={styles.summaryTotalBlock}>
             <Text style={styles.summaryTotalLabel}>Total</Text>
             <Text style={styles.summaryTotalValue}>${formatPrice(total)}</Text>
-            {shipping === 0 && <Text style={styles.summaryTotalSub}>Free shipping included</Text>}
           </View>
           {/* CTA */}
           <TouchableOpacity
