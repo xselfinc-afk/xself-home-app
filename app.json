@@ -3,7 +3,7 @@
     "name": "Xself Home",
     "slug": "xself-home",
     "scheme": "xselfhome",
-    "version": "1.0.11",
+    "version": "1.0.12",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.xself.home",
-      "buildNumber": "32",
+      "buildNumber": "33",
       "infoPlist": {
         "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support."
       }
@@ -33,7 +33,7 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "runtimeVersion": "1.0.11",
+    "runtimeVersion": "1.0.12",
     "updates": {
       "url": "https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2",
       "requestHeaders": {
@@ -67,6 +67,12 @@
         "react-native-crisp-chat-sdk",
         {
           "websiteId": "37dc2a19-ef77-42c9-bd9a-7731033293bd"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "iosAppId": "ca-app-pub-3519409408954811~6941537191"
         }
       ]
     ]

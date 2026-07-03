@@ -41,6 +41,7 @@ import { ConversationProvider, useConversations } from './src/context/Conversati
 import { ConciergeProvider, useConcierge } from './src/context/ConciergeContext';
 import ConciergeTopBanner from './src/components/ConciergeTopBanner';
 import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
+import mobileAds from 'react-native-google-mobile-ads';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
 import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
 import InboxScreen from './src/screens/InboxScreen';
@@ -2966,6 +2967,17 @@ export default function App() {
     } else {
       console.warn('[Crisp] EXPO_PUBLIC_CRISP_WEBSITE_ID not set — chat disabled');
     }
+  }, []);
+
+  // Initialise the Google Mobile Ads SDK once at app start (Phase A: SDK boot only).
+  // No ad is requested or rendered anywhere yet — ad display ships later and is gated
+  // behind remote config (ads_enabled, default false). Failure is non-fatal to boot.
+  useEffect(() => {
+    mobileAds()
+      .initialize()
+      .catch((err: unknown) => {
+        console.warn('[Ads] SDK initialize failed:', err instanceof Error ? err.message : err);
+      });
   }, []);
 
   useEffect(() => {
