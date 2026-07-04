@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# AdMob / authorized sellers declaration
+# https://xselfhome.com/app-ads.txt
