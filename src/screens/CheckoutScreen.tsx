@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCart } from '../context/CartContext';
+import { fetchCartPriceUpdates } from '../services/cartPriceService';
 import { formatPrice } from '../data/products';
 import { useRewards } from '../context/RewardsContext';
 import { useAuth } from '../context/AuthContext';
@@ -64,7 +65,7 @@ function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
 }
 
 export default function CheckoutScreen({ route, navigation }: any) {
-  const { cart, reserveExpiry, clearCart } = useCart();
+  const { cart, reserveExpiry, clearCart, refreshLines } = useCart();
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest, sendOtp, verifyOtp } = useAuth();
   const { addOrder } = useOrders();
@@ -208,6 +209,23 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const orderId = useRef(`ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   // Display orderNumber: shown in UI — human-readable, separate from internal ID
   const orderNumber = useRef(`XS-${Math.floor(10000 + Math.random() * 90000)}`);
+
+  // Set by callCreateCheckoutOrder when the server rejects with price_changed
+  // (catalog price rose above the cart snapshot). Callers surface it instead of
+  // the generic "Unable to prepare your order" message.
+  const priceChangedMsgRef = useRef<string | null>(null);
+
+  // Cart-mode price/offer freshness on mount: sync line prices with the current
+  // catalog + the signed-in customer's active Special Offer quotes so the totals
+  // shown here match what create-checkout-order will charge. Display-level only —
+  // the server re-prices authoritatively at order creation. Mount-only by design.
+  useEffect(() => {
+    if (isBuyNow || cart.length === 0) return;
+    fetchCartPriceUpdates(cart, !!user?.email).then(updates => {
+      if (updates.length > 0) refreshLines(updates);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Address system
   const [addresses, setAddresses] = useState<Address[]>([]);
@@ -652,6 +670,25 @@ export default function CheckoutScreen({ route, navigation }: any) {
       },
     });
     if (error || !data?.clientSecret) {
+      // Structured price_changed (409): the server catalog price rose above the
+      // cart snapshot. Refresh the displayed lines and let the caller surface a
+      // review-and-retry message instead of the generic failure copy.
+      priceChangedMsgRef.current = null;
+      try {
+        const ctx = (error as { context?: Response } | null)?.context;
+        if (ctx && typeof ctx.json === 'function') {
+          const body = await ctx.json();
+          if (body?.error === 'price_changed') {
+            priceChangedMsgRef.current =
+              'Some prices changed since you added these items. We refreshed your order — please review the total and try again.';
+            if (!isBuyNow && cart.length > 0) {
+              fetchCartPriceUpdates(cart, !!user?.email).then(updates => {
+                if (updates.length > 0) refreshLines(updates);
+              });
+            }
+          }
+        }
+      } catch { /* body not JSON — fall through to generic handling */ }
       console.log('[Checkout] create-checkout-order failed:', error?.message ?? 'no clientSecret');
       return null;
     }
@@ -693,7 +730,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     const result = await callCreateCheckoutOrder('affirm');
     if (!result) {
-      setAffirmError('Unable to prepare your order. Please try again.');
+      setAffirmError(priceChangedMsgRef.current ?? 'Unable to prepare your order. Please try again.');
       setAffirmLoading(false);
       return;
     }
@@ -1223,7 +1260,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
               const result = await callCreateCheckoutOrder(paymentMethod);
               if (!result) {
-                setRecheckError('Unable to prepare your order. Please try again.');
+                setRecheckError(priceChangedMsgRef.current ?? 'Unable to prepare your order. Please try again.');
                 setPlacing(false);
                 return;
               }

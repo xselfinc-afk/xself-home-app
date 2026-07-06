@@ -171,7 +171,115 @@ serve(async (req: Request) => {
       auth: { persistSession: false },
     });
 
-    // ── Quote validation (only when quoteToken is present) ───────────────────
+    // ── Server-side price authority ───────────────────────────────────────────
+    // The client's unitPriceCents is a display snapshot, never the final price.
+    //   1. Resolve the caller's email (soft — guests continue with null).
+    //   2. Auto-attach the caller's active quote when the client sent no token,
+    //      so an offer created after add-to-cart still applies at checkout.
+    //   3. Re-price every non-quoted line from the catalog:
+    //        server < snapshot → charge the LOWER price (customer-favorable, silent)
+    //        server > snapshot → 409 price_changed (client refreshes + re-confirms)
+    //      This runs BEFORE quote claim / order insert / Stripe, so an abort here
+    //      has nothing to roll back.
+    let callerEmailSoft: string | null = null;
+    {
+      const authHeaderSoft = req.headers.get('authorization') ?? '';
+      const jwtSoft = authHeaderSoft.toLowerCase().startsWith('bearer ')
+        ? authHeaderSoft.slice(7).trim() : '';
+      if (jwtSoft) {
+        try {
+          const softClient = createClient(
+            SUPABASE_URL,
+            SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY,
+            {
+              auth: { persistSession: false },
+              global: { headers: { Authorization: `Bearer ${jwtSoft}` } },
+            },
+          );
+          const { data: softUser } = await softClient.auth.getUser(jwtSoft);
+          callerEmailSoft = (softUser?.user?.email ?? '').trim().toLowerCase() || null;
+        } catch (_e) {
+          callerEmailSoft = null; // soft path: an unreadable JWT just means "guest"
+        }
+      }
+    }
+
+    let effectiveQuoteToken = quoteToken;
+    if (!effectiveQuoteToken && callerEmailSoft) {
+      const { data: autoQuotes, error: autoErr } = await supabase
+        .from('support_quotes')
+        .select('redeem_token, product_id, supplier_sku, expires_at')
+        .eq('customer_email', callerEmailSoft)
+        .eq('status', 'active')
+        .gt('expires_at', new Date().toISOString())
+        .in('product_id', items.map((i) => i.productId));
+      if (!autoErr) {
+        const autoMatch = (autoQuotes ?? []).find((q) =>
+          items.some((it) => it.productId === q.product_id && it.sku === q.supplier_sku),
+        );
+        if (autoMatch) {
+          effectiveQuoteToken = autoMatch.redeem_token;
+          console.log('[create-checkout-order] auto-attached active quote for product:', autoMatch.product_id);
+        }
+      }
+    }
+
+    // Identify which line the quote will override (readonly peek — the quote
+    // block below still re-validates and claims). That line is exempt from the
+    // catalog reprice; its price becomes quoted_price_cents authoritatively.
+    let quotedLineIdx = -1;
+    if (effectiveQuoteToken) {
+      const { data: qPeek } = await supabase
+        .from('support_quotes')
+        .select('product_id, supplier_sku')
+        .eq('redeem_token', effectiveQuoteToken)
+        .maybeSingle();
+      if (qPeek) {
+        quotedLineIdx = items.findIndex((it) =>
+          it.productId === qPeek.product_id && it.sku === qPeek.supplier_sku,
+        );
+      }
+    }
+
+    const uniqueProductIds = [...new Set(items.map((i) => i.productId))];
+    const { data: catalogRows, error: catalogErr } = await supabase
+      .from('standardized_products')
+      .select('supplier_product_id, selling_price, price')
+      .in('supplier_product_id', uniqueProductIds);
+    if (catalogErr) {
+      // Fail closed: never fall back to trusting client prices.
+      console.error('[create-checkout-order] catalog price lookup failed:', catalogErr.message);
+      return jsonResponse({ error: 'catalog_price_lookup_failed' }, 500);
+    }
+    const catalogCentsByProductId = new Map<string, number>();
+    for (const row of catalogRows ?? []) {
+      const dollars = (typeof row.selling_price === 'number' && row.selling_price > 0)
+        ? row.selling_price
+        : (typeof row.price === 'number' && row.price > 0 ? row.price : null);
+      if (dollars != null) catalogCentsByProductId.set(row.supplier_product_id, Math.round(dollars * 100));
+    }
+
+    const priceChanges: Array<{
+      productId: string; sku: string; oldUnitPriceCents: number; newUnitPriceCents: number;
+    }> = [];
+    items.forEach((it, idx) => {
+      if (idx === quotedLineIdx) return; // quote overrides this line below
+      const serverCents = catalogCentsByProductId.get(it.productId);
+      if (serverCents == null) return;   // defensive: unpriced rows never pass the sellable gate
+      if (serverCents < it.unitPriceCents) {
+        items[idx] = { ...it, unitPriceCents: serverCents };
+      } else if (serverCents > it.unitPriceCents) {
+        priceChanges.push({
+          productId: it.productId, sku: it.sku,
+          oldUnitPriceCents: it.unitPriceCents, newUnitPriceCents: serverCents,
+        });
+      }
+    });
+    if (priceChanges.length > 0) {
+      return jsonResponse({ error: 'price_changed', changes: priceChanges }, 409);
+    }
+
+    // ── Quote validation (only when a quote token is present) ────────────────
     // MVP rule: redemption requires sign-in. We verify the caller's JWT and
     // match `email` against support_quotes.customer_email. We override the
     // line price with the server-stored quoted_price_cents so the client's
@@ -186,7 +294,7 @@ serve(async (req: Request) => {
       max_qty: number;
     } | null = null;
 
-    if (quoteToken) {
+    if (effectiveQuoteToken) {
       const authHeader = req.headers.get('authorization') ?? '';
       const jwt = authHeader.toLowerCase().startsWith('bearer ')
         ? authHeader.slice(7).trim() : '';
@@ -214,7 +322,7 @@ serve(async (req: Request) => {
       const { data: quote, error: qErr } = await supabase
         .from('support_quotes')
         .select('id, product_id, supplier_sku, customer_email, quoted_price_cents, max_qty, status, expires_at')
-        .eq('redeem_token', quoteToken)
+        .eq('redeem_token', effectiveQuoteToken)
         .maybeSingle();
 
       if (qErr) {

@@ -720,6 +720,22 @@ export default function SupportScreen({ navigation, route }: any) {
           </View>
         ) : (
           <>
+            {/* Guest gate for Special Offers: quotes are account-scoped (created
+                for the customer's sign-in email and validated against it at
+                checkout), so a guest can neither receive nor redeem one. Prompt
+                sign-in instead of silently showing no offer. */}
+            {hasProductContext && product && !user?.email && (
+              <TouchableOpacity
+                style={styles.guestOfferStrip}
+                onPress={() => navigation.navigate('SignInEntry')}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="pricetag-outline" size={14} color="#CA8A04" />
+                <Text style={styles.guestOfferText}>Sign in to receive special offers</Text>
+                <Ionicons name="chevron-forward" size={14} color="#CA8A04" />
+              </TouchableOpacity>
+            )}
+
             {/* Offer-aware product strip — replaces the regular strip when an
                 active quote exists. Same compact card style as the no-quote
                 state; the quote drives the price, badge, countdown, and CTAs. */}
@@ -1431,6 +1447,23 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.06)',
+  },
+  guestOfferStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 14,
+    marginTop: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    backgroundColor: '#FFF7E6',
+    borderRadius: 10,
+  },
+  guestOfferText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#92660A',
   },
   stripRow: {
     flexDirection: 'row',

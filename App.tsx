@@ -44,6 +44,7 @@ import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
 import mobileAds from 'react-native-google-mobile-ads';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
 import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
+import { fetchCartPriceUpdates } from './src/services/cartPriceService';
 import InboxScreen from './src/screens/InboxScreen';
 import SupportScreen from './src/screens/SupportScreen';
 import ChatScreen from './src/screens/ChatScreen';
@@ -2114,8 +2115,9 @@ function CartAddIcon({ onPress }: { onPress: () => void }) {
 }
 
 function CartScreen({ navigation }) {
-  const { cart, updateQty, removeItem, addItem, reserveExpiry } = useCart();
+  const { cart, updateQty, removeItem, addItem, refreshLines, reserveExpiry } = useCart();
   const { shoppingCredit, spendCredit } = useRewards();
+  const { user } = useAuth();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
   const [creditApplied, setCreditApplied] = useState(false);
 
@@ -2206,6 +2208,22 @@ function CartScreen({ navigation }) {
   React.useEffect(() => {
     return navigation.addListener('focus', () => setCheckoutLoading(false));
   }, [navigation]);
+
+  // Price/offer freshness: on every Cart focus, re-sync line prices with the
+  // current catalog and (signed-in only) any active Special Offer quotes, so an
+  // offer created AFTER the item was added still shows the negotiated price.
+  // Display-level sync only — create-checkout-order re-prices authoritatively.
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
+  React.useEffect(() => {
+    return navigation.addListener('focus', () => {
+      const lines = cartRef.current;
+      if (lines.length === 0) return;
+      fetchCartPriceUpdates(lines, !!user?.email).then(updates => {
+        if (updates.length > 0) refreshLines(updates);
+      });
+    });
+  }, [navigation, user?.email]);
 
   // ── Real product pool for "Complete Your Space" ───────────────────────────
   const [realProducts, setRealProducts] = useState<Product[]>([]);

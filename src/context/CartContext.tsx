@@ -20,10 +20,21 @@ export interface CartItem {
   originalPrice?: number;
 }
 
+/** Price/offer refresh payload for one existing cart line (matched by sku).
+ *  `quoteToken`/`originalPrice` set to undefined explicitly CLEAR the fields
+ *  (used when a previously-attached offer expired or was revoked). */
+export interface CartLineUpdate {
+  sku: string;
+  price: number;
+  quoteToken?: string;
+  originalPrice?: number;
+}
+
 type CartAction =
   | { type: 'ADD_ITEM'; item: Omit<CartItem, 'qty'>; qty: number }
   | { type: 'REMOVE_ITEM'; sku: string }
   | { type: 'UPDATE_QTY'; sku: string; qty: number }
+  | { type: 'REFRESH_LINES'; updates: CartLineUpdate[] }
   | { type: 'CLEAR_CART' };
 
 function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
@@ -52,6 +63,18 @@ function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
       return state.map(i =>
         i.sku === action.sku ? { ...i, qty: action.qty } : i
       );
+    case 'REFRESH_LINES': {
+      // Server-freshness sync: update price/offer fields on existing lines only.
+      // Never adds/removes lines and never touches qty — display + advisory price
+      // only (create-checkout-order remains the pricing authority at charge time).
+      if (action.updates.length === 0) return state;
+      const bySku = new Map(action.updates.map(u => [u.sku, u]));
+      return state.map(i => {
+        const u = bySku.get(i.sku);
+        if (!u) return i;
+        return { ...i, price: u.price, quoteToken: u.quoteToken, originalPrice: u.originalPrice };
+      });
+    }
     case 'CLEAR_CART':
       return [];
     default:
@@ -69,6 +92,8 @@ interface CartContextValue {
   addItem: (item: Omit<CartItem, 'qty'>, qty: number) => void;
   removeItem: (sku: string) => void;
   updateQty: (sku: string, qty: number) => void;
+  /** Apply price/offer freshness updates to existing lines (see CartLineUpdate). */
+  refreshLines: (updates: CartLineUpdate[]) => void;
   clearCart: () => void;
 }
 
@@ -91,12 +116,15 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const updateQty = (sku: string, qty: number) =>
     dispatch({ type: 'UPDATE_QTY', sku, qty });
 
+  const refreshLines = (updates: CartLineUpdate[]) =>
+    dispatch({ type: 'REFRESH_LINES', updates });
+
   const clearCart = () => dispatch({ type: 'CLEAR_CART' });
 
   const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
 
   return (
-    <CartContext.Provider value={{ cart, totalItems, badgeVersion, reserveExpiry, addItem, removeItem, updateQty, clearCart }}>
+    <CartContext.Provider value={{ cart, totalItems, badgeVersion, reserveExpiry, addItem, removeItem, updateQty, refreshLines, clearCart }}>
       {children}
     </CartContext.Provider>
   );

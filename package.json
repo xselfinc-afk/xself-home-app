@@ -27,6 +27,7 @@
     "fees:refresh:portal:dry": "DRY_RUN=1 tsx scripts/refreshGigaDeliveryFees.ts",
     "fees:refresh:portal": "tsx scripts/refreshGigaDeliveryFees.ts",
     "fees:refresh:portal:all": "tsx scripts/refreshGigaDeliveryFees.ts --all",
+    "test:cart-price-refresh": "tsx src/__tests__/cartPriceRefresh.test.ts",
     "test:manual-product-upload": "tsx src/__tests__/manualProductUpload.test.ts",
     "test:manual-product-command": "tsx src/__tests__/manualProductCommand.test.ts",
     "test:delivery-fee-refresh": "tsx src/__tests__/deliveryFeeRefresh.test.ts",
