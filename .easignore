@@ -41,3 +41,29 @@ deno.lock
 # Local archives
 *.tar
 *.zip
+
+# Environment files — the builder gets EXPO_PUBLIC_* from the EAS "production"
+# environment store, so no local .env is needed on the remote builder. Never
+# ship .env.local (holds SUPABASE_SERVICE_ROLE_KEY / SUPPLIER_CLIENT_SECRET).
+.env
+.env.*
+
+# Web export — not part of the iOS build
+dist/
+
+# Expo local cache
+.expo/
+
+# Docs / audit reports / wiki — not needed by the iOS build
+docs/
+wiki/
+reports/
+
+# Unreferenced local sample product images (app loads product images from the
+# CDN via variantUrl/originalUrl; nothing in the app requires these). ~74 MB.
+assets/products/
+
+# Loose scraper debug screenshots left in scripts/
+scripts/.giga-*.png
+scripts/.last-scrape.png
+scripts/*.png
