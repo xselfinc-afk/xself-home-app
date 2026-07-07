@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.xself.home",
-      "buildNumber": "33",
+      "buildNumber": "34",
       "infoPlist": {
         "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support."
       }

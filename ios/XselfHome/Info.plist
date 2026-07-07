@@ -42,6 +42,8 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CrispWebsiteId</key>
     <string>37dc2a19-ef77-42c9-bd9a-7731033293bd</string>
+    <key>GADApplicationIdentifier</key>
+    <string>ca-app-pub-3519409408954811~6941537191</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSRequiresIPhoneOS</key>
