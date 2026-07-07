@@ -766,6 +766,34 @@ check('TypeScript', () => {
   return failures;
 });
 
+// ── Check 18: Review coverage (sellable products must have >=1 active review) ──
+// DB-backed guard (SELECT-only, via scripts/checkReviewCoverage.ts). Maps the
+// checker's exit code: SOFT-SKIP (pass) when creds are missing or the DB is
+// unreachable (exit 2) so offline commits / credential-less CI never break;
+// HARD-FAIL only when the query succeeds and >=1 sellable product has no active
+// review (exit 1). Never writes the DB, never generates reviews.
+
+check('Review coverage', () => {
+  const r = spawnSync('npx', ['tsx', 'scripts/checkReviewCoverage.ts'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    timeout: 90_000,
+  });
+  if (r.error || r.status === null) {
+    console.log('    · Review coverage: skipped (checker unavailable)');
+    return [];
+  }
+  if (r.status === 2) {
+    console.log('    · Review coverage: skipped (no DB creds / DB unreachable)');
+    return [];
+  }
+  if (r.status === 0) return [];
+  // Non-zero (exit 1) → surface the checker's reported lines as failures.
+  const out = (r.stdout ?? '').split('\n').map(l => l.trim()).filter(Boolean);
+  const fails = out.filter(l => l.startsWith('·') || l.startsWith('FAIL:'));
+  return fails.length ? fails : [`review coverage check failed (exit ${r.status})`];
+});
+
 // ── Print report ────────────────────────────────────────────────────────────
 
 let anyFailed = false;
