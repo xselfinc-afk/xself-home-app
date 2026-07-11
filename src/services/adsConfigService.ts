@@ -35,7 +35,7 @@ export const AD_CONFIG_DEFAULTS: AdConfig = {
   appOpenEnabled: false,
   appOpenMinIntervalSec: 14400, // 4h — matches the App Open ad expiry window
   nativeEnabled: false,
-  nativeInterval: 21,
+  nativeInterval: 30,
   nativeTestMode: true, // fail-safe to TEST native ads unless explicitly turned off
 };
 

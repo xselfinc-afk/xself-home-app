@@ -16,7 +16,7 @@
 
 import type { Product } from '../data/products';
 
-export const DEFAULT_NATIVE_INTERVAL = 21;
+export const DEFAULT_NATIVE_INTERVAL = 30;
 
 export type NativeFeedConfig = {
   /** Effective gate: adsEnabled && nativeEnabled. When false, no ads are inserted. */

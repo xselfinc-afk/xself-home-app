@@ -1,34 +1,41 @@
 /**
- * NativeDiscoverAdCard — a single full-width, COMPACT HORIZONTAL Native Advanced
- * ad rendered inline inside the Discover feed (never popup/overlay/modal/full-screen).
+ * NativeDiscoverAdCard — a single full-width, COMPACT Native Advanced "sponsor
+ * strip" rendered inline in the Discover feed (never popup/overlay/modal/full-screen).
  *
- * Layout (deterministic FIXED height 140 pt — media on the left, text on the right):
+ * Two reusable, policy-safe modes (selected by AD_CARD_MODE):
  *
- *   ┌───────────────────────────────────────────┐
- *   │ Sponsored                             (ⓘ) │  header row (18) — AdChoices top-right
- *   │ ┌──────────┐  Headline (≤2 lines)         │
- *   │ │  Media   │  Advertiser (≤1 line)         │  body row (100) — media 124×100
- *   │ └──────────┘                     [ CTA ]   │
- *   └───────────────────────────────────────────┘
+ *   MICRO_MEDIA_COMPACT (default) — media 88×72 on the left, text on the right:
+ *     ┌───────────────────────────────────────────┐
+ *     │ Sponsored                             (ⓘ) │  header 18 (AdChoices top-right)
+ *     │ ┌────────┐  Headline (≤2)                  │
+ *     │ │ 88×72  │  Advertiser (≤1)      [ CTA ]   │  body row 76 (fixed)
+ *     │ └────────┘                                 │
+ *     └───────────────────────────────────────────┘   total ~116 pt (hard max 124)
  *
- * The media lives in its own FIXED-size (124×100), overflow-clipped container, and
- * the body row itself is a fixed 100-pt height, so the NativeMediaView can NEVER
- * control or increase the card height, and assets never overlap. No body text.
+ *   ICON_ONLY_COMPACT — 62×62 icon on the left, no media (total ~112 pt).
  *
- * Google Native compliance: every rendered asset is inside a single <NativeAdView>;
- * the media uses <NativeMediaView> (registered); headline/advertiser/CTA are each
- * wrapped in <NativeAsset> with the correct assetType; the CTA shows the exact SDK
- * callToAction text; the top-right is kept clear so the SDK AdChoices overlay is
- * unobstructed; no absolute positioning / no overlapping asset views; media width
- * (124) meets the prominence minimum.
+ * Why MICRO_MEDIA is the default: ICON_ONLY may only be used if the on-device
+ * Native Validator passes with NativeMediaView omitted — that precondition cannot
+ * be verified in this build environment, and Native Advanced generally expects a
+ * registered MediaView, so the media-present mode is the compliance-safe default.
+ * Flip AD_CARD_MODE to switch once the device validator confirms icon-only passes.
  *
- * Lifecycle: async load (never blocks Discover / startup); compact skeleton while
- * loading; NO_FILL/error → null (collapses cleanly); destroys the NativeAd on
- * unmount; loads once per mount; dev-only logs; no service-role credentials.
+ * Compliance: every rendered asset is a child of a single <NativeAdView>; media via
+ * <NativeMediaView> (registered) in a FIXED clipped container that can never grow
+ * the card; headline / advertiser / icon / CTA each wrapped in <NativeAsset> with
+ * the correct assetType; CTA shows the exact SDK text as a plain registered <Text>
+ * (no Touchable wrapper that could intercept the SDK click); AdChoices top-right is
+ * kept clear; no overlapping asset views; no body text. If a creative can't be shown
+ * in the compact layout (e.g. ICON_ONLY with no icon), the ad is skipped (null) and
+ * the product feed is preserved.
+ *
+ * Lifecycle: async load (never blocks Discover/startup); compact skeleton while
+ * loading; NO_FILL/error → null (collapses); NativeAd destroyed on unmount; loads
+ * once per mount; dev-only logs; no service-role credentials.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, Image, StyleSheet } from 'react-native';
 import {
   NativeAd,
   NativeAdView,
@@ -38,9 +45,15 @@ import {
 } from 'react-native-google-mobile-ads';
 import { resolveNativeAdUnitId } from '../config/ads';
 
-const MEDIA_WIDTH = 124;  // ≥120 for media prominence
-const MEDIA_HEIGHT = 100; // fixed — media never drives the card height
-const BODY_ROW_HEIGHT = 100;
+// Preferred is ICON_ONLY_COMPACT, but it may only be used once the on-device
+// Native Validator confirms it passes without a MediaView. Default to the
+// compliance-safe media-present mode until then.
+const AD_CARD_MODE: 'ICON_ONLY_COMPACT' | 'MICRO_MEDIA_COMPACT' = 'MICRO_MEDIA_COMPACT';
+
+const MEDIA_WIDTH = 88;
+const MEDIA_HEIGHT = 72;
+const ICON_SIZE = 62;
+const BODY_ROW_HEIGHT = AD_CARD_MODE === 'MICRO_MEDIA_COMPACT' ? 76 : 72;
 
 type Props = {
   /** From remote config ads_native_test_mode — TEST ads unless explicitly false. */
@@ -81,15 +94,13 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
   // Failure / no-fill → take no space so products flow normally.
   if (status === 'failed') return null;
 
-  // Loading → compact skeleton mirroring the final horizontal layout/height (no jump).
+  // Loading → compact skeleton mirroring the final height (no oversized blank, no jump).
   if (status === 'loading' || !nativeAd) {
     return (
       <View style={styles.card}>
-        <View style={styles.header}>
-          <Text style={styles.sponsored}>Sponsored</Text>
-        </View>
+        <View style={styles.header}><Text style={styles.sponsored}>Sponsored</Text></View>
         <View style={styles.bodyRow}>
-          <View style={[styles.mediaContainer, styles.mediaSkeleton]} />
+          <View style={[AD_CARD_MODE === 'MICRO_MEDIA_COMPACT' ? styles.mediaContainer : styles.iconBox, styles.skeleton]} />
           <View style={styles.textCol}>
             <View style={styles.lineSkeletonWide} />
             <View style={styles.lineSkeletonNarrow} />
@@ -99,41 +110,50 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
     );
   }
 
+  // Skip a creative that can't be shown correctly in the compact layout.
+  if (!nativeAd.headline) return null;
+  if (AD_CARD_MODE === 'ICON_ONLY_COMPACT' && !nativeAd.icon?.url) return null;
+
   return (
     <View style={styles.card}>
       <NativeAdView nativeAd={nativeAd} style={styles.adView}>
-        {/* Header: "Sponsored" top-left; top-right kept clear for the SDK AdChoices overlay. */}
-        <View style={styles.header}>
-          <Text style={styles.sponsored}>Sponsored</Text>
-        </View>
+        {/* Header: "Sponsored" top-left; top-right kept clear for SDK AdChoices. */}
+        <View style={styles.header}><Text style={styles.sponsored}>Sponsored</Text></View>
 
         <View style={styles.bodyRow}>
-          {/* Media in its own FIXED-size, clipped container — cannot grow the card. */}
-          <View style={styles.mediaContainer}>
-            <NativeMediaView style={styles.media} resizeMode="cover" />
-          </View>
+          {AD_CARD_MODE === 'MICRO_MEDIA_COMPACT' ? (
+            // Media in a FIXED clipped container — cannot control/grow the card.
+            <View style={styles.mediaContainer}>
+              <NativeMediaView style={styles.media} resizeMode="cover" />
+            </View>
+          ) : nativeAd.icon?.url ? (
+            <NativeAsset assetType={NativeAssetType.ICON}>
+              <Image source={{ uri: nativeAd.icon.url }} style={styles.iconBox} resizeMode="cover" />
+            </NativeAsset>
+          ) : null}
 
           <View style={styles.textCol}>
-            <View style={styles.textTop}>
-              <NativeAsset assetType={NativeAssetType.HEADLINE}>
-                <Text style={styles.headline} numberOfLines={2}>{nativeAd.headline}</Text>
-              </NativeAsset>
+            <NativeAsset assetType={NativeAssetType.HEADLINE}>
+              <Text style={styles.headline} numberOfLines={2}>{nativeAd.headline}</Text>
+            </NativeAsset>
 
+            <View style={styles.metaRow}>
               {nativeAd.advertiser ? (
                 <NativeAsset assetType={NativeAssetType.ADVERTISER}>
                   <Text style={styles.advertiser} numberOfLines={1}>{nativeAd.advertiser}</Text>
                 </NativeAsset>
-              ) : null}
-            </View>
+              ) : (
+                <View style={styles.metaSpacer} />
+              )}
 
-            {nativeAd.callToAction ? (
-              <View style={styles.ctaRow}>
+              {nativeAd.callToAction ? (
                 <NativeAsset assetType={NativeAssetType.CALL_TO_ACTION}>
-                  {/* Exact SDK callToAction text — restrained outlined pill, NOT gold Add-to-Cart. */}
+                  {/* Exact SDK callToAction text — restrained outlined pill, NOT gold Add-to-Cart,
+                      plain <Text> (no Touchable) so the SDK click handler is not intercepted. */}
                   <Text style={styles.cta} numberOfLines={1}>{nativeAd.callToAction}</Text>
                 </NativeAsset>
-              </View>
-            ) : null}
+              ) : null}
+            </View>
           </View>
         </View>
       </NativeAdView>
@@ -142,8 +162,8 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
 }
 
 const styles = StyleSheet.create({
-  // Full-width inline card aligned with the Discover grid's outer edges (grid gridItem
-  // margin is 3 inside feed paddingHorizontal 8). Fixed height: 8 + 18 + 6 + 100 + 8 = 140.
+  // Full-width inline card aligned with the Discover grid's outer edges. No heavy
+  // shadow. Fixed height = 8 + 18 + 6 + BODY_ROW_HEIGHT + 8 (~112–116 pt).
   card: {
     marginHorizontal: 3,
     marginVertical: 6,
@@ -152,13 +172,11 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#E5E3DC',
     overflow: 'hidden',
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 8,
   },
-  adView: {
-    width: '100%',
-  },
+  adView: { width: '100%' },
   header: {
     height: 18,
     flexDirection: 'row',
@@ -169,11 +187,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.4,
-    color: '#9CA3AF',
+    color: '#78716C', // medium contrast — clearly visible, not nearly invisible
   },
   bodyRow: {
     flexDirection: 'row',
-    height: BODY_ROW_HEIGHT, // fixed → card height is deterministic (140 pt)
+    alignItems: 'center',
+    height: BODY_ROW_HEIGHT, // fixed → deterministic card height
   },
   mediaContainer: {
     width: MEDIA_WIDTH,
@@ -182,57 +201,55 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#E5E3DC',
   },
-  media: {
-    width: '100%',
-    height: '100%',
+  media: { width: '100%', height: '100%' },
+  iconBox: {
+    width: ICON_SIZE,
+    height: ICON_SIZE,
+    borderRadius: 8,
+    backgroundColor: '#E5E3DC',
   },
-  mediaSkeleton: {
-    backgroundColor: '#E0DED7',
-  },
+  skeleton: { backgroundColor: '#E0DED7' },
   textCol: {
     flex: 1,
     marginLeft: 12,
-    justifyContent: 'space-between', // headline/advertiser at top, CTA at bottom
+    height: BODY_ROW_HEIGHT,
+    justifyContent: 'space-between',
+    paddingVertical: 2,
   },
-  textTop: {},
   headline: {
-    fontSize: 14,
-    lineHeight: 18,
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: '600',
     color: '#1C1917',
   },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  metaSpacer: { flex: 1 },
   advertiser: {
     fontSize: 12,
     color: '#78716C',
-    marginTop: 3,
+    flexShrink: 1,
+    marginRight: 8,
   },
-  ctaRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  // Small restrained outlined pill — not full-width, not gold, not visually dominant.
+  // Small restrained outlined pill — not full-width, not gold, subordinate to products.
   cta: {
     fontSize: 12,
     fontWeight: '600',
     color: '#1C1917',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#E5E3DC',
     overflow: 'hidden',
   },
   lineSkeletonWide: {
-    height: 12,
-    borderRadius: 3,
-    backgroundColor: '#E0DED7',
-    width: '90%',
+    height: 12, borderRadius: 3, backgroundColor: '#E0DED7', width: '85%',
   },
   lineSkeletonNarrow: {
-    height: 12,
-    borderRadius: 3,
-    backgroundColor: '#E0DED7',
-    marginTop: 8,
-    width: '55%',
+    height: 12, borderRadius: 3, backgroundColor: '#E0DED7', marginTop: 8, width: '50%',
   },
 });
