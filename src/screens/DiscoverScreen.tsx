@@ -26,6 +26,9 @@ import { adaptStandardizedRow, LIST_SELECT } from '../services/detailProductAdap
 import type { Product } from '../data/products';
 import DiscoverCard from '../components/DiscoverCard';
 import SearchPillBar from '../components/SearchPillBar';
+import NativeDiscoverAdCard from '../components/NativeDiscoverAdCard';
+import { buildDiscoverFeed, groupIntoRows, type DiscoverRow } from '../services/discoverAdInsertion';
+import { loadAdConfig } from '../services/adsConfigService';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -166,6 +169,29 @@ export default function DiscoverScreen({ navigation, route }: any) {
     return () => {
       active = false;
     };
+  }, []);
+
+  // Native Discover ad config — remote-gated, OFF by default. Loaded once,
+  // non-blocking; any error keeps the OFF defaults so no ad is ever inserted.
+  const [nativeAdCfg, setNativeAdCfg] = useState<{ enabled: boolean; interval: number; testMode: boolean }>({
+    enabled: false,
+    interval: 21,
+    testMode: true,
+  });
+  useEffect(() => {
+    let active = true;
+    loadAdConfig()
+      .then(cfg => {
+        if (active) {
+          setNativeAdCfg({
+            enabled: cfg.adsEnabled && cfg.nativeEnabled,
+            interval: cfg.nativeInterval,
+            testMode: cfg.nativeTestMode,
+          });
+        }
+      })
+      .catch(() => { /* keep OFF defaults */ });
+    return () => { active = false; };
   }, []);
 
   // Available filter options — derived from loaded products
@@ -312,6 +338,13 @@ export default function DiscoverScreen({ navigation, route }: any) {
     caAvailableIds,
   ]);
 
+  // Discover render rows: products chunked into 3-up rows, with one full-width
+  // Native ad row inserted per the pure helper (no-op while ads are OFF).
+  const feedRows = useMemo<DiscoverRow[]>(
+    () => groupIntoRows(buildDiscoverFeed(filtered, { enabled: nativeAdCfg.enabled, interval: nativeAdCfg.interval })),
+    [filtered, nativeAdCfg.enabled, nativeAdCfg.interval],
+  );
+
   return (
     <View style={styles.container}>
       <View style={[styles.topArea, { paddingTop: insets.top }]}>
@@ -350,25 +383,39 @@ export default function DiscoverScreen({ navigation, route }: any) {
       </View>
 
       <FlatList
-        data={filtered}
-        keyExtractor={(item) => item.id.toString()}
-        numColumns={3}
+        data={feedRows}
+        keyExtractor={(row) => row.key}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.feed}
         onScrollBeginDrag={() => setOpenCardId(null)}
         removeClippedSubviews
         windowSize={5}
-        initialNumToRender={9}
-        maxToRenderPerBatch={6}
-        renderItem={({ item }) => (
-          <View style={styles.gridItem}>
-            <DiscoverCard
-              product={item}
-              isOverlayOpen={openCardId === item.id}
-              onCardPress={() => handleCardPress(item)}
-            />
-          </View>
-        )}
+        initialNumToRender={5}
+        maxToRenderPerBatch={4}
+        renderItem={({ item: row }) => {
+          if (row.type === 'ad') {
+            return <NativeDiscoverAdCard testMode={nativeAdCfg.testMode} />;
+          }
+          return (
+            <View style={styles.productRow}>
+              {row.items.map(product => (
+                <View key={product.id.toString()} style={styles.gridItem}>
+                  <DiscoverCard
+                    product={product}
+                    isOverlayOpen={openCardId === product.id}
+                    onCardPress={() => handleCardPress(product)}
+                  />
+                </View>
+              ))}
+              {/* keep a partial last row left-aligned (don't stretch cards) */}
+              {row.items.length < 3
+                ? Array.from({ length: 3 - row.items.length }).map((_, i) => (
+                    <View key={`spacer-${i}`} style={styles.gridItem} />
+                  ))
+                : null}
+            </View>
+          );
+        }}
       />
 
       <Modal
@@ -550,6 +597,10 @@ const styles = StyleSheet.create({
   gridItem: {
     flex: 1,
     margin: 3,
+  },
+
+  productRow: {
+    flexDirection: 'row',
   },
 
 

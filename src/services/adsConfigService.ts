@@ -20,6 +20,12 @@ export type AdConfig = {
   appOpenEnabled: boolean;
   /** App Open ad: minimum seconds between shows (frequency cap). */
   appOpenMinIntervalSec: number;
+  /** Native Advanced (Discover feed) per-format switch. Requires adsEnabled too. Default false. */
+  nativeEnabled: boolean;
+  /** Native Discover: insert one full-width ad row after every N products. Default 21. */
+  nativeInterval: number;
+  /** Native Discover: when true, request Google TEST native ads even in release. Default true. */
+  nativeTestMode: boolean;
 };
 
 export const AD_CONFIG_DEFAULTS: AdConfig = {
@@ -28,6 +34,9 @@ export const AD_CONFIG_DEFAULTS: AdConfig = {
   firstOffset: 24,
   appOpenEnabled: false,
   appOpenMinIntervalSec: 14400, // 4h — matches the App Open ad expiry window
+  nativeEnabled: false,
+  nativeInterval: 21,
+  nativeTestMode: true, // fail-safe to TEST native ads unless explicitly turned off
 };
 
 const KEY_MAP: Record<string, keyof AdConfig> = {
@@ -36,13 +45,16 @@ const KEY_MAP: Record<string, keyof AdConfig> = {
   ads_first_offset: 'firstOffset',
   ads_app_open_enabled: 'appOpenEnabled',
   ads_app_open_min_interval_sec: 'appOpenMinIntervalSec',
+  ads_native_enabled: 'nativeEnabled',
+  ads_native_interval: 'nativeInterval',
+  ads_native_test_mode: 'nativeTestMode',
 };
 
 /** Parse a raw config row value onto the typed config. Exported for tests. */
 export function applyAdConfigRow(cfg: AdConfig, key: string, value: string | null | undefined): AdConfig {
   const field = KEY_MAP[key];
   if (!field || value == null || value === '') return cfg;
-  if (field === 'adsEnabled' || field === 'appOpenEnabled') {
+  if (field === 'adsEnabled' || field === 'appOpenEnabled' || field === 'nativeEnabled' || field === 'nativeTestMode') {
     return { ...cfg, [field]: value === 'true' || value === '1' };
   }
   const n = Number.parseInt(String(value), 10);
