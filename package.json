@@ -33,6 +33,7 @@
     "test:delivery-fee-refresh": "tsx src/__tests__/deliveryFeeRefresh.test.ts",
     "test:delivery-fee-cache": "tsx src/__tests__/deliveryFeeCache.test.ts",
     "test:review-coverage": "tsx src/__tests__/reviewCoverage.test.ts",
+    "test:app-open-eligibility": "tsx src/__tests__/appOpenAdEligibility.test.ts",
     "verify:review-coverage": "tsx scripts/checkReviewCoverage.ts",
     "guard:prod": "tsx scripts/productionGuardrails.ts",
     "verify:before-final": "npm run guard:prod",

@@ -7,7 +7,7 @@
 import SupplierProductsScreen from './src/screens/SupplierProductsScreen';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, FlatList, StyleSheet, SafeAreaView, StatusBar, Share, Alert, Dimensions, Animated, ActivityIndicator, KeyboardAvoidingView, Platform, Modal, Linking, LayoutAnimation, UIManager } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, FlatList, StyleSheet, SafeAreaView, StatusBar, Share, Alert, Dimensions, Animated, ActivityIndicator, KeyboardAvoidingView, Platform, Modal, Linking, LayoutAnimation, UIManager, AppState } from 'react-native';
 import { Image } from 'expo-image';
 import { variantUrl, originalUrl } from './src/utils/imageVariant';
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -42,6 +42,8 @@ import { ConciergeProvider, useConcierge } from './src/context/ConciergeContext'
 import ConciergeTopBanner from './src/components/ConciergeTopBanner';
 import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
 import mobileAds from 'react-native-google-mobile-ads';
+import * as appOpenAdManager from './src/services/appOpenAdManager';
+import { loadAdConfig } from './src/services/adsConfigService';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
 import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
 import { fetchCartPriceUpdates } from './src/services/cartPriceService';
@@ -2987,15 +2989,47 @@ export default function App() {
     }
   }, []);
 
-  // Initialise the Google Mobile Ads SDK once at app start (Phase A: SDK boot only).
-  // No ad is requested or rendered anywhere yet — ad display ships later and is gated
-  // behind remote config (ads_enabled, default false). Failure is non-fatal to boot.
+  // Initialise the Google Mobile Ads SDK once at app start. Phase B0 additionally
+  // loads the remote ad config and hands it to the App Open ad manager, then kicks
+  // a non-blocking preload. Everything is a no-op while ads_enabled /
+  // ads_app_open_enabled remain false (the defaults), and failure is non-fatal.
   useEffect(() => {
     mobileAds()
       .initialize()
+      .then(async () => {
+        try {
+          const adConfig = await loadAdConfig();
+          appOpenAdManager.configure(adConfig);
+          appOpenAdManager.load();
+        } catch (err: unknown) {
+          console.warn('[Ads] ad config/load failed:', err instanceof Error ? err.message : err);
+        }
+      })
       .catch((err: unknown) => {
         console.warn('[Ads] SDK initialize failed:', err instanceof Error ? err.message : err);
       });
+  }, []);
+
+  // Phase B0: App Open ad show triggers — first show after the splash hides and
+  // Home is painted (onHomeReady), then on every foreground (AppState
+  // background/inactive -> active). Route-gated inside the manager so it never
+  // covers a transaction screen (Checkout / OrderSuccess / Cart). No-op while ads
+  // are disabled; never blocks startup.
+  useEffect(() => {
+    const routeName = (): string | undefined =>
+      navigationRef.isReady() ? navigationRef.getCurrentRoute()?.name : undefined;
+
+    const offHomeReady = onHomeReady(() => { appOpenAdManager.maybeShow(routeName()); });
+
+    let prev = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      if ((prev === 'background' || prev === 'inactive') && next === 'active') {
+        appOpenAdManager.maybeShow(routeName());
+      }
+      prev = next;
+    });
+
+    return () => { offHomeReady(); sub.remove(); };
   }, []);
 
   useEffect(() => {
