@@ -2,18 +2,29 @@
  * NativeDiscoverAdCard — a single full-width Native Advanced ad rendered inline
  * inside the Discover feed (never a popup / overlay / modal / full-screen).
  *
+ * Layout (deterministic height ~285–320 pt):
+ *   header (Sponsored, ~18) → FIXED-height media box (172) → headline (≤2 lines)
+ *   → optional body (≤2 lines) → advertiser + CTA row. The media lives in its own
+ *   fixed-height, overflow-clipped container so it can NEVER determine the card
+ *   height or overlap the text below it.
+ *
+ * Media sizing: NativeMediaView fills the fixed 172-pt container with
+ * resizeMode="cover". iOS maps resizeMode → GADMediaView contentMode
+ * (cover→scaleAspectFill, contain→scaleAspectFit, stretch→scaleToFill). Image
+ * assets scale-and-crop to fill; video is rendered by GADMediaView honoring its
+ * own aspect (may letterbox within the box) — either way the media is clipped to
+ * the fixed container, so no assumption is made that video is cropped.
+ *
  * Lifecycle (memory-safe):
  *   - Loads asynchronously via NativeAd.createForAdRequest (never blocks Discover).
- *   - status 'loading' → a neutral fixed-height placeholder (reserves space to
- *     minimize layout jump).
- *   - status 'loaded'  → the ad, wrapped in <NativeAdView> with registered assets.
- *   - status 'failed'/NO_FILL → renders null (collapses; products flow normally).
+ *   - 'loading' → compact skeleton matching the final card size (no oversized blank).
+ *   - 'loaded'  → the ad, wrapped in <NativeAdView> with registered assets.
+ *   - 'failed'/NO_FILL → renders null (collapses; products flow normally).
  *   - Destroys the NativeAd on unmount (and if it resolves after unmount).
- *   - Loads once per mount (effect keyed on the resolved unit id) — no reload on
- *     re-render; stable feed keys keep this row mounted across list re-renders.
+ *   - Loads once per mount (effect keyed on the resolved unit id).
  *
- * Only assets actually returned by the ad are shown. No invented price / rating /
- * shipping / stock / discount, no cart icon, no Add-to-Cart-looking CTA.
+ * Only assets the ad returns are shown. No invented price / rating / shipping /
+ * stock / discount, no cart icon, no Add-to-Cart-looking CTA.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -26,6 +37,8 @@ import {
   NativeAssetType,
 } from 'react-native-google-mobile-ads';
 import { resolveNativeAdUnitId } from '../config/ads';
+
+const MEDIA_HEIGHT = 172; // fixed — the media never drives the card height
 
 type Props = {
   /** From remote config ads_native_test_mode — TEST ads unless explicitly false. */
@@ -66,14 +79,18 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
   // Failure / no-fill → take no space so products flow normally.
   if (status === 'failed') return null;
 
-  // Loading → neutral reserved placeholder (approx the loaded height) to limit jump.
+  // Loading → compact skeleton that mirrors the final layout/height (no jump on load).
   if (status === 'loading' || !nativeAd) {
     return (
-      <View style={[styles.card, styles.placeholder]}>
-        <Text style={styles.sponsored}>SPONSORED</Text>
-        <View style={styles.mediaSkeleton} />
-        <View style={styles.lineSkeletonWide} />
-        <View style={styles.lineSkeletonNarrow} />
+      <View style={styles.card}>
+        <View style={styles.header}>
+          <Text style={styles.sponsored}>Sponsored</Text>
+        </View>
+        <View style={[styles.mediaContainer, styles.mediaSkeleton]} />
+        <View style={styles.textBlock}>
+          <View style={styles.lineSkeletonWide} />
+          <View style={styles.lineSkeletonNarrow} />
+        </View>
       </View>
     );
   }
@@ -81,22 +98,22 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
   return (
     <View style={styles.card}>
       <NativeAdView nativeAd={nativeAd} style={styles.adView}>
-        {/* Attribution — required. AdChoices overlay is added by NativeAdView; the
-            top-right corner is left clear so it is never covered. */}
-        <Text style={styles.sponsored}>SPONSORED</Text>
+        {/* Header: "Sponsored" top-left; top-right left clear for the SDK's
+            AdChoices overlay so it is never covered. */}
+        <View style={styles.header}>
+          <Text style={styles.sponsored}>Sponsored</Text>
+        </View>
 
-        <NativeMediaView style={styles.media} resizeMode="cover" />
+        {/* Media in its own FIXED-height, clipped container — cannot expand the
+            card or overlap the text below. */}
+        <View style={styles.mediaContainer}>
+          <NativeMediaView style={styles.media} resizeMode="cover" />
+        </View>
 
         <View style={styles.textBlock}>
           <NativeAsset assetType={NativeAssetType.HEADLINE}>
             <Text style={styles.headline} numberOfLines={2}>{nativeAd.headline}</Text>
           </NativeAsset>
-
-          {nativeAd.advertiser ? (
-            <NativeAsset assetType={NativeAssetType.ADVERTISER}>
-              <Text style={styles.advertiser} numberOfLines={1}>{nativeAd.advertiser}</Text>
-            </NativeAsset>
-          ) : null}
 
           {nativeAd.body ? (
             <NativeAsset assetType={NativeAssetType.BODY}>
@@ -104,13 +121,23 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
             </NativeAsset>
           ) : null}
 
-          {nativeAd.callToAction ? (
-            <View style={styles.ctaRow}>
-              <NativeAsset assetType={NativeAssetType.CALL_TO_ACTION}>
-                <Text style={styles.cta}>{nativeAd.callToAction}</Text>
+          <View style={styles.metaRow}>
+            {nativeAd.advertiser ? (
+              <NativeAsset assetType={NativeAssetType.ADVERTISER}>
+                <Text style={styles.advertiser} numberOfLines={1}>{nativeAd.advertiser}</Text>
               </NativeAsset>
-            </View>
-          ) : null}
+            ) : (
+              <View style={styles.metaSpacer} />
+            )}
+
+            {nativeAd.callToAction ? (
+              <NativeAsset assetType={NativeAssetType.CALL_TO_ACTION}>
+                {/* Exact SDK callToAction text (e.g. INSTALL / SHOP NOW) — restrained
+                    outlined pill, deliberately NOT the gold Add-to-Cart button. */}
+                <Text style={styles.cta} numberOfLines={1}>{nativeAd.callToAction}</Text>
+              </NativeAsset>
+            ) : null}
+          </View>
         </View>
       </NativeAdView>
     </View>
@@ -119,7 +146,8 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
 
 const styles = StyleSheet.create({
   // Full-width inline card — aligns with the Discover grid's outer edges
-  // (grid gridItem margin is 3 inside feed paddingHorizontal 8). Neutral, restrained.
+  // (grid gridItem margin is 3 inside feed paddingHorizontal 8). Height is
+  // content-driven but bounded (fixed media + capped text lines) → ~285–320 pt.
   card: {
     marginHorizontal: 3,
     marginVertical: 6,
@@ -128,66 +156,76 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#E5E3DC',
     overflow: 'hidden',
-    // Reserved height to minimize layout jump between loading and loaded states.
-    minHeight: 300,
-  },
-  placeholder: {
-    backgroundColor: '#ECEAE2',
-    padding: 12,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
   adView: {
     width: '100%',
-    padding: 12,
+  },
+  header: {
+    height: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   sponsored: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '600',
-    letterSpacing: 0.6,
+    letterSpacing: 0.4,
     color: '#9CA3AF',
-    marginBottom: 8,
+  },
+  mediaContainer: {
+    width: '100%',
+    height: MEDIA_HEIGHT,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: '#E5E3DC',
   },
   media: {
     width: '100%',
-    aspectRatio: 1.91, // wide landscape inline media
-    borderRadius: 4,
-    backgroundColor: '#E5E3DC',
+    height: '100%',
   },
   mediaSkeleton: {
-    width: '100%',
-    aspectRatio: 1.91,
-    borderRadius: 4,
     backgroundColor: '#E0DED7',
   },
   textBlock: {
-    marginTop: 10,
+    marginTop: 8,
   },
   headline: {
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 17,
     fontWeight: '600',
     color: '#1C1917',
+  },
+  body: {
+    fontSize: 12,
+    lineHeight: 15,
+    color: '#57534E',
+    marginTop: 2,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  metaSpacer: {
+    flex: 1,
   },
   advertiser: {
     fontSize: 12,
     color: '#78716C',
-    marginTop: 2,
+    flexShrink: 1,
+    marginRight: 8,
   },
-  body: {
-    fontSize: 13,
-    color: '#57534E',
-    marginTop: 4,
-  },
-  ctaRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginTop: 10,
-  },
-  // Restrained, right-aligned outlined text — deliberately NOT the gold Add-to-Cart pill.
+  // Small restrained outlined pill — not gold, not full-width, not visually dominant.
   cta: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: '#1C1917',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#E5E3DC',
@@ -197,7 +235,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 3,
     backgroundColor: '#E0DED7',
-    marginTop: 12,
+    marginTop: 4,
     width: '75%',
   },
   lineSkeletonNarrow: {
