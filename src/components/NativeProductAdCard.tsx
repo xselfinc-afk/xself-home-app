@@ -1,7 +1,12 @@
 /**
- * NativeDiscoverAdCard — ONE quiet, full-width horizontal Native Advanced card
- * rendered inline in the Discover feed (never popup/overlay/modal/full-screen).
- * It reads like a calm recommendation card and preserves the browsing rhythm.
+ * NativeProductAdCard — ONE quiet, full-width horizontal Native Advanced card
+ * rendered inline in a product feed. Reusable across placements via `variant`:
+ *   - 'discover'  (Discover browse grid)
+ *   - 'search'    (Search results)
+ *   - 'detail'    (Product Detail, single inline slot)
+ * The layout is identical for every variant (Google-compliant 120×120 card); the
+ * variant only namespaces dev logs / future differentiation. Never popup/overlay/
+ * modal/floating/full-screen.
  *
  *   ┌────────────────────────────────────────────────┐
  *   │ Ad                                        (ⓘ)  │  header ~18 — AdChoices top-right
@@ -12,25 +17,20 @@
  *   │ └──────────────┘                                │
  *   └────────────────────────────────────────────────┘   total ~154 pt (hard max 158)
  *
- * Resolves the two on-device AdMob Native Validator issues:
- *   1) "MediaView is too small for video" → MediaView container is exactly 120×120
- *      (iOS minimum), fixed + overflow-clipped, so it satisfies the minimum yet can
- *      never grow the card height.
- *   2) "Advertiser assets outside native ad view" → the <NativeAdView> IS the card
- *      container (border/radius/background/padding applied to it); ALL registered
- *      assets are padded children well inside its bounds, so no asset boundary
- *      (advertiser included) can fall outside the NativeAdView. The only outer view
- *      is a margin-only wrapper carrying no ad assets.
+ * Validator-compliant:
+ *   - MediaView container is exactly 120×120 (iOS minimum; fixes "MediaView too
+ *     small for video"), fixed + overflow-clipped, so it never grows the card.
+ *   - The <NativeAdView> IS the card container (border/radius/bg/padding on it);
+ *     ALL registered assets are padded children fully inside its bounds (fixes
+ *     "advertiser assets outside native ad view"). The only outer view is a
+ *     margin-only wrapper carrying no ad assets.
+ *   - Single <NativeAdView>; <NativeMediaView> + <NativeAsset> (headline/advertiser/
+ *     CALL_TO_ACTION) registered; CTA is a plain <Text> (no Touchable / onPress) so
+ *     the SDK owns the click; NO overflow:hidden on the card (only the media clips)
+ *     so AdChoices is never clipped; top-right kept clear; no body text; no overlap.
+ *   - Media resizeMode="contain" (image aspect preserved; full video kept inside 120×120).
  *
- * Compliance: single <NativeAdView> contains the "Ad" label, <NativeMediaView>,
- * headline, advertiser and CTA; each text asset is wrapped in <NativeAsset> with the
- * correct assetType; CTA is a plain <Text> (no Touchable / onPress) so the SDK owns
- * the click; NO overflow:hidden on the NativeAdView/card (only the media container
- * clips) so AdChoices is never clipped; top-right kept clear; no body text; no
- * negative margins / transforms / absolute offsets. Media uses resizeMode="contain"
- * (image aspect preserved, full video kept inside the 120×120 box).
- *
- * Lifecycle: async load (never blocks Discover/startup); compact skeleton while
+ * Lifecycle: async load (never blocks the screen/startup); compact skeleton while
  * loading; NO_FILL/error → null (collapses); NativeAd destroyed on unmount (and if it
  * resolves after unmount); loads once per mount; dev-only logs; no secrets.
  */
@@ -46,15 +46,19 @@ import {
 } from 'react-native-google-mobile-ads';
 import { resolveNativeAdUnitId } from '../config/ads';
 
-const MEDIA_SIZE = 120;       // iOS Native MediaView minimum (fixes "MediaView too small for video")
+const MEDIA_SIZE = 120;       // iOS Native MediaView minimum
 const CONTENT_ROW_HEIGHT = 120;
+
+export type NativeAdVariant = 'discover' | 'search' | 'detail';
 
 type Props = {
   /** From remote config ads_native_test_mode — TEST ads unless explicitly false. */
   testMode: boolean;
+  /** Placement, for dev diagnostics / future differentiation. Layout is identical. */
+  variant?: NativeAdVariant;
 };
 
-export default function NativeDiscoverAdCard({ testMode }: Props) {
+export default function NativeProductAdCard({ testMode, variant = 'discover' }: Props) {
   const [nativeAd, setNativeAd] = useState<NativeAd | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'failed'>('loading');
   const adRef = useRef<NativeAd | null>(null);
@@ -71,21 +75,21 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
         adRef.current = ad;
         setNativeAd(ad);
         setStatus('loaded');
-        if (__DEV__) console.log('[NativeAd] loaded:', ad.headline);
+        if (__DEV__) console.log(`[NativeAd:${variant}] loaded:`, ad.headline);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
         setStatus('failed'); // NO_FILL or error → collapse, show products only
-        if (__DEV__) console.warn('[NativeAd] load failed:', e instanceof Error ? e.message : e);
+        if (__DEV__) console.warn(`[NativeAd:${variant}] load failed:`, e instanceof Error ? e.message : e);
       });
 
     return () => {
       cancelled = true;
       if (adRef.current) { adRef.current.destroy(); adRef.current = null; }
     };
-  }, [unitId]);
+  }, [unitId, variant]);
 
-  // Failure / no-fill → take no space so products flow normally.
+  // Failure / no-fill → take no space so the feed flows normally.
   if (status === 'failed') return null;
 
   // Loading → compact skeleton mirroring the final height (no oversized blank, no jump).
@@ -112,8 +116,8 @@ export default function NativeDiscoverAdCard({ testMode }: Props) {
   if (!nativeAd.headline) return null;
 
   return (
-    // Outer wrapper carries ONLY the feed margins — it holds no ad assets, so every
-    // registered asset lives inside the NativeAdView below.
+    // Outer wrapper carries ONLY the feed margins — no ad assets, so every registered
+    // asset lives inside the NativeAdView below.
     <View style={styles.outer}>
       <NativeAdView nativeAd={nativeAd} style={styles.card}>
         {/* "Ad" attribution top-left; top-right kept clear for the SDK AdChoices overlay. */}
@@ -162,8 +166,8 @@ const styles = StyleSheet.create({
     marginVertical: 6,
   },
   // The NativeAdView itself: border/radius/background + padding. All ad assets are
-  // padded children of this, so every asset boundary stays inside NativeAdView.
-  // NO overflow:'hidden' here (only on the media container) so AdChoices isn't clipped.
+  // padded children, so every asset boundary stays inside NativeAdView. NO
+  // overflow:'hidden' here (only on the media container) so AdChoices isn't clipped.
   // Height = 6 + 18 + 4 + 120 + 6 = 154 pt.
   card: {
     borderRadius: 6,
@@ -203,7 +207,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 12,
     height: CONTENT_ROW_HEIGHT,
-    justifyContent: 'space-between', // headline/advertiser at top, CTA pinned bottom
+    justifyContent: 'space-between',
     paddingVertical: 4,
   },
   textTop: {},
@@ -211,7 +215,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
     fontWeight: '600',
-    color: '#1C1917', // matches product-title text color
+    color: '#1C1917',
   },
   advertiser: {
     fontSize: 12,
@@ -222,7 +226,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
   },
-  // Small, quiet outlined pill — content-width (not full width), rounded, neutral border.
   cta: {
     fontSize: 12,
     fontWeight: '600',

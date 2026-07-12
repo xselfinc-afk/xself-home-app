@@ -26,6 +26,16 @@ export type AdConfig = {
   nativeInterval: number;
   /** Native Discover: when true, request Google TEST native ads even in release. Default true. */
   nativeTestMode: boolean;
+  /** Discover: max Native ads in the whole feed. Default 2. */
+  discoverMax: number;
+  /** Search results: Native ad per-placement switch. Requires adsEnabled too. Default false. */
+  searchEnabled: boolean;
+  /** Search results: products before/between ads. Default 24. */
+  searchInterval: number;
+  /** Search results: max Native ads in the whole result set. Default 1. */
+  searchMax: number;
+  /** Product Detail: single inline Native ad per-placement switch. Requires adsEnabled too. Default false. */
+  detailEnabled: boolean;
 };
 
 export const AD_CONFIG_DEFAULTS: AdConfig = {
@@ -37,6 +47,11 @@ export const AD_CONFIG_DEFAULTS: AdConfig = {
   nativeEnabled: false,
   nativeInterval: 30,
   nativeTestMode: true, // fail-safe to TEST native ads unless explicitly turned off
+  discoverMax: 2,
+  searchEnabled: false,
+  searchInterval: 24,
+  searchMax: 1,
+  detailEnabled: false,
 };
 
 const KEY_MAP: Record<string, keyof AdConfig> = {
@@ -48,13 +63,21 @@ const KEY_MAP: Record<string, keyof AdConfig> = {
   ads_native_enabled: 'nativeEnabled',
   ads_native_interval: 'nativeInterval',
   ads_native_test_mode: 'nativeTestMode',
+  ads_discover_max: 'discoverMax',
+  ads_search_enabled: 'searchEnabled',
+  ads_search_interval: 'searchInterval',
+  ads_search_max: 'searchMax',
+  ads_detail_enabled: 'detailEnabled',
 };
 
 /** Parse a raw config row value onto the typed config. Exported for tests. */
 export function applyAdConfigRow(cfg: AdConfig, key: string, value: string | null | undefined): AdConfig {
   const field = KEY_MAP[key];
   if (!field || value == null || value === '') return cfg;
-  if (field === 'adsEnabled' || field === 'appOpenEnabled' || field === 'nativeEnabled' || field === 'nativeTestMode') {
+  if (
+    field === 'adsEnabled' || field === 'appOpenEnabled' || field === 'nativeEnabled' ||
+    field === 'nativeTestMode' || field === 'searchEnabled' || field === 'detailEnabled'
+  ) {
     return { ...cfg, [field]: value === 'true' || value === '1' };
   }
   const n = Number.parseInt(String(value), 10);

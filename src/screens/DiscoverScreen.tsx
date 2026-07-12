@@ -26,7 +26,7 @@ import { adaptStandardizedRow, LIST_SELECT } from '../services/detailProductAdap
 import type { Product } from '../data/products';
 import DiscoverCard from '../components/DiscoverCard';
 import SearchPillBar from '../components/SearchPillBar';
-import NativeDiscoverAdCard from '../components/NativeDiscoverAdCard';
+import NativeProductAdCard from '../components/NativeProductAdCard';
 import { buildDiscoverFeed, groupIntoRows, type DiscoverRow } from '../services/discoverAdInsertion';
 import { loadAdConfig } from '../services/adsConfigService';
 
@@ -173,9 +173,10 @@ export default function DiscoverScreen({ navigation, route }: any) {
 
   // Native Discover ad config — remote-gated, OFF by default. Loaded once,
   // non-blocking; any error keeps the OFF defaults so no ad is ever inserted.
-  const [nativeAdCfg, setNativeAdCfg] = useState<{ enabled: boolean; interval: number; testMode: boolean }>({
+  const [nativeAdCfg, setNativeAdCfg] = useState<{ enabled: boolean; interval: number; max: number; testMode: boolean }>({
     enabled: false,
-    interval: 21,
+    interval: 24,
+    max: 2,
     testMode: true,
   });
   useEffect(() => {
@@ -185,7 +186,8 @@ export default function DiscoverScreen({ navigation, route }: any) {
         if (active) {
           setNativeAdCfg({
             enabled: cfg.adsEnabled && cfg.nativeEnabled,
-            interval: cfg.nativeInterval,
+            interval: cfg.discoverInterval,
+            max: cfg.discoverMax,
             testMode: cfg.nativeTestMode,
           });
         }
@@ -341,8 +343,8 @@ export default function DiscoverScreen({ navigation, route }: any) {
   // Discover render rows: products chunked into 3-up rows, with one full-width
   // Native ad row inserted per the pure helper (no-op while ads are OFF).
   const feedRows = useMemo<DiscoverRow[]>(
-    () => groupIntoRows(buildDiscoverFeed(filtered, { enabled: nativeAdCfg.enabled, interval: nativeAdCfg.interval })),
-    [filtered, nativeAdCfg.enabled, nativeAdCfg.interval],
+    () => groupIntoRows(buildDiscoverFeed(filtered, { enabled: nativeAdCfg.enabled, interval: nativeAdCfg.interval, max: nativeAdCfg.max })),
+    [filtered, nativeAdCfg.enabled, nativeAdCfg.interval, nativeAdCfg.max],
   );
 
   return (
@@ -394,7 +396,7 @@ export default function DiscoverScreen({ navigation, route }: any) {
         maxToRenderPerBatch={4}
         renderItem={({ item: row }) => {
           if (row.type === 'ad') {
-            return <NativeDiscoverAdCard testMode={nativeAdCfg.testMode} />;
+            return <NativeProductAdCard testMode={nativeAdCfg.testMode} variant="discover" />;
           }
           return (
             <View style={styles.productRow}>

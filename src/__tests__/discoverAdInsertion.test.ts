@@ -1,7 +1,7 @@
 /**
- * Discover Native-ad insertion tests — pure; no I/O, no SDK, no React.
- * Covers buildDiscoverFeed / resolveInterval / groupIntoRows.
- * Production interval is 30 (first ad after product 30, repeat every 30).
+ * Native-ad insertion tests — pure; no I/O, no SDK, no React.
+ * Covers buildDiscoverFeed / resolveInterval / resolveMax / groupIntoRows for both
+ * Discover (interval 24, max 2) and Search (interval 24, max 1) placements.
  * Run: npx tsx src/__tests__/discoverAdInsertion.test.ts
  */
 import assert from 'node:assert/strict';
@@ -9,7 +9,9 @@ import {
   buildDiscoverFeed,
   groupIntoRows,
   resolveInterval,
+  resolveMax,
   DEFAULT_NATIVE_INTERVAL,
+  DEFAULT_NATIVE_MAX,
   type DiscoverFeedItem,
 } from '../services/discoverAdInsertion';
 import type { Product } from '../data/products';
@@ -20,94 +22,100 @@ function it(name: string, fn: () => void): void { fn(); passed++; console.log(` 
 function prods(n: number): Product[] {
   return Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}` } as unknown as Product));
 }
-const ON = (interval = 30) => ({ enabled: true, interval });
+// Discover: interval 24, max 2. Search: interval 24, max 1.
+const DISCOVER = (interval = 24, max = 2) => ({ enabled: true, interval, max });
+const SEARCH = (interval = 24, max = 1) => ({ enabled: true, interval, max });
 const ads = (f: DiscoverFeedItem[]) => f.filter(x => x.type === 'ad');
 const productIds = (f: DiscoverFeedItem[]) => f.filter(x => x.type === 'product').map(x => (x as any).product.id);
 
-console.log('discover ad insertion tests');
+console.log('native ad insertion tests');
 
-it('default interval is 30', () => {
-  assert.equal(DEFAULT_NATIVE_INTERVAL, 30);
+it('defaults: interval 24, max 2', () => {
+  assert.equal(DEFAULT_NATIVE_INTERVAL, 24);
+  assert.equal(DEFAULT_NATIVE_MAX, 2);
 });
 
-it('fewer than 30 products → no ad', () => {
-  const f = buildDiscoverFeed(prods(29), ON());
+// ── Discover (max 2) ──
+it('discover: fewer than 24 products → no ad', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(23), DISCOVER())).length, 0);
+});
+it('discover: exactly 24 products → no trailing ad', () => {
+  const f = buildDiscoverFeed(prods(24), DISCOVER());
   assert.equal(ads(f).length, 0);
-  assert.equal(f.length, 29);
+  assert.equal(f.length, 24);
 });
-
-it('exactly 30 products → no trailing orphan ad', () => {
-  const f = buildDiscoverFeed(prods(30), ON());
-  assert.equal(ads(f).length, 0);
-  assert.equal(f.length, 30);
-});
-
-it('31 products → one ad after item 30', () => {
-  const f = buildDiscoverFeed(prods(31), ON());
+it('discover: 25 products → one ad after product 24', () => {
+  const f = buildDiscoverFeed(prods(25), DISCOVER());
   assert.equal(ads(f).length, 1);
-  assert.equal(f[30].type, 'ad');       // after 30 products
-  assert.equal(f[31].type, 'product');  // a product follows
-  assert.equal((f[30] as any).key, 'native-ad-1');
+  assert.equal(f[24].type, 'ad');
+  assert.equal(f[25].type, 'product');
 });
-
-it('60 products → exactly one ad (after 30; none after 60 = orphan)', () => {
-  const f = buildDiscoverFeed(prods(60), ON());
+it('discover: exactly 48 products → only one ad (48 would be orphan)', () => {
+  const f = buildDiscoverFeed(prods(48), DISCOVER());
   assert.equal(ads(f).length, 1);
-  assert.equal(f[30].type, 'ad');
+  assert.equal(f[24].type, 'ad');
 });
-
-it('61 products → two ads (after 30 and after 60)', () => {
-  const f = buildDiscoverFeed(prods(61), ON());
+it('discover: 49 products → two ads after 24 and 48', () => {
+  const f = buildDiscoverFeed(prods(49), DISCOVER());
   assert.deepEqual(ads(f).map(a => (a as any).key), ['native-ad-1', 'native-ad-2']);
-  assert.equal(f[30].type, 'ad'); // after product 30
-  assert.equal(f[61].type, 'ad'); // after product 60 (30 products + 1 ad + 30 products)
+  assert.equal(f[24].type, 'ad'); // after product 24
+  assert.equal(f[49].type, 'ad'); // after product 48 (24 + 1 ad + 24)
 });
-
-it('refresh produces stable, deterministic positions + keys', () => {
-  const a = buildDiscoverFeed(prods(61), ON());
-  const b = buildDiscoverFeed(prods(61), ON());
+it('discover: large result set → max stays 2', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(300), DISCOVER())).length, 2);
+});
+it('discover: disabled config → no ads', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(300), { enabled: false, interval: 24, max: 2 })).length, 0);
+});
+it('discover: malformed interval/max → safe defaults', () => {
+  assert.equal(resolveInterval(0), DEFAULT_NATIVE_INTERVAL);
+  assert.equal(resolveInterval(Number.NaN), DEFAULT_NATIVE_INTERVAL);
+  assert.equal(resolveMax(0), DEFAULT_NATIVE_MAX);
+  assert.equal(resolveMax(Number.NaN), DEFAULT_NATIVE_MAX);
+  assert.equal(resolveMax(5), 5);
+  // interval 0 → 24, max 0 → 2: 25 products → one ad after 24
+  const f = buildDiscoverFeed(prods(25), { enabled: true, interval: 0, max: 0 });
+  assert.equal(f[24].type, 'ad');
+});
+it('discover: refresh produces deterministic stable slots', () => {
+  const a = buildDiscoverFeed(prods(49), DISCOVER());
+  const b = buildDiscoverFeed(prods(49), DISCOVER());
   assert.deepEqual(a.map(x => x.key), b.map(x => x.key));
 });
-
-it('pagination does not duplicate ad slots (keys unique)', () => {
-  const f = buildDiscoverFeed(prods(150), ON());
-  const keys = ads(f).map(a => (a as any).key);
-  assert.equal(new Set(keys).size, keys.length);
+it('discover: product order remains unchanged', () => {
+  const original = prods(80).map(p => p.id);
+  assert.deepEqual(productIds(buildDiscoverFeed(prods(80), DISCOVER())), original);
+});
+it('discover: groupIntoRows — ad lands on a clean 3-col boundary (24 = 8 rows)', () => {
+  const rows = groupIntoRows(buildDiscoverFeed(prods(25), DISCOVER()), 3);
+  assert.equal(rows[8].type, 'ad'); // 8 product-rows of 3, then the ad
+  assert.deepEqual(rows.slice(0, 8).map(r => (r as any).items.length), [3, 3, 3, 3, 3, 3, 3, 3]);
 });
 
-it('disabled config → no ad items', () => {
-  const f = buildDiscoverFeed(prods(100), { enabled: false, interval: 30 });
-  assert.equal(ads(f).length, 0);
-  assert.equal(f.length, 100);
+// ── Search (max 1) ──
+it('search: 24 or fewer results → no ad', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(24), SEARCH())).length, 0);
+  assert.equal(ads(buildDiscoverFeed(prods(10), SEARCH())).length, 0);
 });
-
-it('malformed interval → safe default (30)', () => {
-  assert.equal(resolveInterval(Number.NaN), DEFAULT_NATIVE_INTERVAL);
-  assert.equal(resolveInterval(0), DEFAULT_NATIVE_INTERVAL);
-  assert.equal(resolveInterval(-5), DEFAULT_NATIVE_INTERVAL);
-  assert.equal(resolveInterval(15), 15);
-  const f = buildDiscoverFeed(prods(31), { enabled: true, interval: 0 });
-  assert.equal(f[30].type, 'ad'); // fell back to interval 30
+it('search: 25+ results → one ad after result 24', () => {
+  const f = buildDiscoverFeed(prods(25), SEARCH());
+  assert.equal(ads(f).length, 1);
+  assert.equal(f[24].type, 'ad');
 });
-
-it('product order remains unchanged', () => {
-  const original = prods(70).map(p => p.id);
-  const f = buildDiscoverFeed(prods(70), ON());
-  assert.deepEqual(productIds(f), original);
+it('search: max stays 1 even for large result sets', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(200), SEARCH())).length, 1);
+  assert.equal(ads(buildDiscoverFeed(prods(49), SEARCH())).length, 1);
 });
-
-it('groupIntoRows: ad lands on a clean row boundary (interval 30 = 10 rows)', () => {
-  const rows = groupIntoRows(buildDiscoverFeed(prods(31), ON()));
-  // 10 product-rows of 3, then the ad row, then a final product-row of 1
-  assert.equal(rows.length, 12);
-  assert.equal(rows[10].type, 'ad');
-  assert.deepEqual(rows.slice(0, 10).map(r => (r as any).items.length), [3, 3, 3, 3, 3, 3, 3, 3, 3, 3]);
-  assert.equal((rows[11] as any).items.length, 1); // product 31, partial row
+it('search: disabled config → no ad', () => {
+  assert.equal(ads(buildDiscoverFeed(prods(100), { enabled: false, interval: 24, max: 1 })).length, 0);
 });
-
-it('groupIntoRows: disabled feed → only product rows, no ad rows', () => {
-  const rows = groupIntoRows(buildDiscoverFeed(prods(40), { enabled: false, interval: 30 }));
-  assert.equal(rows.filter(r => r.type === 'ad').length, 0);
+it('search: product order remains unchanged', () => {
+  const original = prods(60).map(p => p.id);
+  assert.deepEqual(productIds(buildDiscoverFeed(prods(60), SEARCH())), original);
+});
+it('search: groupIntoRows — 2-col boundary (24 = 12 rows)', () => {
+  const rows = groupIntoRows(buildDiscoverFeed(prods(25), SEARCH()), 2);
+  assert.equal(rows[12].type, 'ad'); // 12 product-rows of 2, then the ad
 });
 
 console.log(`\n${passed} passed`);

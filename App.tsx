@@ -61,6 +61,9 @@ import { getCachedDelivery } from './src/utils/deliveryEligibility';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
 import SearchPillBar from './src/components/SearchPillBar';
+import NativeProductAdCard from './src/components/NativeProductAdCard';
+import { buildDiscoverFeed, groupIntoRows, type DiscoverRow } from './src/services/discoverAdInsertion';
+import { loadAdConfig } from './src/services/adsConfigService';
 import * as SplashScreen from 'expo-splash-screen';
 import { StripeProvider } from '@stripe/stripe-react-native';
 
@@ -1127,6 +1130,15 @@ function ProductDetailScreen({ route, navigation }) {
 
   // product is state so the family loader can upgrade it to multi-variant
   const [product, setProduct] = useState<Product>(initialProduct);
+  // Product Detail Native ad config — remote-gated, OFF by default; any error keeps OFF.
+  const [detailAd, setDetailAd] = useState<{ enabled: boolean; testMode: boolean }>({ enabled: false, testMode: true });
+  useEffect(() => {
+    let active = true;
+    loadAdConfig()
+      .then(cfg => { if (active) setDetailAd({ enabled: cfg.adsEnabled && cfg.detailEnabled, testMode: cfg.nativeTestMode }); })
+      .catch(() => { /* keep OFF defaults */ });
+    return () => { active = false; };
+  }, []);
 
   // ── Variant resolution ────────────────────────────────────────────────────
   const hasVariants = !!(product.variants?.length);
@@ -1783,6 +1795,9 @@ function ProductDetailScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* Sponsored — single inline Native ad, remote-gated, between product info and recommendations */}
+        {detailAd.enabled ? <NativeProductAdCard testMode={detailAd.testMode} variant="detail" /> : null}
+
         {/* You May Also Like */}
         {recommendations.length > 0 && (
           <View style={styles.recommendSection}>
@@ -1897,6 +1912,25 @@ function SearchScreen({ navigation, route }) {
   const [generatedQuery, setGeneratedQuery] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  // Search Native ad config — remote-gated, OFF by default; any error keeps OFF.
+  const [searchAdCfg, setSearchAdCfg] = useState<{ enabled: boolean; interval: number; max: number; testMode: boolean }>({
+    enabled: false, interval: 24, max: 1, testMode: true,
+  });
+  useEffect(() => {
+    let active = true;
+    loadAdConfig()
+      .then(cfg => {
+        if (active) setSearchAdCfg({
+          enabled: cfg.adsEnabled && cfg.searchEnabled,
+          interval: cfg.searchInterval,
+          max: cfg.searchMax,
+          testMode: cfg.nativeTestMode,
+        });
+      })
+      .catch(() => { /* keep OFF defaults */ });
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => {
     let active = true;
     async function loadPool() {
@@ -1967,6 +2001,13 @@ function SearchScreen({ navigation, route }) {
   // any SKU returns that exact product. (familyRep retained but unused — backend grouping only.)
   void familyRep;
   const results: Product[] = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
+
+  // Search feed rows: 2-up product rows + at most one full-width Native ad after
+  // result 24 (no ad in empty/loading state — results is [] then, so no ad).
+  const searchRows: DiscoverRow[] = groupIntoRows(
+    buildDiscoverFeed(results, { enabled: searchAdCfg.enabled, interval: searchAdCfg.interval, max: searchAdCfg.max }),
+    2,
+  );
 
   if (__DEV__ && !imageUri) {
     const qNorm = normalizeForSkuMatch(query);
@@ -2047,27 +2088,36 @@ function SearchScreen({ navigation, route }) {
       ) : null}
 
       <FlatList
-        data={results}
-        keyExtractor={(item) => String(item.id)}
-        numColumns={2}
+        data={searchRows}
+        keyExtractor={(row) => row.key}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 0 }}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.productCard} onPress={() => navigation.navigate('ProductDetail', { product: item })}>
-            <Image source={{ uri: variantUrl(item.images[0], { width: 720 }) }} style={styles.productImage} contentFit="cover" cachePolicy="memory-disk" transition={150} />
-            {item.originalPrice && (
-              <View style={styles.saleBadge}>
-                <Text style={styles.saleText}>SALE</Text>
-              </View>
-            )}
-            <View style={styles.productInfo}>
-              <Text style={styles.productName}>{item.name}</Text>
-              <View style={styles.priceRow}>
-                <Text style={styles.productPrice}>${item.price}</Text>
-                {item.originalPrice && <Text style={styles.originalPrice}>${item.originalPrice}</Text>}
-              </View>
+        renderItem={({ item: row }) => {
+          if (row.type === 'ad') {
+            return <NativeProductAdCard testMode={searchAdCfg.testMode} variant="search" />;
+          }
+          return (
+            <View style={{ flexDirection: 'row' }}>
+              {row.items.map(item => (
+                <TouchableOpacity key={String(item.id)} style={styles.productCard} onPress={() => navigation.navigate('ProductDetail', { product: item })}>
+                  <Image source={{ uri: variantUrl(item.images[0], { width: 720 }) }} style={styles.productImage} contentFit="cover" cachePolicy="memory-disk" transition={150} />
+                  {item.originalPrice && (
+                    <View style={styles.saleBadge}>
+                      <Text style={styles.saleText}>SALE</Text>
+                    </View>
+                  )}
+                  <View style={styles.productInfo}>
+                    <Text style={styles.productName}>{item.name}</Text>
+                    <View style={styles.priceRow}>
+                      <Text style={styles.productPrice}>${item.price}</Text>
+                      {item.originalPrice && <Text style={styles.originalPrice}>${item.originalPrice}</Text>}
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {row.items.length < 2 ? <View style={{ flex: 1, marginHorizontal: 3 }} /> : null}
             </View>
-          </TouchableOpacity>
-        )}
+          );
+        }}
       />
     </SafeAreaView>
   );
