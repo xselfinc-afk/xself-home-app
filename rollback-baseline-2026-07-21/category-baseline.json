@@ -1,0 +1,2961 @@
+{
+  "generatedAt": "2026-07-21",
+  "generatedBy": "rollback baseline capture (real inferCategoryPath over live sellable_products)",
+  "totalSellable": 349,
+  "home": {
+    "component": "CATEGORY_CIRCLES (App.tsx:75-84)",
+    "labelsInOrder": [
+      "Storage",
+      "Living Room",
+      "Bedroom",
+      "Dining & Kitchen",
+      "Office",
+      "Outdoor & Garden",
+      "Bathroom",
+      "Pet Furniture"
+    ]
+  },
+  "discover": {
+    "component": "PRODUCT_CATEGORIES (src/data/categories.ts:8-18)",
+    "labelsInOrder": [
+      "All",
+      "Storage",
+      "Living Room",
+      "Bedroom",
+      "Dining & Kitchen",
+      "Office",
+      "Outdoor & Garden",
+      "Bathroom",
+      "Pet Furniture"
+    ]
+  },
+  "mappingLogic": "Discover filter: keep product iff product.categoryPath.level1 === selectedLevel1 (fallback: categoryLabel === sel || category === sel). DiscoverScreen.tsx:271-277. categoryPath is runtime-inferred by inferCategoryPath({name, category, categoryLabel}) in adaptStandardizedRow (detailProductAdapter.ts:351), where category = specifications_json['Category'] || category_code. A product resolves to exactly ONE level1 (single-valued) — it cannot appear under two pills. Home circles navigate to Discover with initialCategory=label (App.tsx:946).",
+  "multiCategoryProducts": {
+    "note": "Mapping is single-valued: each product resolves to exactly one level1. No product is reachable via more than one pill.",
+    "ids": []
+  },
+  "level1Counts": {
+    "Storage": 205,
+    "Living Room": 53,
+    "Office": 8,
+    "Bathroom": 44,
+    "Dining & Kitchen": 11,
+    "Bedroom": 22,
+    "Other": 4,
+    "Pet Furniture": 1,
+    "Outdoor & Garden": 1
+  },
+  "level1Level2Counts": {
+    "Storage > Dresser": 62,
+    "Storage > Sideboard": 72,
+    "Living Room > Sofa": 40,
+    "Office > Office Chair": 1,
+    "Storage > Bookshelf": 19,
+    "Bathroom > Vanity": 29,
+    "Storage > Cabinet": 33,
+    "Storage > (none)": 2,
+    "Office > Desk": 7,
+    "Dining & Kitchen > Dining Table": 9,
+    "Bedroom > Nightstand": 14,
+    "Living Room > Coffee Table": 6,
+    "Bathroom > (none)": 10,
+    "Storage > TV Stand": 17,
+    "Dining & Kitchen > Dining Chair": 2,
+    "Bedroom > Bed": 7,
+    "Living Room > Console Table": 5,
+    "Living Room > Side Table": 2,
+    "Bathroom > Bathroom Cabinet": 5,
+    "Other > (none)": 4,
+    "Pet Furniture > Pet Furniture": 1,
+    "Bedroom > (none)": 1,
+    "Outdoor & Garden > Patio Furniture": 1
+  },
+  "unreachableProducts": {
+    "count": 4,
+    "note": "level1='Other' is NOT a pill; reachable only under 'All'.",
+    "items": [
+      {
+        "id": "W2987P289172",
+        "category_label": "Other",
+        "name": "360° Rotating 69\"x20\" Multifunctional Full Length"
+      },
+      {
+        "id": "W3258P293190",
+        "category_label": "Chair",
+        "name": "37\" Left Bedside LED Dressing Table + Cushioned Stool, Large Sliding, Touch"
+      },
+      {
+        "id": "W2987P288952",
+        "category_label": "Other",
+        "name": "360° Rotating 66\"x17.8\" Multifunctional Full Length"
+      },
+      {
+        "id": "W2987P289196",
+        "category_label": "Other",
+        "name": "47.6 x 15.7 inch multi-functional design panel"
+      }
+    ]
+  },
+  "level1ProductIds": {
+    "Storage": [
+      "W1157P307950",
+      "W331P435940",
+      "W1157P307957",
+      "W1445P360668",
+      "W409S00014",
+      "LP001501AAK-1",
+      "W1321111282",
+      "W2263P353794",
+      "W1820S00069",
+      "W331S00068",
+      "W3387P306326",
+      "N721P401788K",
+      "W28209580",
+      "W1820P335659",
+      "W331P379950",
+      "W1445P173038",
+      "W2282P220585",
+      "W331S00059",
+      "W409P307526",
+      "W331P286248",
+      "W1445P214051",
+      "W688P364739",
+      "W1445P256479",
+      "W1162P339085",
+      "W409P371352",
+      "W1445132031",
+      "W331S00198",
+      "W1445P321199",
+      "W1706P280672",
+      "W5368P460474",
+      "W331S00060",
+      "W409S00026",
+      "W1321S00049",
+      "W5590P447308",
+      "N779P296236N",
+      "W1321P307871",
+      "W1801P288508",
+      "LP006601AAK-1",
+      "N710P429516Q",
+      "W132166344",
+      "W409S00032",
+      "N728P458234Z",
+      "W3151P407891",
+      "W409S00015",
+      "N728P458089W",
+      "W1445P303027",
+      "W331S00182",
+      "W409P307536",
+      "W3137P270232",
+      "W3204P484603",
+      "W1162P356393",
+      "W409P266778",
+      "W2917P384735",
+      "W3040P480534",
+      "W331S00213",
+      "W2275P460424",
+      "W409S00013",
+      "W1785P308517",
+      "W1801P163658",
+      "W331P377354",
+      "W409S00029",
+      "W1162P388448",
+      "W409P307554",
+      "W2917S00013",
+      "N759P324549K",
+      "W2275P206602",
+      "W5767P505607",
+      "W409P387580",
+      "W757P151921",
+      "W409P338206",
+      "W1801P272511",
+      "W331P195805",
+      "W409S00019",
+      "W1706P311107",
+      "W2917P294993",
+      "W3393P414579",
+      "W808P390792",
+      "W1820P338177",
+      "W808P245579",
+      "W33164270",
+      "W1435P228914",
+      "W331P380593",
+      "W1445P256462",
+      "W688P359831",
+      "W331P374568",
+      "W331S00185",
+      "W331P379769",
+      "W409P307541",
+      "W409P195072",
+      "W331S00184",
+      "W409P327407",
+      "W1445P146390",
+      "W1801P290306",
+      "W1445P256466",
+      "B372P407630",
+      "W3151P288870",
+      "W331P377340",
+      "W1445P164172",
+      "N711P410389O",
+      "W3158P307447",
+      "W1801P428581",
+      "W331P289098",
+      "W33165697",
+      "W1445P302631",
+      "W1162P309021",
+      "W1445S00002",
+      "W331S00167",
+      "N710P174917Q",
+      "W2139P306488",
+      "SP000075AAE",
+      "W1820P324616",
+      "W33163005",
+      "W2263P353560",
+      "SP000075AAK",
+      "W1445S00003",
+      "W331P295246",
+      "W409P307525",
+      "N707S256507Z",
+      "W3387P363520",
+      "W808P166755",
+      "W1120P330147",
+      "W331S00172",
+      "W3871P368993",
+      "W331P309438",
+      "W3151P407892",
+      "W2699P184784",
+      "W409P371358",
+      "W1445132035",
+      "W1162P485247",
+      "W409P387581",
+      "W2393P195491",
+      "W409P307597",
+      "N710P193724P",
+      "W282S00025",
+      "W331S00205",
+      "W1820S00068",
+      "N721P245716B",
+      "W331S00080",
+      "SP000257AAD",
+      "W1435P183068",
+      "W1445P164168",
+      "XW000010AAM",
+      "N7090001842K",
+      "W1445P419756",
+      "W1801P195696",
+      "XW000032AAB",
+      "W3387P487623",
+      "SJ000166AAK",
+      "W1320137991",
+      "W1706P280664",
+      "N711P345213K",
+      "W1445P251889",
+      "W2275P233489",
+      "W1801P195597",
+      "W409P266780",
+      "W409P171861",
+      "W5389P463456",
+      "N733S304513D",
+      "W409P307539",
+      "W331S00076",
+      "W3123P333708",
+      "W688P232758",
+      "W1445103595",
+      "W1706P254657",
+      "W331S00196",
+      "W1321S00001",
+      "N710P401530P",
+      "W1445P327887",
+      "N715P458125N",
+      "W331S00071",
+      "N767P417396W",
+      "W1706P235656",
+      "W409P307537",
+      "W1321P288794",
+      "W409P327401",
+      "W1321S00002",
+      "W80870283",
+      "W1445P146389",
+      "W331P257393",
+      "W409P263831",
+      "XW000032AAA",
+      "W1321S00005",
+      "W2263P410055",
+      "W1162P190403",
+      "W2641P499520",
+      "W1321P309434",
+      "W331P242454",
+      "W2275P233490",
+      "W1445P164173",
+      "W1435133313",
+      "W1445139547",
+      "W282132412",
+      "W409P167477",
+      "W3871S00001",
+      "W3867P370625",
+      "W1445121945",
+      "W1445P164167",
+      "W1435133312",
+      "W1445P419757",
+      "W1445121942",
+      "W331S00214",
+      "W144583481",
+      "W282P160454",
+      "W409P327404",
+      "W1801P195608"
+    ],
+    "Living Room": [
+      "W714P284884",
+      "W714P253478",
+      "W5527P489261",
+      "W5527P489247",
+      "N724P292070K",
+      "N893S000010B",
+      "W714P284891",
+      "N723S7037E",
+      "N715P288632M",
+      "W1435P337640",
+      "N767P263923W",
+      "W714P253480",
+      "W2729P298232",
+      "N724P185778P",
+      "W1417S00079",
+      "W1278P360535",
+      "W714P253477",
+      "W2664P232884",
+      "N759P433572B",
+      "W1829S00061",
+      "N735P388120K",
+      "W714S01080",
+      "W3219P339464",
+      "W5515P496938",
+      "W714S01235",
+      "N715P462622N",
+      "W714S01017",
+      "N719S002050B",
+      "W714P293273",
+      "W2824P324530",
+      "N771P205002M_N771P220377M _N771P205014M",
+      "W714P253481",
+      "W1767S00020",
+      "W714P253474",
+      "N760P328544D",
+      "W714P448403",
+      "W714P293246",
+      "W5385P455456",
+      "W1298P199181",
+      "W1767S00004",
+      "W2339S00039",
+      "W3137S00001",
+      "W714S01114",
+      "W1445P317059",
+      "W5527P489260",
+      "W714S00550",
+      "W2817S00024",
+      "W3244S00003",
+      "N715P364059N",
+      "W5872S00003",
+      "W1767S00018",
+      "W3985P435507",
+      "N735P328521D"
+    ],
+    "Office": [
+      "W680P143449",
+      "W5316S00065",
+      "W2700P268307",
+      "W331P297437",
+      "W1321S00027",
+      "W331P256909",
+      "W331S00116",
+      "W3835P483845"
+    ],
+    "Bathroom": [
+      "N710P191970F",
+      "N710P206904E",
+      "N710P206904K",
+      "W1865S00255",
+      "N729P321351N",
+      "WF323345AAK",
+      "W2139P194436",
+      "W3393P315815",
+      "N710P230231B",
+      "N710P206904F",
+      "W2500P483010",
+      "N729P289163K",
+      "N765P387198D",
+      "N710P288936F",
+      "N710P323328K",
+      "W808P420585",
+      "W5107S00005",
+      "W2011P307019",
+      "N729P184479K",
+      "N710P323328C",
+      "N710P426321P",
+      "N729P321376K",
+      "W3520S00050",
+      "N710P439554K",
+      "N710P401339K",
+      "W331P281277",
+      "N765P38884950E",
+      "N710P246209K",
+      "N710P206904C",
+      "N725P188460K",
+      "N710P206904Z",
+      "W331P298186",
+      "W999S00522",
+      "N710P195628K",
+      "W3871S00002",
+      "N725P188461K",
+      "N729P000001C",
+      "W487P352445",
+      "W808P447216",
+      "WF324043AAB",
+      "N725S412541K",
+      "N710P411251P",
+      "WF324043AAC",
+      "N710P206904M"
+    ],
+    "Dining & Kitchen": [
+      "N707P186617W",
+      "N707S221446B",
+      "W1347P246823",
+      "N759P307032D",
+      "W2557S00002",
+      "ST000144AAP",
+      "N752S000012D",
+      "W487P221665",
+      "N717P379754N",
+      "N707S170349W",
+      "N707S000019W"
+    ],
+    "Bedroom": [
+      "W5221P421223",
+      "N733P307938B",
+      "W1321P413949",
+      "N733P307938W",
+      "W1321P204522",
+      "W5305P471354",
+      "W504P425956",
+      "W1321P151791",
+      "W504P429333",
+      "W1321P311160",
+      "N770P283032N_N770P283033N",
+      "N761P285712N",
+      "N701P465364C",
+      "W1716P335674",
+      "W3151P345790",
+      "WF319366AAK",
+      "W504P444380",
+      "W1716P409479",
+      "W409P327396",
+      "W347P325002",
+      "W1801P303392",
+      "W808P264698"
+    ],
+    "Other": [
+      "W2987P289172",
+      "W3258P293190",
+      "W2987P288952",
+      "W2987P289196"
+    ],
+    "Pet Furniture": [
+      "W80863135"
+    ],
+    "Outdoor & Garden": [
+      "W329P285874"
+    ]
+  },
+  "level1Level2ProductIds": {
+    "Storage > Dresser": [
+      "W1157P307950",
+      "W1157P307957",
+      "W409S00014",
+      "W1321111282",
+      "W1820S00069",
+      "W1820P335659",
+      "W409P307526",
+      "W409P371352",
+      "W5368P460474",
+      "W409S00026",
+      "W1321S00049",
+      "LP006601AAK-1",
+      "W409S00032",
+      "W3151P407891",
+      "W409S00015",
+      "W409P307536",
+      "W3204P484603",
+      "W409P266778",
+      "W409S00013",
+      "W1785P308517",
+      "W409S00029",
+      "W409P307554",
+      "W409P387580",
+      "W409P338206",
+      "W409S00019",
+      "W3393P414579",
+      "W808P390792",
+      "W1820P338177",
+      "W409P307541",
+      "B372P407630",
+      "W3151P288870",
+      "W3158P307447",
+      "W1445S00002",
+      "W1820P324616",
+      "W33163005",
+      "W1445S00003",
+      "W409P307525",
+      "W3871P368993",
+      "W3151P407892",
+      "W2699P184784",
+      "W409P371358",
+      "W409P387581",
+      "W2393P195491",
+      "W409P307597",
+      "W1820S00068",
+      "W331S00080",
+      "N7090001842K",
+      "W1445P419756",
+      "XW000032AAB",
+      "W2275P233489",
+      "W409P266780",
+      "N733S304513D",
+      "W409P307539",
+      "W331S00071",
+      "W409P307537",
+      "W409P263831",
+      "XW000032AAA",
+      "W1162P190403",
+      "W1321P309434",
+      "W2275P233490",
+      "W409P167477",
+      "W1445P419757"
+    ],
+    "Storage > Sideboard": [
+      "W331P435940",
+      "W1445P360668",
+      "W2263P353794",
+      "W331S00068",
+      "W28209580",
+      "W1445P173038",
+      "W2282P220585",
+      "W331P286248",
+      "W1445P214051",
+      "W1445P256479",
+      "W1162P339085",
+      "W1445P321199",
+      "W1706P280672",
+      "W1321P307871",
+      "W1801P288508",
+      "N728P458234Z",
+      "N728P458089W",
+      "W1445P303027",
+      "W3137P270232",
+      "W2917P384735",
+      "W3040P480534",
+      "W2917S00013",
+      "W1801P272511",
+      "W1706P311107",
+      "W2917P294993",
+      "W33164270",
+      "W1435P228914",
+      "W1445P256462",
+      "W331S00185",
+      "W409P327407",
+      "W1445P256466",
+      "N711P410389O",
+      "W1801P428581",
+      "W331P289098",
+      "W1445P302631",
+      "W331S00167",
+      "W2139P306488",
+      "SP000075AAE",
+      "W2263P353560",
+      "SP000075AAK",
+      "N707S256507Z",
+      "W331S00172",
+      "W331P309438",
+      "W1162P485247",
+      "W1435P183068",
+      "XW000010AAM",
+      "W1801P195696",
+      "W3387P487623",
+      "N711P345213K",
+      "W1801P195597",
+      "W409P171861",
+      "W5389P463456",
+      "W331S00076",
+      "W688P232758",
+      "W1706P254657",
+      "W1445P327887",
+      "W1706P235656",
+      "W1321P288794",
+      "W409P327401",
+      "W1321S00002",
+      "W1321S00005",
+      "W2263P410055",
+      "W2641P499520",
+      "W331P242454",
+      "W1435133313",
+      "W282132412",
+      "W3867P370625",
+      "W1435133312",
+      "W1445121942",
+      "W144583481",
+      "W409P327404",
+      "W1801P195608"
+    ],
+    "Living Room > Sofa": [
+      "W714P284884",
+      "W714P253478",
+      "W5527P489261",
+      "W5527P489247",
+      "W714P284891",
+      "N723S7037E",
+      "W1435P337640",
+      "N767P263923W",
+      "W714P253480",
+      "W1417S00079",
+      "W1278P360535",
+      "W714P253477",
+      "W1829S00061",
+      "W714S01080",
+      "W3219P339464",
+      "W5515P496938",
+      "W714S01235",
+      "N715P462622N",
+      "W714S01017",
+      "N719S002050B",
+      "W714P293273",
+      "W2824P324530",
+      "N771P205002M_N771P220377M _N771P205014M",
+      "W714P253481",
+      "W1767S00020",
+      "W714P253474",
+      "W714P448403",
+      "W714P293246",
+      "W5385P455456",
+      "W1298P199181",
+      "W1767S00004",
+      "W2339S00039",
+      "W714S01114",
+      "W5527P489260",
+      "W714S00550",
+      "W2817S00024",
+      "W3244S00003",
+      "W5872S00003",
+      "W1767S00018",
+      "W3985P435507"
+    ],
+    "Office > Office Chair": [
+      "W680P143449"
+    ],
+    "Storage > Bookshelf": [
+      "LP001501AAK-1",
+      "W331P379950",
+      "W331S00059",
+      "W331S00060",
+      "N779P296236N",
+      "W331P377354",
+      "N759P324549K",
+      "W331P195805",
+      "W331P374568",
+      "W331P377340",
+      "W33165697",
+      "SP000257AAD",
+      "W3123P333708",
+      "W1321S00001",
+      "N715P458125N",
+      "N767P417396W",
+      "W80870283",
+      "W331P257393",
+      "W1445121945"
+    ],
+    "Bathroom > Vanity": [
+      "N710P191970F",
+      "N710P206904E",
+      "N710P206904K",
+      "N729P321351N",
+      "W2139P194436",
+      "W3393P315815",
+      "N710P230231B",
+      "N710P206904F",
+      "W2500P483010",
+      "N729P289163K",
+      "N765P387198D",
+      "N710P288936F",
+      "N710P323328K",
+      "W2011P307019",
+      "N729P184479K",
+      "N710P323328C",
+      "N729P321376K",
+      "W3520S00050",
+      "N765P38884950E",
+      "N710P246209K",
+      "N710P206904C",
+      "N710P206904Z",
+      "N710P195628K",
+      "W3871S00002",
+      "N729P000001C",
+      "WF324043AAB",
+      "N710P411251P",
+      "WF324043AAC",
+      "N710P206904M"
+    ],
+    "Storage > Cabinet": [
+      "W3387P306326",
+      "W688P364739",
+      "W331S00198",
+      "W5590P447308",
+      "W331S00182",
+      "W331S00213",
+      "W2275P460424",
+      "W2275P206602",
+      "W5767P505607",
+      "W757P151921",
+      "W808P245579",
+      "W331P380593",
+      "W688P359831",
+      "W331P379769",
+      "W409P195072",
+      "W1445P146390",
+      "W331P295246",
+      "W3387P363520",
+      "W808P166755",
+      "W282S00025",
+      "W331S00205",
+      "N721P245716B",
+      "W1445P164168",
+      "W1320137991",
+      "W1706P280664",
+      "W1445P251889",
+      "W331S00196",
+      "W1445P146389",
+      "W1445P164173",
+      "W3871S00001",
+      "W1445P164167",
+      "W331S00214",
+      "W282P160454"
+    ],
+    "Storage > (none)": [
+      "N721P401788K",
+      "SJ000166AAK"
+    ],
+    "Office > Desk": [
+      "W5316S00065",
+      "W2700P268307",
+      "W331P297437",
+      "W1321S00027",
+      "W331P256909",
+      "W331S00116",
+      "W3835P483845"
+    ],
+    "Dining & Kitchen > Dining Table": [
+      "N707P186617W",
+      "N707S221446B",
+      "W1347P246823",
+      "W2557S00002",
+      "ST000144AAP",
+      "N752S000012D",
+      "N717P379754N",
+      "N707S170349W",
+      "N707S000019W"
+    ],
+    "Bedroom > Nightstand": [
+      "W5221P421223",
+      "N733P307938B",
+      "W1321P413949",
+      "N733P307938W",
+      "W1321P204522",
+      "W1321P151791",
+      "W1321P311160",
+      "N761P285712N",
+      "W3151P345790",
+      "WF319366AAK",
+      "W1716P409479",
+      "W409P327396",
+      "W1801P303392",
+      "W808P264698"
+    ],
+    "Living Room > Coffee Table": [
+      "N724P292070K",
+      "N893S000010B",
+      "W2729P298232",
+      "N735P388120K",
+      "W3137S00001",
+      "N735P328521D"
+    ],
+    "Bathroom > (none)": [
+      "W1865S00255",
+      "WF323345AAK",
+      "N710P439554K",
+      "N710P401339K",
+      "W331P281277",
+      "N725P188460K",
+      "N725P188461K",
+      "W487P352445",
+      "W808P447216",
+      "N725S412541K"
+    ],
+    "Storage > TV Stand": [
+      "W1445132031",
+      "N710P429516Q",
+      "W132166344",
+      "W1162P356393",
+      "W1801P163658",
+      "W1162P388448",
+      "W331S00184",
+      "W1801P290306",
+      "W1445P164172",
+      "W1162P309021",
+      "N710P174917Q",
+      "W1120P330147",
+      "W1445132035",
+      "N710P193724P",
+      "W1445103595",
+      "N710P401530P",
+      "W1445139547"
+    ],
+    "Dining & Kitchen > Dining Chair": [
+      "N759P307032D",
+      "W487P221665"
+    ],
+    "Bedroom > Bed": [
+      "W5305P471354",
+      "W504P425956",
+      "W504P429333",
+      "N770P283032N_N770P283033N",
+      "N701P465364C",
+      "W1716P335674",
+      "W504P444380"
+    ],
+    "Living Room > Console Table": [
+      "N715P288632M",
+      "N759P433572B",
+      "N760P328544D",
+      "W1445P317059",
+      "N715P364059N"
+    ],
+    "Living Room > Side Table": [
+      "N724P185778P",
+      "W2664P232884"
+    ],
+    "Bathroom > Bathroom Cabinet": [
+      "W808P420585",
+      "W5107S00005",
+      "N710P426321P",
+      "W331P298186",
+      "W999S00522"
+    ],
+    "Other > (none)": [
+      "W2987P289172",
+      "W3258P293190",
+      "W2987P288952",
+      "W2987P289196"
+    ],
+    "Pet Furniture > Pet Furniture": [
+      "W80863135"
+    ],
+    "Bedroom > (none)": [
+      "W347P325002"
+    ],
+    "Outdoor & Garden > Patio Furniture": [
+      "W329P285874"
+    ]
+  },
+  "perProduct": [
+    {
+      "id": "W1157P307950",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P435940",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1157P307957",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P360668",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P284884",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P253478",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W680P143449",
+      "level1": "Office",
+      "level2": "Office Chair",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00014",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "LP001501AAK-1",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321111282",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W2263P353794",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P191970F",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1820S00069",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00068",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W5527P489261",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W3387P306326",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N721P401788K",
+      "level1": "Storage",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W5316S00065",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W28209580",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N707P186617W",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1820P335659",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W5221P421223",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W5527P489247",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P379950",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "N724P292070K",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    },
+    {
+      "id": "N893S000010B",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P173038",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904E",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N707S221446B",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W2282P220585",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00059",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307526",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P286248",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N733P307938B",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P413949",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P214051",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N733P307938W",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P284891",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W688P364739",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P204522",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P256479",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P339085",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N723S7037E",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P371352",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1865S00255",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W1445132031",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00198",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P321199",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1706P280672",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W5368P460474",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N729P321351N",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1347P246823",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00060",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W2700P268307",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "WF323345AAK",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00026",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321S00049",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W5590P447308",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W2139P194436",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N779P296236N",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P307871",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P288508",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "LP006601AAK-1",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P429516Q",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W132166344",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00032",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N728P458234Z",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3393P315815",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N759P307032D",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Chair",
+      "reachablePill": true
+    },
+    {
+      "id": "W3151P407891",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W5305P471354",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00015",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N728P458089W",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P303027",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00182",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307536",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W3137P270232",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3204P484603",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P230231B",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P356393",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904F",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P266778",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N715P288632M",
+      "level1": "Living Room",
+      "level2": "Console Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W2500P483010",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W2917P384735",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3040P480534",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00213",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W2275P460424",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00013",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1785P308517",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P163658",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W504P425956",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P377354",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1435P337640",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00029",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N767P263923W",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P253480",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N729P289163K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W2729P298232",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P151791",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P388448",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "N724P185778P",
+      "level1": "Living Room",
+      "level2": "Side Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307554",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W2917S00013",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N759P324549K",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1417S00079",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W2275P206602",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N765P387198D",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P288936F",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P323328K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P420585",
+      "level1": "Bathroom",
+      "level2": "Bathroom Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W504P429333",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W5767P505607",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W5107S00005",
+      "level1": "Bathroom",
+      "level2": "Bathroom Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1278P360535",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W2011P307019",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P311160",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W2987P289172",
+      "level1": "Other",
+      "level2": null,
+      "reachablePill": false
+    },
+    {
+      "id": "W409P387580",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W757P151921",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W2557S00002",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P338206",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P272511",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P195805",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P253477",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P297437",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W2664P232884",
+      "level1": "Living Room",
+      "level2": "Side Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W409S00019",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1706P311107",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2917P294993",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3393P414579",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P390792",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1820P338177",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P245579",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N729P184479K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W33164270",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1435P228914",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P380593",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P323328C",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N759P433572B",
+      "level1": "Living Room",
+      "level2": "Console Table",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P426321P",
+      "level1": "Bathroom",
+      "level2": "Bathroom Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P256462",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W688P359831",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P374568",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00185",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P379769",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "ST000144AAP",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307541",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N752S000012D",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "N770P283032N_N770P283033N",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W1829S00061",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P195072",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00184",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W487P221665",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Chair",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P327407",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P146390",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N735P388120K",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P290306",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P256466",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W714S01080",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "B372P407630",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W3151P288870",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N729P321376K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321S00027",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W3520S00050",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P439554K",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W331P377340",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P164172",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W3219P339464",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N711P410389O",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W5515P496938",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P401339K",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W3158P307447",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P428581",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P289098",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W714S01235",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W33165697",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P302631",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P309021",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "N761P285712N",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "N715P462622N",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445S00002",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W714S01017",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N719S002050B",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00167",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P174917Q",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P293273",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W2139P306488",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "SP000075AAE",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1820P324616",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N701P465364C",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W33163005",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P281277",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W2263P353560",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "SP000075AAK",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2824P324530",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N765P38884950E",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445S00003",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P246209K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P295246",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307525",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N771P205002M_N771P220377M _N771P205014M",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904C",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N725P188460K",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "N707S256507Z",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904Z",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W3387P363520",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P166755",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1120P330147",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P253481",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00172",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3871P368993",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P309438",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3151P407892",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W2699P184784",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1716P335674",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P371358",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445132035",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P485247",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P387581",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1767S00020",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P253474",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P298186",
+      "level1": "Bathroom",
+      "level2": "Bathroom Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W999S00522",
+      "level1": "Bathroom",
+      "level2": "Bathroom Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N760P328544D",
+      "level1": "Living Room",
+      "level2": "Console Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W2393P195491",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P448403",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W714P293246",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307597",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W3151P345790",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "WF319366AAK",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P193724P",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W282S00025",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00205",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1820S00068",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N721P245716B",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00080",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "SP000257AAD",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1435P183068",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P256909",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W504P444380",
+      "level1": "Bedroom",
+      "level2": "Bed",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P164168",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P195628K",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "XW000010AAM",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3871S00002",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N7090001842K",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P419756",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W5385P455456",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N717P379754N",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P195696",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "XW000032AAB",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "N725P188461K",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W3387P487623",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "SJ000166AAK",
+      "level1": "Storage",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W1320137991",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1706P280664",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N711P345213K",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W80863135",
+      "level1": "Pet Furniture",
+      "level2": "Pet Furniture",
+      "reachablePill": true
+    },
+    {
+      "id": "W1298P199181",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1767S00004",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1716P409479",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P251889",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "N729P000001C",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W2339S00039",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W2275P233489",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P195597",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P266780",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P171861",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3258P293190",
+      "level1": "Other",
+      "level2": null,
+      "reachablePill": false
+    },
+    {
+      "id": "W5389P463456",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N733S304513D",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307539",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00076",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3123P333708",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "N707S170349W",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W688P232758",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2987P288952",
+      "level1": "Other",
+      "level2": null,
+      "reachablePill": false
+    },
+    {
+      "id": "W1445103595",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W487P352445",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W3137S00001",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1706P254657",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00116",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00196",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P327396",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321S00001",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W3835P483845",
+      "level1": "Office",
+      "level2": "Desk",
+      "reachablePill": true
+    },
+    {
+      "id": "W347P325002",
+      "level1": "Bedroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "N710P401530P",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P327887",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "N715P458125N",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00071",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P447216",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P303392",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "N767P417396W",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1706P235656",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P307537",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W714S01114",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P288794",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P327401",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W808P264698",
+      "level1": "Bedroom",
+      "level2": "Nightstand",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321S00002",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W80870283",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P146389",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P257393",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P263831",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P317059",
+      "level1": "Living Room",
+      "level2": "Console Table",
+      "reachablePill": true
+    },
+    {
+      "id": "XW000032AAA",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321S00005",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2263P410055",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1162P190403",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W2641P499520",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1321P309434",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W5527P489260",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W714S00550",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W331P242454",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2275P233490",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P164173",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "WF324043AAB",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N725S412541K",
+      "level1": "Bathroom",
+      "level2": null,
+      "reachablePill": true
+    },
+    {
+      "id": "W1435133313",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W329P285874",
+      "level1": "Outdoor & Garden",
+      "level2": "Patio Furniture",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445139547",
+      "level1": "Storage",
+      "level2": "TV Stand",
+      "reachablePill": true
+    },
+    {
+      "id": "N707S000019W",
+      "level1": "Dining & Kitchen",
+      "level2": "Dining Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W2817S00024",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P411251P",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W3244S00003",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "WF324043AAC",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "N710P206904M",
+      "level1": "Bathroom",
+      "level2": "Vanity",
+      "reachablePill": true
+    },
+    {
+      "id": "W282132412",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P167477",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W3871S00001",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W3867P370625",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W2987P289196",
+      "level1": "Other",
+      "level2": null,
+      "reachablePill": false
+    },
+    {
+      "id": "W1445121945",
+      "level1": "Storage",
+      "level2": "Bookshelf",
+      "reachablePill": true
+    },
+    {
+      "id": "N715P364059N",
+      "level1": "Living Room",
+      "level2": "Console Table",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P164167",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W1435133312",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445P419757",
+      "level1": "Storage",
+      "level2": "Dresser",
+      "reachablePill": true
+    },
+    {
+      "id": "W1445121942",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W331S00214",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W144583481",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W282P160454",
+      "level1": "Storage",
+      "level2": "Cabinet",
+      "reachablePill": true
+    },
+    {
+      "id": "W409P327404",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W5872S00003",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1767S00018",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "W1801P195608",
+      "level1": "Storage",
+      "level2": "Sideboard",
+      "reachablePill": true
+    },
+    {
+      "id": "W3985P435507",
+      "level1": "Living Room",
+      "level2": "Sofa",
+      "reachablePill": true
+    },
+    {
+      "id": "N735P328521D",
+      "level1": "Living Room",
+      "level2": "Coffee Table",
+      "reachablePill": true
+    }
+  ]
+}

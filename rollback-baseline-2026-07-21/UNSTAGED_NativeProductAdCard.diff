@@ -1,0 +1,206 @@
+diff --git a/src/components/NativeProductAdCard.tsx b/src/components/NativeProductAdCard.tsx
+index 3a0c258e..f6a3da89 100644
+--- a/src/components/NativeProductAdCard.tsx
++++ b/src/components/NativeProductAdCard.tsx
+@@ -1,38 +1,38 @@
+ /**
+  * NativeProductAdCard — ONE quiet, full-width horizontal Native Advanced card
+  * rendered inline in a product feed. Reusable across placements via `variant`:
+- *   - 'discover'  (Discover browse grid)
+- *   - 'search'    (Search results)
+- *   - 'detail'    (Product Detail, single inline slot)
+- * The layout is identical for every variant (Google-compliant 120×120 card); the
+- * variant only namespaces dev logs / future differentiation. Never popup/overlay/
+- * modal/floating/full-screen.
++ *   'discover' (Discover browse grid) · 'search' (Search results) · 'detail'
++ *   (Product Detail, single inline slot). Layout is identical for every variant.
++ *   Never popup/overlay/modal/floating/full-screen.
+  *
+  *   ┌────────────────────────────────────────────────┐
+  *   │ Ad                                        (ⓘ)  │  header ~18 — AdChoices top-right
+  *   │ ┌──────────────┐  Headline (≤2 lines)          │
+- *   │ │              │  Advertiser (≤1)               │
++ *   │ │              │  Advertiser (≤1, truncated)    │
+  *   │ │  MediaView   │                                │
+- *   │ │   120×120    │                     [ CTA ]    │
++ *   │ │   124×124    │                     [ CTA ]    │
+  *   │ └──────────────┘                                │
+- *   └────────────────────────────────────────────────┘   total ~154 pt (hard max 158)
++ *   └────────────────────────────────────────────────┘   total ~164 pt (hard max 172)
+  *
+- * Validator-compliant:
+- *   - MediaView container is exactly 120×120 (iOS minimum; fixes "MediaView too
+- *     small for video"), fixed + overflow-clipped, so it never grows the card.
+- *   - The <NativeAdView> IS the card container (border/radius/bg/padding on it);
+- *     ALL registered assets are padded children fully inside its bounds (fixes
+- *     "advertiser assets outside native ad view"). The only outer view is a
+- *     margin-only wrapper carrying no ad assets.
+- *   - Single <NativeAdView>; <NativeMediaView> + <NativeAsset> (headline/advertiser/
+- *     CALL_TO_ACTION) registered; CTA is a plain <Text> (no Touchable / onPress) so
+- *     the SDK owns the click; NO overflow:hidden on the card (only the media clips)
+- *     so AdChoices is never clipped; top-right kept clear; no body text; no overlap.
+- *   - Media resizeMode="contain" (image aspect preserved; full video kept inside 120×120).
++ * Validator fixes (component-only):
++ *   1) "MediaView too small for video" → the NativeMediaView carries EXPLICIT
++ *      numeric width/height AND min/max = 124 (and flexShrink:0), so the registered
++ *      GADMediaView frame is deterministically 124×124 ≥ 120 regardless of the
++ *      SDK-injected creative aspectRatio; resizeMode="cover" fills it (no letterbox).
++ *   2) "Advertiser assets outside native ad view" → the advertiser is a bounded
++ *      <Text width:'100%', flexShrink:1, numberOfLines:1, ellipsize tail> inside a
++ *      text column with flex:1 + minWidth:0 (min-content can't force it wider), so
++ *      its frame can never exceed the column — which sits inside NativeAdView.
+  *
+- * Lifecycle: async load (never blocks the screen/startup); compact skeleton while
+- * loading; NO_FILL/error → null (collapses); NativeAd destroyed on unmount (and if it
+- * resolves after unmount); loads once per mount; dev-only logs; no secrets.
++ * Compliance: single <NativeAdView> (the card container) holds the "Ad" label,
++ * <NativeMediaView>, headline, advertiser and CTA; each text asset in <NativeAsset>
++ * with the correct assetType; CTA is a plain <Text> (no Touchable/onPress) so the
++ * SDK owns the click; NO overflow:'hidden' on the card (only the media container
++ * clips) so AdChoices stays visible/tappable; top-right kept clear; no body text.
++ *
++ * Lifecycle: async load (never blocks screen/startup); compact skeleton while
++ * loading; NO_FILL/error → null (collapses); NativeAd destroyed on unmount (and if
++ * it resolves after unmount); loads once per mount; dev-only logs; no secrets.
+  */
+ 
+ import React, { useEffect, useRef, useState } from 'react';
+@@ -46,8 +46,8 @@ import {
+ } from 'react-native-google-mobile-ads';
+ import { resolveNativeAdUnitId } from '../config/ads';
+ 
+-const MEDIA_SIZE = 120;       // iOS Native MediaView minimum
+-const CONTENT_ROW_HEIGHT = 120;
++const MEDIA_SIZE = 124;              // ≥120 iOS minimum, with a safety margin
++const CONTENT_ROW_HEIGHT = MEDIA_SIZE;
+ 
+ export type NativeAdVariant = 'discover' | 'search' | 'detail';
+ 
+@@ -100,8 +100,8 @@ export default function NativeProductAdCard({ testMode, variant = 'discover' }:
+           <View style={styles.header}><Text style={styles.adLabel}>Ad</Text></View>
+           <View style={styles.contentRow}>
+             <View style={[styles.mediaContainer, styles.skeleton]} />
+-            <View style={styles.textCol}>
+-              <View>
++            <View style={styles.textColumn}>
++              <View style={styles.textContent}>
+                 <View style={styles.lineSkeletonWide} />
+                 <View style={styles.lineSkeletonNarrow} />
+               </View>
+@@ -124,21 +124,28 @@ export default function NativeProductAdCard({ testMode, variant = 'discover' }:
+         <View style={styles.header}><Text style={styles.adLabel}>Ad</Text></View>
+ 
+         <View style={styles.contentRow}>
+-          {/* 120×120 MediaView in a fixed, clipped container — meets the iOS minimum yet
+-              never drives the card height. */}
++          {/* 124×124 MediaView in a fixed, clipped container. Explicit numeric size on
++              BOTH the wrapper and the NativeMediaView (min = max = 124, flexShrink 0)
++              so the registered GADMediaView is deterministically ≥120×120. */}
+           <View style={styles.mediaContainer}>
+-            <NativeMediaView style={styles.media} resizeMode="contain" />
++            <NativeMediaView style={styles.media} resizeMode="cover" />
+           </View>
+ 
+-          <View style={styles.textCol}>
+-            <View style={styles.textTop}>
++          <View style={styles.textColumn}>
++            <View style={styles.textContent}>
+               <NativeAsset assetType={NativeAssetType.HEADLINE}>
+                 <Text style={styles.headline} numberOfLines={2}>{nativeAd.headline}</Text>
+               </NativeAsset>
+ 
+               {nativeAd.advertiser ? (
+                 <NativeAsset assetType={NativeAssetType.ADVERTISER}>
+-                  <Text style={styles.advertiser} numberOfLines={1}>{nativeAd.advertiser}</Text>
++                  <Text
++                    style={styles.advertiser}
++                    numberOfLines={1}
++                    ellipsizeMode="tail"
++                  >
++                    {nativeAd.advertiser}
++                  </Text>
+                 </NativeAsset>
+               ) : null}
+             </View>
+@@ -168,21 +175,21 @@ const styles = StyleSheet.create({
+   // The NativeAdView itself: border/radius/background + padding. All ad assets are
+   // padded children, so every asset boundary stays inside NativeAdView. NO
+   // overflow:'hidden' here (only on the media container) so AdChoices isn't clipped.
+-  // Height = 6 + 18 + 4 + 120 + 6 = 154 pt.
++  // Height = 8 + 18 + 6 + 124 + 8 = 164 pt.
+   card: {
+     borderRadius: 6,
+     backgroundColor: '#FFFFFF',
+     borderWidth: StyleSheet.hairlineWidth,
+     borderColor: '#E5E3DC',
+     paddingHorizontal: 12,
+-    paddingTop: 6,
+-    paddingBottom: 6,
++    paddingTop: 8,
++    paddingBottom: 8,
+   },
+   header: {
+     height: 18,
+     flexDirection: 'row',
+     alignItems: 'center',
+-    marginBottom: 4,
++    marginBottom: 6,
+   },
+   adLabel: {
+     fontSize: 11,
+@@ -194,23 +201,39 @@ const styles = StyleSheet.create({
+     flexDirection: 'row',
+     height: CONTENT_ROW_HEIGHT, // fixed → deterministic card height
+   },
++  // Fixed 124×124, clips media only, never shrinks in the flex row.
+   mediaContainer: {
+     width: MEDIA_SIZE,
+     height: MEDIA_SIZE,
++    flexShrink: 0,
+     borderRadius: 6,
+-    overflow: 'hidden', // clip media only (never the card / AdChoices)
++    overflow: 'hidden',
+     backgroundColor: '#ECEAE2',
+   },
+-  media: { width: '100%', height: '100%' },
++  // Explicit numeric size on the registered MediaView (min = max = 124), no %,
++  // no padding/border, cannot shrink → GADMediaView frame is a solid 124×124.
++  media: {
++    width: MEDIA_SIZE,
++    height: MEDIA_SIZE,
++    minWidth: MEDIA_SIZE,
++    minHeight: MEDIA_SIZE,
++    maxWidth: MEDIA_SIZE,
++    maxHeight: MEDIA_SIZE,
++    flexShrink: 0,
++  },
+   skeleton: { backgroundColor: '#E0DED7' },
+-  textCol: {
++  // Bounded text column beside the media. minWidth:0 lets it shrink so a long
++  // advertiser's min-content width can't force any asset frame past the column.
++  textColumn: {
+     flex: 1,
+-    marginLeft: 12,
++    minWidth: 0,
+     height: CONTENT_ROW_HEIGHT,
+-    justifyContent: 'space-between',
+-    paddingVertical: 4,
++    marginLeft: 12,
++    overflow: 'visible',
++  },
++  textContent: {
++    flex: 1, // fills the top region; the CTA row sits below (no justifyContent:'space-between')
+   },
+-  textTop: {},
+   headline: {
+     fontSize: 14,
+     lineHeight: 18,
+@@ -218,6 +241,8 @@ const styles = StyleSheet.create({
+     color: '#1C1917',
+   },
+   advertiser: {
++    width: '100%',
++    flexShrink: 1,
+     fontSize: 12,
+     color: '#78716C',
+     marginTop: 4,

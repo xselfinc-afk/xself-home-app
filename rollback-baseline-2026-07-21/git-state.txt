@@ -1,0 +1,40 @@
+=== BRANCH ===
+fix/quoted-price-buynow-checkout
+=== HEAD ===
+f9ae006f56a075c5e2ace1081fdbf8553e96d06f
+f9ae006f feat(ads): implement low-density Native Ads V1 placements
+66aca726 fix(ads): resolve Native validator layout issues
+73dd2bf8 fix(ads): finalize ultra-compact Discover Native ad card
+9adf7f1f feat(ads): compact Native sponsor strip (V2) + interval 30
+7a6e3b8e fix(ads): finalize compact Discover Native ad layout
+=== UPSTREAM / AHEAD-BEHIND ===
+origin/fix/quoted-price-buynow-checkout
+## fix/quoted-price-buynow-checkout...origin/fix/quoted-price-buynow-checkout
+=== PORCELAIN STATUS (full) ===
+ M src/components/NativeProductAdCard.tsx
+?? dist/
+?? docs/GIGA_API_COVERAGE_AUDIT.md
+?? docs/GIGA_OPENAPI_CATALOG_REAUDIT.md
+?? docs/PRICE_SYNTHESIS_CLEANUP_PLAN.md
+?? rollback-baseline-2026-07-21/
+?? scripts/auditOfficialApiCoverage.ts
+?? scripts/auditPriceSynthesisCleanup.ts
+?? scripts/crawlGigaOpenApiCatalog.ts
+?? scripts/importGigaWarehouseDirectory.ts
+?? scripts/lib/portalSafetyGuard.ts
+?? scripts/manualProductCommand.ts
+?? scripts/probeInventoryQuantityV2.ts
+?? scripts/probeNewCredentials.ts
+?? scripts/probeSupplierPortalMirror.ts
+?? scripts/syncInventoryFromOfficialApi.ts
+?? src/__tests__/manualProductCommand.test.ts
+?? supabase/functions/admin-upload-pickup-document/
+?? supabase/functions/get-pickup-document-url/
+?? supabase/migrations/20260528_phase1a_pickup_documents.sql
+?? supabase/migrations/20260604_admin_approval_supplier_sync.sql
+?? supabase/migrations/20260622_giga_warehouse_directory.sql
+?? wiki/
+=== STAGED (name-status) ===
+=== UNSTAGED tracked (stat) ===
+ src/components/NativeProductAdCard.tsx | 115 ++++++++++++++++++++-------------
+ 1 file changed, 70 insertions(+), 45 deletions(-)

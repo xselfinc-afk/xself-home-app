@@ -1,0 +1,23 @@
+=== app.json version/build/runtime keys ===
+6:    "version": "1.0.12",
+20:      "bundleIdentifier": "com.xself.home",
+21:      "buildNumber": "34",
+31:      "package": "com.xself.home"
+36:    "runtimeVersion": "1.0.12",
+37:    "updates": {
+38:      "url": "https://u.expo.dev/3d5a36de-d144-4e6c-ac40-c336e8a8aac2",
+
+=== package.json version ===
+2:  "name": "xself-home",
+3:  "version": "1.0.0",
+
+=== eas.json (if present) ===
+4:    "appVersionSource": "local"
+7:    "development": {
+9:      "distribution": "internal"
+11:    "preview": {
+12:      "distribution": "internal"
+14:    "production": {
+15:      "autoIncrement": false,
+16:      "channel": "production"
+20:    "production": {

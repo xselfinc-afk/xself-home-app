@@ -1,0 +1,367 @@
+----- src/__tests__/appOpenAdEligibility.test.ts -----
+app open ad eligibility tests
+  ✓ eligible when everything is green
+  ✓ blocked when master adsEnabled is false
+  ✓ blocked when appOpenEnabled is false (default OFF)
+  ✓ blocked when already showing
+  ✓ blocked when no ad is loaded
+  ✓ blocked on every transaction route
+  ✓ allowed on non-transaction routes (Home, Discover)
+  ✓ blocked when the loaded ad has expired
+  ✓ fresh ad just inside the expiry window is allowed
+  ✓ blocked by the frequency cap (shown too recently)
+  ✓ allowed once the frequency-cap interval has elapsed
+  ✓ master switch takes precedence over a suppressed route
+  ✓ isSuppressedRoute: transaction routes true, others/empty false
+
+13 passed
+EXIT=0 for src/__tests__/appOpenAdEligibility.test.ts
+----- src/__tests__/cartPriceRefresh.test.ts -----
+cart price refresh tests
+  ✓ effectiveCatalogPrice: selling_price wins when > 0, falls back to price
+  ✓ isQuoteActive: active + unexpired only
+  ✓ applies an active quote to a stale plain line (price + token + strikethrough)
+  ✓ does NOT apply a quote whose supplier_sku differs from the cart line sku
+  ✓ already-quoted line with same token/price → no redundant update
+  ✓ expired quote on a quoted line reverts to catalog price and clears offer fields
+  ✓ quoted line with NO quote returned (revoked/used) also reverts
+  ✓ catalog price drop updates the line (customer sees the lower price)
+  ✓ catalog price rise updates the line (prevents price_changed surprise at checkout)
+  ✓ unchanged catalog price → empty result (no cart churn)
+  ✓ missing catalog row → line untouched (defensive)
+  ✓ mixed cart: quote applies to its line; other line follows catalog
+
+12 cart price refresh assertions passed.
+EXIT=0 for src/__tests__/cartPriceRefresh.test.ts
+----- src/__tests__/deliveryFee.test.ts -----
+Delivery fee tests
+  ✓ single SKU reproduces page breakdown (shipping/packing/fee)
+  ✓ quantity multiplies the per-unit fee
+  ✓ range (min≠max) charges max and flags isRange
+  ✓ shippingFee null but range present → fee = range.max, packing 0
+  ✓ skuAvailable=false → unavailable, fee null, sku listed
+  ✓ missing row → unavailable (no $99 fallback, no fabricated fee)
+  ✓ non-USD currency → unavailable
+  ✓ multi-SKU: all available sums; one unavailable blocks the whole order
+  ✓ reports a diagnostic reason when unavailable (for on-device debugging)
+
+9 delivery-fee assertions passed.
+EXIT=0 for src/__tests__/deliveryFee.test.ts
+----- src/__tests__/deliveryFeeCache.test.ts -----
+computeDeliveryFeeFromCache tests
+  ✓ seeded SKU, qty 1 → available, deliveryFeeCents 5800 ($58.00)
+  ✓ charged_fee_cents is PER UNIT → × qty (qty 3 → 17400)
+  ✓ multi-line all priced → summed
+  ✓ SKU not in cache → unavailable, no_cached_fee, listed in unavailableSkus
+  ✓ row exists but charged_fee_cents null → no_cached_fee
+  ✓ one of two lines missing → WHOLE result unavailable (no partial delivery)
+  ✓ non-USD currency → unavailable, currency_mismatch
+  ✓ null currency is allowed (treated as USD)
+  ✓ no items → unavailable, no_items
+  ✓ age ignored: row with no last_success_at still priced
+
+10 cache-fee assertions passed.
+EXIT=0 for src/__tests__/deliveryFeeCache.test.ts
+----- src/__tests__/deliveryFeeRefresh.test.ts -----
+GIGA delivery-fee refresh — pure + guardrail tests
+  ✓ parseMoneyToCents: "$48.74" → 4874
+  ✓ parseMoneyToCents: "$4.45" → 445
+  ✓ parseMoneyToCents: numeric 53.19 → 5319
+  ✓ parseMoneyToCents: "53" → 5300
+  ✓ parseMoneyToCents: empty/garbage → null
+  ✓ parseMoneyToCents: range "$24.83~$28.35" → null
+  ✓ applyBuffer: 5319 → 5800 ($53.19 → $58.00)
+  ✓ applyBuffer: 5000 → 5400
+  ✓ applyBuffer: 100 → 200
+  ✓ applyBuffer: matches ceil((f*1.08)/100)*100 sweep
+  ✓ parseDropShipFee: confirmed drop_ship → 445/4874/5319, charged 5800
+  ✓ parseDropShipFee: missing block → no_drop_ship
+  ✓ parseDropShipFee: non-positive total_amount → parse_error
+  ✓ parseDropShipFee: packing+shipping != fulfillment (>2¢) → fee_mismatch
+  ✓ parseDropShipFee: non-$ show fields → currency_mismatch
+  ✓ parseDropShipFee: tolerates 1¢ rounding (445+4875 vs 5319)
+  ✓ buildFeeSnapshot: keeps only the 6 allowed keys, drops everything else
+  ✓ assertReadOnlyUrl: allows price/list
+  ✓ assertReadOnlyUrl: now refuses product/product and product/search (SPA resolver removed)
+  ✓ assertReadOnlyUrl: refuses order/sync/dropShip-sync/pickUp-sync/submit/cancel/stripe
+  ✓ parseSeedCsv: header + valid row → one row
+  ✓ parseSeedCsv: skips blanks, comments, missing-col, non-numeric id, sku_custom
+  ✓ pickProductId: --product-id (cli) wins
+  ✓ pickProductId: seeded csv beats db
+  ✓ pickProductId: db when only db
+  ✓ pickProductId: none → null/none (→ no_mapping)
+  ✓ guardrail: refreshGigaDeliveryFees.ts never references catalog tables; writes only the fee cache
+  ✓ guardrail: auditDropshipFeeCoverage.ts performs NO writes (read-only)
+
+28 refresh assertions passed.
+EXIT=0 for src/__tests__/deliveryFeeRefresh.test.ts
+----- src/__tests__/deliveryGate.test.ts -----
+Delivery version-gate tests
+  ✓ NEW client: pickup → 0
+  ✓ NEW client: delivery with fee → dynamic dollars
+  ✓ NEW client: delivery, fee unavailable → null (no $99)
+  ✓ OLD client: delivery → legacy numeric (99), NEVER null
+  ✓ OLD client: pickup → 0
+  ✓ NEW client: pickup → {cents:0}
+  ✓ NEW client: delivery available → charge dynamic fee cents
+  ✓ NEW client: delivery unavailable → BLOCK (fail closed, no $99)
+  ✓ NEW client: deliveryFeeCents null even if "available" → BLOCK
+  ✓ OLD client: delivery → legacy numeric cents, NEVER blocked
+  ✓ OLD client: delivery with non-numeric legacy → falls back to LEGACY constant, still numeric
+  ✓ OLD client: pickup → {cents:0}
+
+12 version-gate assertions passed.
+EXIT=0 for src/__tests__/deliveryGate.test.ts
+----- src/__tests__/deliveryGuards.test.ts -----
+Delivery guard tests
+  ✓ Delivery env names are all SUPPLIER_DELIVERY_* and distinct from Pickup
+  ✓ host detectors classify sandbox vs production correctly
+  ✓ money-moving paths are flagged (dropShip-sync, pickUpSelfLabel-sync, create, submit, cancel)
+  ✓ assertSafeDiscoveryRequest allows sandbox read-only
+  ✓ assertSafeDiscoveryRequest BLOCKS production host
+  ✓ assertSafeDiscoveryRequest BLOCKS money-moving path even on sandbox
+
+6 delivery-guard assertions passed.
+EXIT=0 for src/__tests__/deliveryGuards.test.ts
+----- src/__tests__/discoverAdInsertion.test.ts -----
+native ad insertion tests
+  ✓ defaults: interval 24, max 2
+  ✓ discover: fewer than 24 products → no ad
+  ✓ discover: exactly 24 products → no trailing ad
+  ✓ discover: 25 products → one ad after product 24
+  ✓ discover: exactly 48 products → only one ad (48 would be orphan)
+  ✓ discover: 49 products → two ads after 24 and 48
+  ✓ discover: large result set → max stays 2
+  ✓ discover: disabled config → no ads
+  ✓ discover: malformed interval/max → safe defaults
+  ✓ discover: refresh produces deterministic stable slots
+  ✓ discover: product order remains unchanged
+  ✓ discover: groupIntoRows — ad lands on a clean 3-col boundary (24 = 8 rows)
+  ✓ search: 24 or fewer results → no ad
+  ✓ search: 25+ results → one ad after result 24
+  ✓ search: max stays 1 even for large result sets
+  ✓ search: disabled config → no ad
+  ✓ search: product order remains unchanged
+  ✓ search: groupIntoRows — 2-col boundary (24 = 12 rows)
+
+18 passed
+EXIT=0 for src/__tests__/discoverAdInsertion.test.ts
+----- src/__tests__/iosReleaseBuild.test.ts -----
+iOS release build-stage tests
+  ✓ refuses without --confirm-build
+  ✓ refuses if release gates fail
+  ✓ buildEasArgs is streamed (no --json) for live progress
+  ✓ buildListJsonArgs captures the latest build as JSON (for id capture after a streamed build)
+  ✓ buildStatusBanner gives status + fallback command + no-duplicate help
+  ✓ ascCheckpointText names the version/build and the bump command
+  ✓ refuses on modified tracked files outside the release allowlist
+  ✓ proceeds when confirmed + gates pass + clean tree; release-state path is local
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+'1.0.12' !== '1.0.10'
+
+    at <anonymous> (/Users/heliu/xself-home-app/src/__tests__/iosReleaseBuild.test.ts:78:10)
+    at it (/Users/heliu/xself-home-app/src/__tests__/iosReleaseBuild.test.ts:12:51)
+    at assert (/Users/heliu/xself-home-app/src/__tests__/iosReleaseBuild.test.ts:75:1)
+    at Object.<anonymous> (/Users/heliu/xself-home-app/src/__tests__/iosReleaseBuild.test.ts:83:69)
+    at Module._compile (node:internal/modules/cjs/loader:1705:14)
+    at Object.transformer (/Users/heliu/xself-home-app/node_modules/tsx/dist/register-D46fvsV_.cjs:3:1104)
+    at Module.load (node:internal/modules/cjs/loader:1441:32)
+    at Function._load (node:internal/modules/cjs/loader:1263:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:237:24) {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: '1.0.12',
+  expected: '1.0.10',
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v22.22.2
+EXIT=1 for src/__tests__/iosReleaseBuild.test.ts
+----- src/__tests__/iosReleaseGates.test.ts -----
+iOS release gate tests
+  ✓ all-consistent state passes (no hard failures)
+  ✓ runtime mismatch fails (plist 1.0.9 vs app 1.0.10)
+  ✓ pbxproj MARKETING_VERSION mismatch fails
+  ✓ pbxproj CURRENT_PROJECT_VERSION mismatch fails
+  ✓ runtimeVersion policy object fails the type gate
+  ✓ eas channel != production fails
+  ✓ Expo.plist channel != production fails
+  ✓ appVersionSource != local fails
+  ✓ updates url mismatch fails
+  ✓ downgrade target fails; equal/greater do not
+  ✓ compareSemver + recommendNextBuild + parseSemver work
+  ✓ computePrepareEdits: plist runtime stale → emits plist_runtime edit (1.0.9 → 1.0.10)
+  ✓ computePrepareEdits: fully-consistent state → no edits
+  ✓ computePrepareEdits: version+build+pbxproj diffs all emit edits
+  ✓ runtimePolicyReason: object → reason; string → null
+  ✓ checkDirtyTrackedAllowlist: tracked file outside allowlist → not ok; untracked/allowlisted → ok
+  ✓ editPlistRuntime / setJsonStringValue / setPbxValue are correct, minimal transforms
+
+17 iOS release gate assertions passed.
+EXIT=0 for src/__tests__/iosReleaseGates.test.ts
+----- src/__tests__/iosReleaseSubmit.test.ts -----
+iOS release submit-stage tests
+  ✓ refuses without --confirm-submit
+  ✓ refuses when release-state file is missing
+  ✓ refuses when no EAS build id is recorded
+  ✓ buildSubmitArgs targets a specific build id
+  ✓ refuses when recorded release version/build != current prepared
+  ✓ refuses when gates fail; proceeds + surfaces buildId when all good
+  ✓ verifyArtifactMatch: matching ok; mismatch / missing → not ok
+  ✓ reads the build-stage release-state path
+
+8 iOS release submit-stage assertions passed.
+EXIT=0 for src/__tests__/iosReleaseSubmit.test.ts
+----- src/__tests__/manualProductCommand.test.ts -----
+manual product command wrapper tests
+  ✓ accepts real GIGA SKUs (alphanumeric)
+  ✓ refuses a missing/empty SKU
+  ✓ refuses whitespace in the SKU
+  ✓ refuses unsafe characters / path traversal
+  ✓ folderForSku uses the fixed tmp/manual-products/<SKU> convention
+  ✓ plan delegates WITHOUT --confirm
+  ✓ apply delegates WITH --confirm appended
+  ✓ parseWrapper reads plan/apply mode + SKU
+  ✓ parseWrapper rejects an unknown/missing mode (no accidental apply)
+  ✓ parseWrapper accepts upload mode
+  ✓ isExactConfirm accepts only the literal CONFIRM
+  ✓ upload does NOT apply when PLAN failed (even with CONFIRM)
+  ✓ upload applies ONLY when PLAN ok AND exact CONFIRM; rejects lowercase/yes/empty
+  ✓ upload delegates to apply (with --confirm) only after CONFIRM passes
+  ✓ summarizePlanReport extracts fields + computes will-be-sellable
+  ✓ summarizePlanReport → will NOT be sellable when there are errors or price is 0
+
+16 manual product command wrapper assertions passed.
+EXIT=0 for src/__tests__/manualProductCommand.test.ts
+----- src/__tests__/manualProductUpload.test.ts -----
+manual product upload tests
+  ✓ parseArgs reads --sku/--input/--confirm/--update-existing
+  ✓ parseArgs defaults confirm/updateExisting to false (PLAN-safe)
+  ✓ isMerchantPrefixed matches hyphenated On-Site codes only
+  ✓ warehouseState + supportsPickup match the scraper mapping
+  ✓ valid input → no errors (bare non-canonical NJ5 only warns)
+  ✓ selling_price <= 0 is a blocking error
+  ✓ missing primary image is a blocking error
+  ✓ SKU mismatch (--sku != json) is a blocking error
+  ✓ existing SKU without --update-existing is blocked; allowed with it
+  ✓ merchant-prefixed non-canonical warehouse is blocked (would be quarantined)
+  ✓ zero total inventory is a blocking error
+  ✓ absent cost_price warns about the price>0 sellability gate
+  ✓ missing delivery fee warns (delivery blocked, pickup unaffected)
+  ✓ buildSupplierItem tags manual_upload + carries imageUrls/category for normalizeProduct
+  ✓ buildInventoryRows produces website_scrape/ok rows with correct state + total
+[Normalization] category_label assigned: Bookshelf | raw category: Kids Bookcase with Fabric Drawers
+[Normalization] is_new_arrival assigned: false | source: none
+  ✓ buildStandardizedUpsertRow sets selling_price, drops new_arrival_added_at, status=done
+  ✓ getMarkup tiers match dynamic-pricing
+  ✓ getBuffer tiers match dynamic-pricing
+  ✓ psychologicalRound: .99 under 100, decade+9 under 300, hundred+{49,79,99} above
+  ✓ calculateBaseRetail locks cost=33.25 → 96.99 (markup 2.20, buffer 20)
+  ✓ calculateBaseRetail enforces the 25% margin floor on tiny costs
+  ✓ resolveSellingPrice auto computes from cost; manual uses supplied
+  ✓ resolveSellingPrice auto without cost_price returns an error
+  ✓ detectFolderImages picks main.png + sorted gallery-*.png, ignores others
+  ✓ buildPublicImageUrl uses the deny-safe prefix (never "manual")
+  ✓ reviewSeedArgs reuses the existing protected script (not a reimplementation)
+  ✓ reviewSeedEnvScope scopes the seed to exactly ONE SKU via ONLY_SKUS
+  ✓ shouldSeedReviews seeds only when none exist (skip/no-op if reviews already present)
+
+28 manual product upload assertions passed.
+EXIT=0 for src/__tests__/manualProductUpload.test.ts
+----- src/__tests__/normalization.test.ts -----
+
+dirtyTextFilters
+  ✓ blocks dimension strings
+  ✓ blocks weight values
+  ✓ blocks supplier section headers
+  ✓ blocks product dimensions/size phrases
+  ✓ allows clean feature bullets
+  ✓ blocks dimension sentences in isUsableSentence
+  ✓ allows clean description sentences
+
+titleGenerator
+  ✓ cleanTitle strips promotional words
+  ✓ cleanTitle handles empty/null
+  ✓ cleanTitle truncates at 80 chars
+  ✓ buildDisplayTitle strips [Tag] prefix
+  ✓ buildDisplayTitle strips OLD SKU prefix
+  ✓ buildDisplayTitle moves Set of N to end
+  ✓ buildDisplayTitle truncates at 55 chars
+
+featureGenerator
+  ✓ buildBulletPoints filters dirty characteristics
+  ✓ buildBulletPoints uses clean characteristics
+  ✓ buildDescription filters dimension sentences
+  ✓ buildDescription skips title-repeat sentences
+
+specFormatter
+  ✓ fmtDimensions produces retail string
+  ✓ fmtWeight produces retail string
+  ✓ categoryCode maps correctly
+  ✓ sceneCode maps correctly
+
+22 tests: 22 passed, 0 failed
+
+EXIT=0 for src/__tests__/normalization.test.ts
+----- src/__tests__/officialDeliveryFee.test.ts -----
+Hybrid official-delivery-fee tests
+  ✓ official extraction: confirmed production SKUs use shippingFee
+  ✓ never-undercharge: maxAmount > shippingFee → uses maxAmount + warns
+  ✓ 8% buffer rounds up to whole dollar
+  ✓ missing fee + no range → no_fee
+  ✓ no row → unavailable(no_row)
+  ✓ non-USD → currency_mismatch
+  ✓ shippingFee null but range present → ok via maxAmount
+  ✓ both-fail patch never touches fee columns (preserves cached fee)
+  ✓ official success patch: correct source, packing null, shipping=fulfillment, buffered charge
+
+9 hybrid official-delivery-fee assertions passed.
+EXIT=0 for src/__tests__/officialDeliveryFee.test.ts
+----- src/__tests__/pickupRules.test.ts -----
+Pickup rule lock tests
+  ✓ pickup time window is exactly "10:00 AM – 2:00 PM"
+  ✓ pickup radius is 100 miles
+  ✓ pickup fee is 0 (free)
+  ✓ pickup business-day offsets are +1 / +4
+  ✓ Wednesday order → earliest +1 / latest +4 business days, and NO same-day pickup
+  ✓ Friday order skips the weekend → earliest is the following Monday
+  ✓ earliest and latest never land on a weekend (Mon–Fri only)
+
+7 pickup-lock assertions passed.
+EXIT=0 for src/__tests__/pickupRules.test.ts
+----- src/__tests__/reviewCoverage.test.ts -----
+review coverage tests
+  ✓ all sellable reviewed → no missing
+  ✓ one unreviewed → returned
+  ✓ empty reviewed set → all sellable missing
+  ✓ rows with empty supplier_product_id are ignored (cannot be keyed)
+  ✓ order + category are preserved on the missing rows
+  ✓ does not treat a reviewed id absent from sellable as missing
+
+6 passed
+EXIT=0 for src/__tests__/reviewCoverage.test.ts
+----- src/__tests__/savedToLiveApply.test.ts -----
+Saved-to-live APPLY decision tests
+  ✓ classifyPublishApply: exit 2 + progress → partial success (not hard stop)
+  ✓ classifyPublishApply: hard-stop token → hardStop, no partial
+  ✓ classifyPublishApply: exit 0 → full success (not partial, not hard)
+  ✓ classifyPublishApply: exit 2 + zero progress → neither partial nor hard
+  ✓ collectLiveAndHeld: 9 live, 1 held due to inventory unknown/0
+  ✓ classifyFeeText: detects creds-missing / no-mapping / hard-stop
+  ✓ maskClientId never reveals full id / secret
+  ✓ deliveryCredsStatus: missing creds → recovery help (no secret)
+  ✓ computeApplyScopes: would_import=0 → import scope empty, 5 publishable, B062 pre-held
+  ✓ computeApplyScopes: would_import row → import scope; out_of_stock excluded from publish
+  ✓ isEmptyProposedBatch: true for sku_count 0 / empty / missing; false for non-empty
+  ✓ collectPlannerHolds: extracts held candidates with bucket/reasons; excludes proposed
+  ✓ planner-hold merge: planner reason wins over generic DB-derived reason
+
+13 saved-to-live apply assertions passed.
+EXIT=0 for src/__tests__/savedToLiveApply.test.ts
