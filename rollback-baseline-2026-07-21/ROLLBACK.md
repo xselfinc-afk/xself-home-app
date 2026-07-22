@@ -1,7 +1,7 @@
 # Xself Home — Rollback Baseline (pre Commerce-Taxonomy Phase 1)
 
 **Date:** 2026-07-21 · **Purpose:** Restore the current app, source, DB schema, and category behavior exactly if Phase 1 fails.
-**Status:** Capture COMPLETE. Git commit + tag **NOT YET CREATED** — held pending a decision on pre-existing uncommitted work (see §11 + §12).
+**Status:** Capture COMPLETE. Checkpoint commit `f830a00d` + annotated tag `xself-home-pre-commerce-taxonomy-phase1-2026-07-21` CREATED and pushed (baseline package only; the `NativeProductAdCard.tsx` edit and 102 unrelated untracked files intentionally excluded per decision). See §8–§9.
 
 ---
 
@@ -91,10 +91,10 @@ db/schema/columns.txt  indexes.txt  triggers.txt  functions_list.txt  rls_polici
 ```
 
 ## 8. New baseline commit hash
-**PENDING** — not created (held per §12). When approved, will be the checkpoint commit on `fix/quoted-price-buynow-checkout`.
+**`f830a00dd6b0234986e2b688e07cd7508983f5cc`** (`f830a00d`) on branch `fix/quoted-price-buynow-checkout`, message `chore: checkpoint before commerce taxonomy phase 1`. Contains ONLY the `rollback-baseline-2026-07-21/` package (0 files outside it).
 
 ## 9. Git tag
-**PENDING** — planned annotated tag `xself-home-pre-commerce-taxonomy-phase1-2026-07-21` (name confirmed free). Target TBD by the §12 decision.
+**`xself-home-pre-commerce-taxonomy-phase1-2026-07-21`** (annotated) → targets `f830a00dd6b0234986e2b688e07cd7508983f5cc`. Pushed to origin. (Pre-existing tags untouched; no force-push, no history rewrite.)
 
 ## 10. Exact rollback procedure
 
@@ -129,5 +129,5 @@ db/schema/columns.txt  indexes.txt  triggers.txt  functions_list.txt  rls_polici
 5. **DB export is logical, not a physical snapshot** — pairs with Supabase PITR; ensure PITR window covers the Phase-1 work period.
 6. **`normalize_supplier_products` DB function exists** — relationship to the TS `scripts/normalizeProducts.ts` pipeline is unconfirmed **[Needs Verification]**; confirm which is authoritative before Phase-1 DB changes.
 
-## 12. Decision required before creating the checkpoint (§5 of the task)
-The worktree contains unrelated/ambiguous uncommitted work. Choose how to establish the recovery point (see chat). Nothing will be committed, tagged, reset, or stashed until you decide.
+## 12. Decision (RESOLVED 2026-07-21)
+Decision: **commit the baseline package only, then tag; push commit + tag to origin.** Executed — the `NativeProductAdCard.tsx` edit and all 102 unrelated untracked files (`wiki/`, `dist/`, GIGA/inventory `scripts/`, `supabase/` functions+migrations, `docs/`, one test) were left exactly as-is and were NOT included in the checkpoint. `dist/` remains un-gitignored (risk §11.2, deferred). No reset/stash performed.
