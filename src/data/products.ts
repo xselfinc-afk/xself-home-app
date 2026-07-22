@@ -40,6 +40,20 @@ export interface CategoryPath {
   level2?: string;  // e.g. "TV Stand", "Sofa", "Dining Chair"
 }
 
+// ─── Commerce taxonomy (Phase 1) ───────────────────────────────────────────────
+// Canonical Department → Product Type → Room(s) classification produced by
+// src/utils/commerceTaxonomy.ts. Attached to Product only when the
+// COMMERCE_TAXONOMY_ENABLED flag is on (default OFF in Phase 1), so it is purely
+// additive and consumed by nothing until Phase 2. Distinct from the legacy
+// categoryPath, which is left untouched.
+export interface CommerceClassification {
+  department: string;   // stable slug — top-level merchandising department (e.g. "furniture", "bathroom")
+  category: string;     // stable slug — customer-facing category within the department (e.g. "bedroom-furniture")
+  productType: string;  // stable slug — canonical product type (e.g. "dresser")
+  rooms: string[];      // stable room slugs this product suits (e.g. ["bedroom"]; may be empty)
+  // Unclassifiable products use the "needs-review" sentinel at every level — never a silent "Other".
+}
+
 // ─── Product ─────────────────────────────────────────────────────────────────
 
 export interface Product {

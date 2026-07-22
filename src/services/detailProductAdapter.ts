@@ -5,6 +5,8 @@ import { cleanTitle, toShortTitle, buildDescription, buildBulletPoints, removeSp
 import { collectImages } from './imageSelector';
 export { collectImages };
 import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
+import { classifyCommerce } from '../utils/commerceTaxonomy';
+import { COMMERCE_TAXONOMY_ENABLED } from '../config/commerceTaxonomy';
 import { sourceUrl } from '../utils/imageSource';
 import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
 import {
@@ -363,5 +365,11 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     });
   }
 
-  return { ...base, categoryPath, tags };
+  // Phase 1 (flag-gated, default OFF): attach the canonical Department →
+  // Product Type → Room classification. When the flag is off this is undefined
+  // and the returned object is identical to pre-Phase-1 — legacy categoryPath is
+  // untouched in both states, and nothing in the UI consumes `commerce` yet.
+  const commerce = COMMERCE_TAXONOMY_ENABLED ? classifyCommerce(base) : undefined;
+
+  return { ...base, categoryPath, tags, ...(commerce ? { commerce } : {}) };
 }
