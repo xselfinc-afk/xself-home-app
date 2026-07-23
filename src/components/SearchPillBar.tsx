@@ -9,19 +9,22 @@
  */
 
 import React from 'react';
-import { View, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 type Props = {
   children: React.ReactNode;
   rightSlot: React.ReactNode;
   onPress?: () => void;
+  /** Optional container override. Home widens/heightens/rounds its own instance to
+   *  align with the Hero; Discover passes nothing and renders unchanged. */
+  containerStyle?: StyleProp<ViewStyle>;
 };
 
-export default function SearchPillBar({ children, rightSlot, onPress }: Props) {
+export default function SearchPillBar({ children, rightSlot, onPress, containerStyle }: Props) {
   if (onPress) {
     return (
-      <TouchableOpacity style={styles.pill} activeOpacity={0.9} onPress={onPress}>
+      <TouchableOpacity style={[styles.pill, containerStyle]} activeOpacity={0.9} onPress={onPress}>
         <Ionicons name="search-outline" size={18} color="#6B7280" />
         {children}
         <View style={styles.divider} />
@@ -30,7 +33,7 @@ export default function SearchPillBar({ children, rightSlot, onPress }: Props) {
     );
   }
   return (
-    <View style={styles.pill}>
+    <View style={[styles.pill, containerStyle]}>
       <Ionicons name="search-outline" size={18} color="#6B7280" />
       {children}
       <View style={styles.divider} />

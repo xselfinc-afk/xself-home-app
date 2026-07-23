@@ -28,7 +28,9 @@ import { LIST_SELECT } from './src/services/detailProductAdapter';
 import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
 import { HeroBanner } from './src/components/HeroBanner';
-import { selectHeroImage } from './src/utils/heroImageSelector';
+// Fixed Home Hero image — the approved sofa (prototype v4 PH[0]); deterministic,
+// never randomized, no product-data dependency, identical across launches/reloads.
+const HOME_HERO_IMAGE = require('./assets/products/sofa-linen-01/1.jpg');
 import { loadHomeSectionTitles, HomeSectionTitles } from './src/services/homeContentService';
 import { CartProvider, useCart, CartItem } from './src/context/CartContext';
 import { defaultCartItem } from './src/utils/cartItem';
@@ -59,7 +61,8 @@ import OrderSuccessScreen from './src/screens/OrderSuccessScreen';
 import CollectionScreen from './src/screens/CollectionScreen';
 // Phase 2 Commerce Taxonomy navigation (flag-gated; default OFF preserves legacy Home/Discover).
 import { COMMERCE_TAXONOMY_NAVIGATION_ENABLED } from './src/config/commerceTaxonomy';
-import HomeShoppingEntry from './src/components/commerce/HomeShoppingEntry';
+import { BrowseAllCategoriesCard } from './src/components/commerce/HomeShoppingEntry';
+import HomeShopYourWay from './src/components/commerce/HomeShopYourWay';
 import CommerceBrowseScreen from './src/screens/commerce/CommerceBrowseScreen';
 import CommerceResultsScreen from './src/screens/commerce/CommerceResultsScreen';
 import { getCachedDelivery } from './src/utils/deliveryEligibility';
@@ -550,10 +553,6 @@ function HomeScreen({ navigation }) {
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [hasCache, setHasCache] = useState(false);
   const renderStartRef = useRef(Date.now());
-  const heroSeenRef = useRef<{ productIds: string[]; categories: string[] }>({
-    productIds: [],
-    categories: [],
-  });
 
   const { scoreProduct, trackClick } = useRecommendations();
 
@@ -766,26 +765,8 @@ function HomeScreen({ navigation }) {
     navigation.navigate('ProductDetail', { product: item });
   };
 
-  // Best hero image — anti-repeat + light randomness from top-3 candidates
-  const heroImageResult = useMemo(() => {
-    const seen = heroSeenRef.current;
-    const opts = {
-      excludeProductIds: seen.productIds,
-      excludeCategories: seen.categories,
-      randomizeTopN: 3,
-    };
-    const result =
-      selectHeroImage(withImages, { ...opts, preferredCategory: 'Living Room' }) ??
-      selectHeroImage(withImages, { ...opts, preferredCategory: 'Dining & Kitchen' }) ??
-      selectHeroImage(withImages, { ...opts, preferredCategory: 'Storage' }) ??
-      selectHeroImage(withImages, { randomizeTopN: 5 });
-
-    if (result) {
-      if (result.productId) seen.productIds = [...seen.productIds, result.productId];
-      if (result.category)  seen.categories = [...seen.categories, result.category];
-    }
-    return result;
-  }, [withImages]);
+  // Home Hero image is a FIXED approved asset (HOME_HERO_IMAGE) — no random/rotating
+  // selector and no product-data dependency, so it is identical on every launch/reload.
 
   // Max discount % across all products — drives hero subtitle. Reads
   // adapter-produced `discountPercent` (PRODUCT_DISPLAY_RULES.md §1.3) so
@@ -800,8 +781,12 @@ function HomeScreen({ navigation }) {
 
   const HomeHeader = (
     <>
+      {/* Xself Home wordmark — brand mark; scrolls naturally with Home (not sticky), left-aligned. */}
+      <Text style={styles.homeWordmark}>Xself Home</Text>
+
       {/* Search pill */}
       <SearchPillBar
+        containerStyle={styles.homeSearchPill}
         onPress={() => navigation.navigate('Search')}
         rightSlot={
           <TouchableOpacity
@@ -819,20 +804,33 @@ function HomeScreen({ navigation }) {
           </TouchableOpacity>
         }
       >
-        <Text style={styles.searchPillPlaceholder}>Search Xself</Text>
+        <Text style={styles.searchPillPlaceholder}>Search furniture, rooms, styles...</Text>
       </SearchPillBar>
 
       {/* Hero banner */}
       <HeroBanner
         variant="TEXT_LEFT"
-        title="Spring Sale"
-        subtitle={maxDiscount > 0 ? `Up to ${maxDiscount}% Off Selected Furniture` : 'Up to 30% Off Selected Furniture'}
-        ctaText="Shop Deals"
-        image={heroImageResult?.uri}
-        imagePosition={heroImageResult?.position ?? 'right'}
+        title={'Make room for\nwhat matters'}
+        subtitle={maxDiscount > 0 ? `Selected pieces up to ${maxDiscount}% off` : 'Selected pieces on sale now'}
+        ctaText="Explore the collection"
+        imageSource={HOME_HERO_IMAGE}
+        heightRatio={0.80}
         useSoftBlur={false}
-        onPress={() => navigation.navigate('Collection', { key: 'spring-sale' })}
+        onPress={() => navigation.navigate('CommerceBrowse', { level: 'department', department: 'furniture' })}
       />
+
+      {/* Commerce discovery modules (Phase 2.5, navigation flag ON) — STABLE upper-page
+          placement in the list HEADER, directly after the hero and before the curated
+          rails, so product pagination (displayCount) never displaces them. Two modules:
+          taxonomy doorway ("Browse all categories") → intent-led "Shop your way". The
+          redundant "Shop by department" rail was removed — its destinations live in Browse
+          all categories. Legacy "Shop by Category" circles still render in the footer when the flag is OFF. */}
+      {COMMERCE_TAXONOMY_NAVIGATION_ENABLED && (
+        <>
+          <BrowseAllCategoriesCard navigation={navigation} />
+          <HomeShopYourWay navigation={navigation} />
+        </>
+      )}
 
       {/* New Arrivals */}
       {newArrivals.length > 0 && (
@@ -930,9 +928,11 @@ function HomeScreen({ navigation }) {
         }}
         ListFooterComponent={() => (
           COMMERCE_TAXONOMY_NAVIGATION_ENABLED ? (
-            /* Phase 2 Home browse modules (flag ON) — canonical "Browse all categories"
-               Commerce doorway + a real department preview. Legacy circles render when OFF. */
-            <HomeShoppingEntry navigation={navigation} />
+            /* Phase 2.5 — the Commerce entry now lives in the list HEADER (stable, above the
+               paginated grid). The grid's contentContainerStyle paddingBottom:100 already
+               clears the floating tab bar, so the footer is empty when the nav flag is ON.
+               Legacy "Shop by Category" circles still render below when the flag is OFF. */
+            null
           ) : (
           <>
             {/* Shop by Category — bottom discovery module */}
@@ -3487,6 +3487,8 @@ const styles = StyleSheet.create({
 
   // Wayfair-style compact pill search (shared)
   searchPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 999, height: 44, paddingLeft: 14, paddingRight: 8, marginHorizontal: 16, marginTop: 8, marginBottom: 4, gap: 8, borderWidth: 1, borderColor: 'rgba(0,0,0,0.07)' },
+  homeWordmark: { fontFamily: Platform.select({ ios: 'Georgia', default: 'serif' }), fontSize: 26, lineHeight: 31, fontWeight: '600', color: '#1C1917', marginHorizontal: 16, marginTop: 2, marginBottom: 6 },
+  homeSearchPill: { marginHorizontal: 6, height: 56, borderRadius: 20 },
   searchPillPlaceholder: { flex: 1, color: '#9CA3AF', fontSize: 15 },
   searchPillInput: { flex: 1, paddingVertical: 0, fontSize: 15, color: '#1C1917' },
   searchPillCamBtn: { paddingLeft: 10, paddingRight: 4, paddingVertical: 6, alignItems: 'center', justifyContent: 'center' },

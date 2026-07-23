@@ -30,9 +30,9 @@ const PRODUCTS: Product[] = [
 
 console.log('commerce catalog tests');
 
-it('flags default OFF', () => {
-  assert.equal(COMMERCE_TAXONOMY_NAVIGATION_ENABLED, false);
-  assert.equal(COMMERCE_TAXONOMY_ENABLED, false);
+it('commerce flags are the finalized default (ON)', () => {
+  assert.equal(COMMERCE_TAXONOMY_NAVIGATION_ENABLED, true);
+  assert.equal(COMMERCE_TAXONOMY_ENABLED, true);
 });
 
 it('groups into Department → Category → Product Type with real counts', () => {

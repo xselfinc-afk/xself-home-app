@@ -110,8 +110,8 @@ export default function CommerceResultsScreen({ route, navigation }: any) {
               <Text style={styles.count}>{filtered.length} items</Text>
             </View>
             <View style={styles.tools}>
-              <TouchableOpacity style={styles.tool} activeOpacity={0.8} onPress={() => setSortOpen(true)}><Ionicons name="swap-vertical-outline" size={17} color={INK} /><Text style={styles.toolText}>Sort</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.tool} activeOpacity={0.8} onPress={openFilter}><Ionicons name="options-outline" size={17} color={INK} /><Text style={styles.toolText}>Filters</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.tool} activeOpacity={0.8} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }} onPress={() => setSortOpen(true)}><Ionicons name="swap-vertical-outline" size={17} color={INK} /><Text style={styles.toolText}>Sort</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.tool} activeOpacity={0.8} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }} onPress={openFilter}><Ionicons name="options-outline" size={17} color={INK} /><Text style={styles.toolText}>Filters</Text></TouchableOpacity>
             </View>
           </View>
         }

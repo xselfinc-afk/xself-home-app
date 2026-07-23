@@ -128,7 +128,7 @@ export default function CommerceBrowseScreen({ route, navigation }: any) {
             </TouchableOpacity>
           ))}
         </View>
-        <Text style={styles.sectionTitle}>Browse by product</Text>
+        <Text style={styles.sectionTitle}>Shop by product type</Text>
         <View style={styles.rows}>
           {topTypes.map(t => (
             <TouchableOpacity key={t.id} style={styles.row} activeOpacity={0.7} onPress={() => openResults({ department: dept.id, category: (t as any).category, productType: t.id })}>
@@ -149,7 +149,7 @@ export default function CommerceBrowseScreen({ route, navigation }: any) {
   return (
     <ScrollView style={styles.container} contentContainerStyle={bottomPad} showsVerticalScrollIndicator={false}>
       <Header title={cat.label} sub={`${cat.count} items`} parent={dept.label} />
-      <Text style={styles.sectionTitle}>Browse by product</Text>
+      <Text style={styles.sectionTitle}>Shop by product type</Text>
       <View style={styles.rows}>
         {cat.types.map(t => (
           <TouchableOpacity key={t.id} style={styles.row} activeOpacity={0.7} onPress={() => openResults({ department: dept.id, category: cat.id, productType: t.id })}>
@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
   h1: { fontSize: 24, fontWeight: '700', color: INK, letterSpacing: -0.3 },
   sub: { fontSize: 13, color: SECONDARY, marginTop: 2 },
   sectionTitle: { fontSize: 18, fontWeight: '700', color: INK, marginTop: 20, marginBottom: 10, marginHorizontal: 20 },
-  deptBlock: { marginTop: 16 },
+  deptBlock: { marginTop: 24 },
   deptHead: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18, marginBottom: 8 },
   deptName: { fontSize: 18, fontWeight: '700', color: INK, flex: 1 },
   deptCount: { fontSize: 12, color: MUTED, marginRight: 4 },

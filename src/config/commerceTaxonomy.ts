@@ -14,7 +14,7 @@
  *
  * Rollback anchor: git tag xself-home-pre-commerce-taxonomy-phase1-2026-07-21.
  */
-export const COMMERCE_TAXONOMY_ENABLED = false;
+export const COMMERCE_TAXONOMY_ENABLED = true;
 
 /**
  * Commerce Taxonomy — Phase 2 NAVIGATION feature flag.
@@ -35,4 +35,4 @@ export const COMMERCE_TAXONOMY_ENABLED = false;
  * may promote it to a remote flag (home_content_config, screen 'taxonomy').
  * Rollback anchor: git tag xself-home-commerce-taxonomy-phase2-design-v1.
  */
-export const COMMERCE_TAXONOMY_NAVIGATION_ENABLED = false;
+export const COMMERCE_TAXONOMY_NAVIGATION_ENABLED = true;
