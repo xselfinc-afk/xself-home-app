@@ -57,6 +57,11 @@ import EarnScreen from './src/screens/EarnScreen';
 import CheckoutScreen from './src/screens/CheckoutScreen';
 import OrderSuccessScreen from './src/screens/OrderSuccessScreen';
 import CollectionScreen from './src/screens/CollectionScreen';
+// Phase 2 Commerce Taxonomy navigation (flag-gated; default OFF preserves legacy Home/Discover).
+import { COMMERCE_TAXONOMY_NAVIGATION_ENABLED } from './src/config/commerceTaxonomy';
+import HomeShoppingEntry from './src/components/commerce/HomeShoppingEntry';
+import CommerceBrowseScreen from './src/screens/commerce/CommerceBrowseScreen';
+import CommerceResultsScreen from './src/screens/commerce/CommerceResultsScreen';
 import { getCachedDelivery } from './src/utils/deliveryEligibility';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
@@ -924,6 +929,11 @@ function HomeScreen({ navigation }) {
           );
         }}
         ListFooterComponent={() => (
+          COMMERCE_TAXONOMY_NAVIGATION_ENABLED ? (
+            /* Phase 2 Home browse modules (flag ON) — canonical "Browse all categories"
+               Commerce doorway + a real department preview. Legacy circles render when OFF. */
+            <HomeShoppingEntry navigation={navigation} />
+          ) : (
           <>
             {/* Shop by Category — bottom discovery module */}
             <View style={styles.homeSectionHeader}>
@@ -970,6 +980,7 @@ function HomeScreen({ navigation }) {
               })}
             </ScrollView>
           </>
+          )
         )}
       />
     </View>
@@ -3116,6 +3127,10 @@ export default function App() {
           <Stack.Screen name="Main" component={TabNavigator} />
           <Stack.Screen name="ProductDetail" component={ProductDetailScreen} />
           <Stack.Screen name="Collection" component={CollectionScreen} />
+          {/* Phase 2 commerce taxonomy browse/results — registered always (harmless when
+              not navigated to); only reachable via the flag-gated Home/Discover entries. */}
+          <Stack.Screen name="CommerceBrowse" component={CommerceBrowseScreen} />
+          <Stack.Screen name="CommerceResults" component={CommerceResultsScreen} />
           <Stack.Screen name="Checkout" component={CheckoutScreen} />
           <Stack.Screen name="OrderSuccess" component={OrderSuccessScreen} />
           <Stack.Screen name="Chat" component={ChatScreen} />
