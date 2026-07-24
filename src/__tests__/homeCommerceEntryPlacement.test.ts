@@ -7,7 +7,7 @@
  * Run: npx tsx src/__tests__/homeCommerceEntryPlacement.test.ts   (from repo root)
  *
  * Proves (per Phase 2.5 spec):
- *   - Xself Home wordmark renders before Search; correct placeholder; camera + handler kept.
+ *   - Xself wordmark renders before Search; correct placeholder; camera + handler kept.
  *   - Browse all categories → Shop your way → New This Season, in that order; Shop by department removed.
  *   - All three sit in the stable HEADER (above ListFooterComponent and pagination).
  *   - Pagination does not gate the modules; nav flag gates them; legacy footer preserved.
@@ -33,9 +33,9 @@ const iEndReach = idx('onEndReached');
 
 console.log('home composition tests (Phase 2.5)');
 
-it('1. Xself Home wordmark renders before Search', () => {
+it('1. Xself wordmark renders before Search', () => {
   assert.ok(iWordmark >= 0, 'wordmark present');
-  assert.ok(src.includes('>Xself Home<'), 'wordmark text present');
+  assert.ok(src.includes('>Xself<'), 'wordmark text present');
   assert.ok(iSearch >= 0 && iWordmark < iSearch, 'wordmark is above the search field');
 });
 

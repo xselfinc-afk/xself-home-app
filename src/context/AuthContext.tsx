@@ -16,6 +16,12 @@ type AuthCtx = {
   session: Session | null;
   isGuest: boolean;
   /**
+   * True once cold-start session restoration has resolved. The root gate renders
+   * nothing (native splash stays held) until this flips true, so it never shows the
+   * wrong first screen before we know whether a persisted session exists.
+   */
+  authReady: boolean;
+  /**
    * Step 1: send OTP to the given email via Supabase Auth.
    * Returns { error } — null on success, message string on failure.
    */
@@ -47,13 +53,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isGuest, setIsGuest] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
 
   // ── Session restore + live auth state + magic link handler ────────────────
   useEffect(() => {
-    // Restore persisted session on cold start; default to guest when no session exists
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      if (s) { applySession(s); } else { setIsGuest(true); }
-    }).catch(() => { setIsGuest(true); });
+    // Restore persisted session on cold start. If a session exists → authenticated.
+    // If none exists → remain NEITHER authenticated NOR guest (guest is now an explicit
+    // choice), so the root gate shows the standalone LoginEntry. `authReady` flips true
+    // once this resolves (success or failure), releasing the native splash.
+    supabase.auth.getSession()
+      .then(({ data: { session: s } }) => { if (s) applySession(s); })
+      .catch(() => {})
+      .finally(() => setAuthReady(true));
 
     // Keep in sync with Supabase session lifecycle (token refresh, sign-out)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
@@ -145,7 +156,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
-    setIsGuest(true);
+    // Explicit sign-out returns to the standalone LoginEntry (NOT silent guest):
+    // user=null + isGuest=false makes the root gate unmount Main and show LoginEntry.
+    setIsGuest(false);
   };
 
   const deleteAccount = async (): Promise<{ error: string | null }> => {
@@ -164,12 +177,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
-    setIsGuest(true);
+    // Account deleted → return to the standalone LoginEntry (not silent guest).
+    setIsGuest(false);
     return { error: null };
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, isGuest, sendOtp, verifyOtp, continueAsGuest, signOut, deleteAccount, updateDisplayName }}>
+    <AuthContext.Provider value={{ user, session, isGuest, authReady, sendOtp, verifyOtp, continueAsGuest, signOut, deleteAccount, updateDisplayName }}>
       {children}
     </AuthContext.Provider>
   );

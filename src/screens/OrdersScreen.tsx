@@ -128,7 +128,7 @@ export default function OrdersScreen({ navigation }: any) {
     try {
       trackClick();
       await Share.share({
-        message: `I love my ${target.name} from Xself Home! ${getReferralLink(0, 'orders')}`,
+        message: `I love my ${target.name} from Xself! ${getReferralLink(0, 'orders')}`,
       });
     } catch {}
     setShareTarget(null);

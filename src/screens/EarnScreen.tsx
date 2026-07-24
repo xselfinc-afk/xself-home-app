@@ -29,7 +29,7 @@ export default function EarnScreen() {
     try {
       trackClick();
       await Share.share({
-        message: `I love my ${product.name} from Xself Home! Check it out: ${getReferralLink(product.id, 'earn_screen')}`,
+        message: `I love my ${product.name} from Xself! Check it out: ${getReferralLink(product.id, 'earn_screen')}`,
       });
     } catch {}
   };

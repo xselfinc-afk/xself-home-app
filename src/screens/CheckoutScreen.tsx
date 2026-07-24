@@ -1290,7 +1290,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   applePay: {
                     cartItems: [
                       {
-                        label: 'Xself Home',
+                        label: 'Xself',
                         amount: total.toFixed(2),
                         paymentType: PlatformPay.PaymentType.Immediate,
                       },

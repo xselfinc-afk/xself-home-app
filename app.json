@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Xself Home",
+    "name": "Xself",
     "slug": "xself-home",
     "scheme": "xselfhome",
     "version": "1.0.12",
@@ -8,9 +8,9 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/splash-clean.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0F766E"
+      "image": "./assets/splash/splash-screen.jpg",
+      "resizeMode": "cover",
+      "backgroundColor": "#222F42"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -49,8 +49,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Xself Home to access your photos to search similar products.",
-          "cameraPermission": "Allow Xself Home to use your camera to search similar products."
+          "photosPermission": "Allow Xself to access your photos to search similar products.",
+          "cameraPermission": "Allow Xself to use your camera to search similar products."
         }
       ],
       "expo-secure-store",

@@ -45,13 +45,13 @@ import ConciergeTopBanner from './src/components/ConciergeTopBanner';
 import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
 import mobileAds from 'react-native-google-mobile-ads';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
-import { isHomeReady, markHomeReady, onHomeReady } from './src/services/bootGate';
+import { markHomeReady } from './src/services/bootGate';
 import { fetchCartPriceUpdates } from './src/services/cartPriceService';
 import InboxScreen from './src/screens/InboxScreen';
 import SupportScreen from './src/screens/SupportScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProductConversationScreen from './src/screens/ProductConversationScreen';
-import { supabase, supabaseConfigured } from './src/lib/supabase';
+import { supabase } from './src/lib/supabase';
 import { adaptStandardizedRow } from './src/services/detailProductAdapter';
 import { isGoodFitForFeatured } from './src/services/imageRatioCache';
 import OrdersScreen from './src/screens/OrdersScreen';
@@ -63,6 +63,7 @@ import CollectionScreen from './src/screens/CollectionScreen';
 import { COMMERCE_TAXONOMY_NAVIGATION_ENABLED } from './src/config/commerceTaxonomy';
 import { BrowseAllCategoriesCard } from './src/components/commerce/HomeShoppingEntry';
 import HomeShopYourWay from './src/components/commerce/HomeShopYourWay';
+import AuthEntryView from './src/components/AuthEntryView';
 import CommerceBrowseScreen from './src/screens/commerce/CommerceBrowseScreen';
 import CommerceResultsScreen from './src/screens/commerce/CommerceResultsScreen';
 import { getCachedDelivery } from './src/utils/deliveryEligibility';
@@ -234,303 +235,14 @@ const BottomGradient = () => (
   />
 );
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// (EMAIL_RE moved into src/components/AuthEntryView.tsx with the extracted login UI.)
 
 function SignInEntryScreen({ navigation }) {
-  const { sendOtp, verifyOtp, continueAsGuest } = useAuth();
-  const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'email' | 'otp'>('email');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [emailKey, setEmailKey] = useState(0);
-  const [resendCooldown, setResendCooldown] = useState(0);
-  const [otpError, setOtpError] = useState(false);
-
-  const emailValid = EMAIL_RE.test(email.trim());
-  const otpRef = useRef<any>(null);
-  const scrollRef = useRef<ScrollView>(null);
-  const stepAnim = useRef(new Animated.Value(1)).current;
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-  const cooldownRef = useRef<any>(null);
-
-  // Clear cooldown interval on unmount
-  useEffect(() => {
-    return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
-  }, []);
-
-  // Focus hidden OTP input when step becomes 'otp' (after fade-in completes)
-  useEffect(() => {
-    if (step === 'otp') {
-      const t = setTimeout(() => otpRef.current?.focus(), 320);
-      return () => clearTimeout(t);
-    }
-  }, [step]);
-
-  const startCooldown = (seconds = 30) => {
-    if (cooldownRef.current) clearInterval(cooldownRef.current);
-    setResendCooldown(seconds);
-    cooldownRef.current = setInterval(() => {
-      setResendCooldown(prev => {
-        if (prev <= 1) { clearInterval(cooldownRef.current); cooldownRef.current = null; return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-  };
-
-  const fadeTransition = (callback: () => void) => {
-    Animated.timing(stepAnim, { toValue: 0, duration: 140, useNativeDriver: true }).start(() => {
-      callback();
-      Animated.timing(stepAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
-    });
-  };
-
-  const shakeOtp = () => {
-    setOtpError(true);
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -7, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 7, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start(() => setTimeout(() => setOtpError(false), 1600));
-  };
-
-  const handleContinue = async () => {
-    if (!emailValid || loading) return;
-    setLoading(true);
-    setError(null);
-    const { error: err } = await sendOtp(email.trim().toLowerCase());
-    setLoading(false);
-    if (err) { setError('Failed to send email. Try again.'); return; }
-    startCooldown(30);
-    fadeTransition(() => setStep('otp'));
-  };
-
-  const handleVerify = async () => {
-    if (otp.length < 6 || loading) return;
-    setLoading(true);
-    setError(null);
-    const { error: err } = await verifyOtp(email.trim().toLowerCase(), otp);
-    setLoading(false);
-    if (err) { setError('Invalid or expired code. Please try again.'); shakeOtp(); return; }
-    navigation.replace('Main');
-  };
-
-  const handleResend = async () => {
-    if (loading || resendCooldown > 0) return;
-    setLoading(true);
-    setError(null);
-    const { error: err } = await sendOtp(email.trim().toLowerCase());
-    setLoading(false);
-    startCooldown(30); // always re-enter cooldown — success or fail
-    if (err) {
-      setError("We couldn't send a new code right now. Please wait a moment and try again.");
-    }
-  };
-
-  const handleChangeEmail = () => {
-    fadeTransition(() => {
-      setEmail('');
-      setOtp('');
-      setError(null);
-      setLoading(false);
-      setOtpError(false);
-      setStep('email');
-      setEmailKey(k => k + 1);
-    });
-  };
-
-  const handleGuest = () => {
-    continueAsGuest();
-    navigation.replace('Main');
-  };
-
-  const stepTitle = step === 'email' ? 'Sign in to Xself Home' : 'Check your email';
-  const stepSubtitle = step === 'email'
-    ? 'Save favorites, track orders, and unlock member rewards.'
-    : `We sent a 6-digit code to\n${email.trim().toLowerCase()}`;
-
-  return (
-    <View style={{ flex: 1 }}>
-      {/* Full-screen background image */}
-      <Image
-        source={{ uri: variantUrl('https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1200', { width: 1200 }) }}
-        style={StyleSheet.absoluteFillObject}
-        contentFit="cover"
-        cachePolicy="memory-disk"
-        transition={150}
-      />
-      {/* Teal overlay — 50% opacity so image stays visible */}
-      <View style={[StyleSheet.absoluteFillObject, { backgroundColor: '#0F766E', opacity: 0.48 }]} />
-      <SafeAreaView style={{ flex: 1 }}>
-      <StatusBar barStyle="light-content" />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <ScrollView
-          ref={scrollRef}
-          contentContainerStyle={styles.signInWrap}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Logo above card */}
-          <View style={styles.signInLogoWrap}>
-            <Image source={require('./assets/splash-clean.png')} style={styles.signInLogo} contentFit="contain" />
-          </View>
-
-          <View style={styles.signInCard}>
-            <Animated.View style={{ opacity: stepAnim }}>
-              <Text style={styles.signInTitle}>{stepTitle}</Text>
-              <Text style={styles.signInSubtitle}>{stepSubtitle}</Text>
-
-              {step === 'email' ? (
-                <>
-                  {!supabaseConfigured && __DEV__ && (
-                    <View style={styles.configWarning}>
-                      <Ionicons name="warning-outline" size={13} color="#92400E" />
-                      <Text style={styles.configWarningText}>
-                        Add credentials to .env and restart: npx expo start --clear
-                      </Text>
-                    </View>
-                  )}
-
-                  <View style={[styles.signInInputRow, !supabaseConfigured && { opacity: 0.4 }]}>
-                    <Ionicons name="mail-outline" size={18} color="#6B7280" />
-                    <TextInput
-                      key={emailKey}
-                      style={styles.signInInput}
-                      placeholder="Email address"
-                      placeholderTextColor="#9CA3AF"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      keyboardType="email-address"
-                      editable={supabaseConfigured}
-                      value={email}
-                      onChangeText={t => { setEmail(t); setError(null); }}
-                      returnKeyType="done"
-                      onSubmitEditing={handleContinue}
-                    />
-                  </View>
-
-                  {supabaseConfigured && error ? (
-                    <Text style={styles.signInError}>{error}</Text>
-                  ) : null}
-
-                  <TouchableOpacity
-                    style={[styles.primaryBtn, (!emailValid || loading || !supabaseConfigured) && { opacity: 0.4 }]}
-                    onPress={handleContinue}
-                    disabled={!emailValid || loading || !supabaseConfigured}
-                  >
-                    {loading
-                      ? <ActivityIndicator color="white" size="small" />
-                      : <Text style={styles.primaryBtnText}>Continue</Text>}
-                  </TouchableOpacity>
-
-                  <View style={styles.signInDivider}>
-                    <View style={styles.signInDividerLine} />
-                    <Text style={styles.signInDividerText}>or</Text>
-                    <View style={styles.signInDividerLine} />
-                  </View>
-
-                  <TouchableOpacity onPress={handleGuest} style={styles.guestBtn}>
-                    <Text style={styles.guestBtnText}>Continue as Guest</Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  {/* 6-slot segmented OTP display */}
-                  <Animated.View style={[styles.otpBoxRow, { transform: [{ translateX: shakeAnim }] }]}>
-                    {Array.from({ length: 6 }).map((_, i) => {
-                      const isFilled = i < otp.length;
-                      const isActive = i === otp.length && !loading;
-                      return (
-                        <TouchableOpacity
-                          key={i}
-                          activeOpacity={1}
-                          onPress={() => otpRef.current?.focus()}
-                          style={[
-                            styles.otpBox,
-                            isFilled && styles.otpBoxFilled,
-                            !isFilled && isActive && styles.otpBoxActive,
-                            otpError && styles.otpBoxError,
-                          ]}
-                        >
-                          <Text style={styles.otpBoxText}>{otp[i] ?? ''}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </Animated.View>
-
-                  {/* Hidden input captures keyboard typing, paste, and iOS autofill */}
-                  <TextInput
-                    ref={otpRef}
-                    value={otp}
-                    onChangeText={t => {
-                      const digits = t.replace(/\D/g, '').slice(0, 6);
-                      // Accept a full 6-digit autofill, or incremental changes of ±1 digit
-                      // (normal typing/backspace). Reject drastic drops to avoid false
-                      // state from a failed/partial iOS suggestion tap.
-                      if (digits.length === 6 || Math.abs(digits.length - otp.length) <= 1) {
-                        setOtpError(false);
-                        setError(null);
-                        setOtp(digits);
-                      }
-                    }}
-                    onFocus={() => {
-                      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
-                    }}
-                    keyboardType="number-pad"
-                    textContentType="oneTimeCode"
-                    autoComplete="sms-otp"
-                    maxLength={6}
-                    style={styles.otpHiddenInput}
-                    caretHidden
-                  />
-
-                  {error ? <Text style={styles.signInError}>{error}</Text> : null}
-
-                  <TouchableOpacity
-                    style={[styles.primaryBtn, (otp.length < 6 || loading) && { opacity: 0.4 }]}
-                    onPress={handleVerify}
-                    disabled={otp.length < 6 || loading}
-                  >
-                    {loading
-                      ? <ActivityIndicator color="white" size="small" />
-                      : <Text style={styles.primaryBtnText}>Verify</Text>}
-                  </TouchableOpacity>
-
-                  <View style={styles.otpActionRow}>
-                    <TouchableOpacity
-                      onPress={handleResend}
-                      disabled={loading || resendCooldown > 0}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                      <Text style={[styles.otpActionText, (loading || resendCooldown > 0) && styles.otpActionTextDim]}>
-                        {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend code'}
-                      </Text>
-                    </TouchableOpacity>
-                    <Text style={styles.otpActionSep}>·</Text>
-                    <TouchableOpacity
-                      onPress={handleChangeEmail}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                      <Text style={styles.otpActionText}>Change email</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <Text style={styles.otpSpamHint}>Didn't get it? Check spam or promotions first.</Text>
-                </>
-              )}
-
-              <Text style={styles.signInFinePrint}>
-                By continuing, you agree to our Terms and Privacy Policy.
-              </Text>
-            </Animated.View>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-      </SafeAreaView>
-    </View>
-  );
+  // In-app sign-in route (Account / Checkout / Earn / Support). Reuses the single
+  // AuthEntryView (source of truth) and returns to the guarded workflow after a guest
+  // choice or successful sign-in — preserving the user's original intent. The standalone
+  // startup login renders the same AuthEntryView via the root gate (see RootNavigation).
+  return <AuthEntryView onDone={() => navigation.goBack()} />;
 }
 
 
@@ -781,8 +493,8 @@ function HomeScreen({ navigation }) {
 
   const HomeHeader = (
     <>
-      {/* Xself Home wordmark — brand mark; scrolls naturally with Home (not sticky), left-aligned. */}
-      <Text style={styles.homeWordmark}>Xself Home</Text>
+      {/* Xself wordmark — brand mark; scrolls naturally with Home (not sticky), left-aligned. */}
+      <Text style={styles.homeWordmark}>Xself</Text>
 
       {/* Search pill */}
       <SearchPillBar
@@ -1371,7 +1083,7 @@ function ProductDetailScreen({ route, navigation }) {
 
   const handleShare = async () => {
     try {
-      await Share.share({ message: `Check out ${product.name} - $${displayPrice} on Xself Home!` });
+      await Share.share({ message: `Check out ${product.name} - $${displayPrice} on Xself!` });
     } catch (e) {}
   };
 
@@ -2131,23 +1843,6 @@ function SearchScreen({ navigation, route }) {
         }}
       />
     </SafeAreaView>
-  );
-}
-
-function SplashOverlay({ opacity }: { opacity: Animated.Value }) {
-  return (
-    <Animated.View
-      style={[
-        StyleSheet.absoluteFillObject,
-        { backgroundColor: '#0F766E', alignItems: 'center', justifyContent: 'center', opacity },
-      ]}
-    >
-      <Image
-        source={require('./assets/splash-clean.png')}
-        style={{ width: 160, height: 160, transform: [{ translateY: -40 }] }}
-        contentFit="contain"
-      />
-    </Animated.View>
   );
 }
 
@@ -3029,9 +2724,55 @@ function ConciergeBannerHost() {
   );
 }
 
+function LoginEntryScreen() {
+  // Standalone full-screen startup login — structurally OUTSIDE TabNavigator (no tabs).
+  // No onDone: choosing Guest / signing in changes auth state and the root gate swaps
+  // this navigator for the Main app automatically.
+  return <AuthEntryView />;
+}
+
+// Root auth gate. Renders the standalone LoginEntry (no tab bar) until the user is
+// authenticated OR has explicitly chosen guest; otherwise renders the Main app stack.
+// Holds the native splash until session restoration resolves — no JS splash animation.
+function RootNavigation() {
+  const { user, isGuest, authReady } = useAuth();
+
+  useEffect(() => {
+    if (authReady) SplashScreen.hideAsync().catch(() => {});
+  }, [authReady]);
+
+  if (!authReady) return null; // native iOS Launch Screen stays visible (preventAutoHide)
+
+  const entered = !!user || isGuest;
+
+  return (
+    <NavigationContainer ref={navigationRef}>
+      {entered ? (
+        <Stack.Navigator id="RootStack" initialRouteName="Main" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
+          <Stack.Screen name="Main" component={TabNavigator} />
+          <Stack.Screen name="SignInEntry" component={SignInEntryScreen} />
+          <Stack.Screen name="ProductDetail" component={ProductDetailScreen} />
+          <Stack.Screen name="Collection" component={CollectionScreen} />
+          {/* Phase 2 commerce taxonomy browse/results — registered always (harmless when
+              not navigated to); only reachable via the flag-gated Home/Discover entries. */}
+          <Stack.Screen name="CommerceBrowse" component={CommerceBrowseScreen} />
+          <Stack.Screen name="CommerceResults" component={CommerceResultsScreen} />
+          <Stack.Screen name="Checkout" component={CheckoutScreen} />
+          <Stack.Screen name="OrderSuccess" component={OrderSuccessScreen} />
+          <Stack.Screen name="Chat" component={ChatScreen} />
+          <Stack.Screen name="ProductConversation" component={ProductConversationScreen} />
+          <Stack.Screen name="Support" component={SupportScreen} />
+        </Stack.Navigator>
+      ) : (
+        <Stack.Navigator id="AuthGate" screenOptions={{ headerShown: false } as any}>
+          <Stack.Screen name="LoginEntry" component={LoginEntryScreen} />
+        </Stack.Navigator>
+      )}
+    </NavigationContainer>
+  );
+}
+
 export default function App() {
-  const [showSplash, setShowSplash] = useState(true);
-  const splashOpacity = useRef(new Animated.Value(0)).current;
 
   // Initialise Crisp Chat once at app start. Safe to call on every mount —
   // configure() is idempotent inside the native SDK.
@@ -3062,48 +2803,8 @@ export default function App() {
       });
   }, []);
 
-  useEffect(() => {
-    // Gate the splash-hide on HomeScreen having paintable data (cache or
-    // fresh Supabase payload). Caps the wait at MAX_SPLASH_MS so a fully
-    // offline + uncached cold start still reaches the polished retry state.
-    const MAX_SPLASH_MS = 3000;
-    let cancelled = false;
-
-    const proceed = async () => {
-      if (cancelled) return;
-      await SplashScreen.hideAsync();
-      Animated.timing(splashOpacity, { toValue: 1, duration: 350, useNativeDriver: true }).start();
-      setTimeout(() => {
-        Animated.timing(splashOpacity, { toValue: 0, duration: 400, useNativeDriver: true })
-          .start(() => setShowSplash(false));
-      }, 900);
-    };
-
-    if (isHomeReady()) {
-      proceed();
-      return () => { cancelled = true; };
-    }
-
-    let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      if (cancelled) return;
-      console.warn('[boot] Home data did not arrive within ' + MAX_SPLASH_MS + 'ms — releasing splash anyway');
-      markHomeReady(); // unblock anything else waiting on the gate
-      proceed();
-      timeout = null;
-    }, MAX_SPLASH_MS);
-
-    const unsubscribe = onHomeReady(() => {
-      if (cancelled) return;
-      if (timeout) { clearTimeout(timeout); timeout = null; }
-      proceed();
-    });
-
-    return () => {
-      cancelled = true;
-      if (timeout) clearTimeout(timeout);
-      unsubscribe();
-    };
-  }, []);
+  // (Removed) The custom JS splash gate/animation. The native iOS Launch Screen is now
+  // released by RootNavigation once auth bootstrap resolves — no animated JS splash.
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0F766E' }}>
@@ -3121,23 +2822,7 @@ export default function App() {
       <OrdersProvider>
       <ConversationProvider>
       <ConciergeProvider>
-      <NavigationContainer ref={navigationRef}>
-        <Stack.Navigator id="RootStack" initialRouteName="Main" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
-          <Stack.Screen name="SignInEntry" component={SignInEntryScreen} />
-          <Stack.Screen name="Main" component={TabNavigator} />
-          <Stack.Screen name="ProductDetail" component={ProductDetailScreen} />
-          <Stack.Screen name="Collection" component={CollectionScreen} />
-          {/* Phase 2 commerce taxonomy browse/results — registered always (harmless when
-              not navigated to); only reachable via the flag-gated Home/Discover entries. */}
-          <Stack.Screen name="CommerceBrowse" component={CommerceBrowseScreen} />
-          <Stack.Screen name="CommerceResults" component={CommerceResultsScreen} />
-          <Stack.Screen name="Checkout" component={CheckoutScreen} />
-          <Stack.Screen name="OrderSuccess" component={OrderSuccessScreen} />
-          <Stack.Screen name="Chat" component={ChatScreen} />
-          <Stack.Screen name="ProductConversation" component={ProductConversationScreen} />
-          <Stack.Screen name="Support" component={SupportScreen} />
-        </Stack.Navigator>
-      </NavigationContainer>
+      <RootNavigation />
       <ConciergeBannerHost />
       </ConciergeProvider>
       </ConversationProvider>
@@ -3148,7 +2833,6 @@ export default function App() {
       </RecommendationProvider>
       </AuthProvider>
       </StripeProvider>
-      {showSplash && <SplashOverlay opacity={splashOpacity} />}
       </SafeAreaProvider>
     </View>
   );
