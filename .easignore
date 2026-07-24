@@ -59,14 +59,10 @@ docs/
 wiki/
 reports/
 
-# Local sample product images (~74 MB) — excluded to keep the upload small, EXCEPT
-# the one image App.tsx requires as the Home hero (HOME_HERO_IMAGE). Product images
-# otherwise load from the CDN via variantUrl/originalUrl. Keep only
-# assets/products/sofa-linen-01/1.jpg in the build context; exclude the rest.
-assets/products/*
-!assets/products/sofa-linen-01/
-assets/products/sofa-linen-01/*
-!assets/products/sofa-linen-01/1.jpg
+# Local sample product images (~74 MB) — not required by the app (product images load
+# from the CDN via variantUrl/originalUrl). The Home hero now lives at
+# assets/home/home-hero.jpg (outside this folder), so exclude the whole folder.
+assets/products/
 
 # Loose scraper debug screenshots left in scripts/
 scripts/.giga-*.png

@@ -30,7 +30,7 @@ it('title is capped at two lines (numberOfLines={2}) so it can never render thre
 });
 
 it('Home Hero uses ONE fixed asset source (the approved sofa)', () => {
-  assert.ok(app.includes("require('./assets/products/sofa-linen-01/1.jpg')"), 'fixed sofa asset required');
+  assert.ok(app.includes("require('./assets/home/home-hero.jpg')"), 'fixed hero asset required');
   assert.ok(app.includes('const HOME_HERO_IMAGE ='), 'fixed image constant declared');
   assert.ok(app.includes('imageSource={HOME_HERO_IMAGE}'), 'hero uses the fixed imageSource');
 });

@@ -30,7 +30,7 @@ import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data
 import { HeroBanner } from './src/components/HeroBanner';
 // Fixed Home Hero image — the approved sofa (prototype v4 PH[0]); deterministic,
 // never randomized, no product-data dependency, identical across launches/reloads.
-const HOME_HERO_IMAGE = require('./assets/products/sofa-linen-01/1.jpg');
+const HOME_HERO_IMAGE = require('./assets/home/home-hero.jpg');
 import { loadHomeSectionTitles, HomeSectionTitles } from './src/services/homeContentService';
 import { CartProvider, useCart, CartItem } from './src/context/CartContext';
 import { defaultCartItem } from './src/utils/cartItem';
