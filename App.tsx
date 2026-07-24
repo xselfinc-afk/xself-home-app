@@ -148,53 +148,25 @@ async function uriToBase64(uri: string): Promise<{ base64: string; mimeType: str
 }
 
 /**
- * Sends the image at `uri` to Claude Haiku vision and returns 2–3 furniture
- * search keywords suitable for feeding into matchesSearch().
- * Returns '' if the API key is missing or the call fails.
+ * Sends the image at `uri` to the `image-search` Supabase Edge Function, which
+ * proxies the Claude Haiku vision call server-side. The Anthropic key lives only
+ * as a Supabase secret and is never shipped in the app bundle. Returns 2–3
+ * furniture search keywords for matchesSearch(), or '' if unavailable / on any
+ * failure (preserving the previous graceful-degradation behavior).
  */
 async function extractImageKeywords(uri: string): Promise<string> {
-  const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY ?? '';
-  if (!apiKey) {
-    console.warn('[ImageSearch] EXPO_PUBLIC_ANTHROPIC_API_KEY not set — image search disabled');
-    return '';
-  }
-
   try {
     const { base64, mimeType } = await uriToBase64(uri);
-
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 64,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: mimeType, data: base64 },
-            },
-            {
-              type: 'text',
-              text: 'Identify the furniture or home decor item in this image. Return ONLY 2–3 search keywords that would find similar products in a furniture catalog. Focus on: item type, color, and material if visible. Examples: "white dresser", "modern TV stand", "wood dining chair", "blue sofa". Return ONLY the keywords as a short phrase, nothing else.',
-            },
-          ],
-        }],
-      }),
+    const { data, error } = await supabase.functions.invoke('image-search', {
+      body: { image_base64: base64, media_type: mimeType },
     });
-
-    if (!res.ok) {
-      console.warn('[ImageSearch] API error:', res.status);
+    if (error) {
+      console.warn('[ImageSearch] proxy error:', error.message);
       return '';
     }
-
-    const data = await res.json();
-    const keywords = data?.content?.[0]?.text?.trim() ?? '';
+    const keywords = typeof (data as { keywords?: string } | null)?.keywords === 'string'
+      ? (data as { keywords: string }).keywords.trim()
+      : '';
     console.log('[ImageSearch] generated query:', JSON.stringify(keywords));
     return keywords;
   } catch (err) {
