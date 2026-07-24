@@ -59,9 +59,14 @@ docs/
 wiki/
 reports/
 
-# Unreferenced local sample product images (app loads product images from the
-# CDN via variantUrl/originalUrl; nothing in the app requires these). ~74 MB.
-assets/products/
+# Local sample product images (~74 MB) — excluded to keep the upload small, EXCEPT
+# the one image App.tsx requires as the Home hero (HOME_HERO_IMAGE). Product images
+# otherwise load from the CDN via variantUrl/originalUrl. Keep only
+# assets/products/sofa-linen-01/1.jpg in the build context; exclude the rest.
+assets/products/*
+!assets/products/sofa-linen-01/
+assets/products/sofa-linen-01/*
+!assets/products/sofa-linen-01/1.jpg
 
 # Loose scraper debug screenshots left in scripts/
 scripts/.giga-*.png
