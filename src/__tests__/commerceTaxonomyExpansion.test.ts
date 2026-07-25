@@ -147,4 +147,44 @@ it('real golf club sets & push carts still classify correctly', () => {
   assert.equal(type('Golf Club Set with Shot Tracking'), 'golf-sets');   // 'tracking' must NOT trip 'rack'
 });
 
+// ── Validated GIGA supplier crosswalk (spec category reaches specLc via Product.category) ──
+const clsCat = (name: string, category: string) => classifyCommerce({ name, category, categoryLabel: '' }).productType;
+
+it('Outdoor Bikes crosswalk: authoritative, but exercise/stationary bikes are NOT forced outdoors', () => {
+  assert.equal(clsCat('FKZNPJ 24 Inch Youth', 'Outdoor Bikes'), 'outdoor-bikes');        // weak title → crosswalk
+  assert.notEqual(clsCat('Stationary Exercise Bike', 'Outdoor Bikes'), 'outdoor-bikes'); // guard
+  assert.equal(clsCat('Stationary Exercise Bike', 'Outdoor Bikes'), 'exercise-bikes');
+  assert.equal(clsCat('Recumbent Cycle', 'Outdoor Bikes'), 'exercise-bikes');
+  assert.equal(clsCat('20 Inch Kids Mountain Bike', 'Outdoor Bikes'), 'outdoor-bikes');  // validated real sample
+});
+it('Water Fountains crosswalk: fills weak titles but never resurrects pump/components', () => {
+  assert.equal(clsCat('Decorative Cascading Water Feature', 'Water Fountains'), 'water-fountains'); // weak title → fallback
+  assert.notEqual(clsCat('Replacement Pump for Fountain', 'Water Fountains'), 'water-fountains');
+  assert.equal(clsCat('Replacement Pump for Fountain', 'Water Fountains'), 'needs-review');         // exclude wins over fallback
+});
+it('Step Machines crosswalk: weak stepper title resolves via fallback', () => {
+  assert.equal(clsCat('Home Cardio Climber', 'Step Machines'), 'step-machines');
+});
+it('Statues & Sculptures crosswalk: garden ok; indoor/holiday figurine stays needs-review', () => {
+  assert.equal(clsCat('Large Garden Statue', 'Statues & Sculptures'), 'statues-sculptures');
+  assert.equal(clsCat('Holiday Figurine in Santa Outfit', 'Statues & Sculptures'), 'needs-review');
+  assert.equal(clsCat('Christmas Dog Figurine Statue', 'Statues & Sculptures'), 'needs-review');    // figurine exclude wins over fallback
+});
+it('Treadmills crosswalk: human treadmills ok; pet treadmills stay needs-review', () => {
+  assert.equal(clsCat('Folding Home Treadmill', 'Treadmills'), 'treadmills');
+  assert.equal(clsCat('Quiet Running Machine', 'Treadmills'), 'treadmills');       // weak title → fallback
+  assert.equal(clsCat('Small Dog Treadmill', 'Treadmills'), 'needs-review');       // excludeWord wins over fallback
+});
+it('Golf Sets crosswalk: real sets ok; organizers stay needs-review; push cart unaffected', () => {
+  assert.equal(clsCat('Complete Golf Club Set', 'Golf Sets'), 'golf-sets');
+  assert.equal(clsCat('Golf Bag Organizer Storage Rack', 'Golf Sets'), 'needs-review');
+  assert.equal(clsCat('Premium Wooden Golf Clubs Storage Rack', 'Golf Sets'), 'needs-review'); // excludeWord wins over fallback
+  assert.equal(clsCat('Golf Bag Push Cart', 'Golf Sets'), 'golf-bag-push-carts');              // specific title rule wins
+});
+it('existing furniture SPEC_FALLBACK unaffected by the invariant guard', () => {
+  assert.equal(clsCat('Nondescript Item', 'Cabinets'), 'storage-cabinet');
+  assert.equal(clsCat('Generic Piece', 'Sofas'), 'sofa');
+  assert.equal(clsCat('Plain Unit', 'Nightstands'), 'nightstand');
+});
+
 console.log(`\n${passed} passed`);

@@ -191,6 +191,9 @@ const AUTHORITATIVE_SPEC: Record<string, (nameLc: string) => string> = {
   'full length mirrors': () => 'full-length-mirror',
   'bathroom storage': () => 'bathroom-cabinet',
   'youth, kids & baby furniture': (n) => (n.includes('toy') ? 'toy-box' : 'kids-storage'),
+  // Outdoor Bikes (validated GIGA category) — specific enough to be authoritative, BUT never let a
+  // stationary/exercise/spin/recumbent bike be forced outdoors; defer those to exercise-bikes.
+  'outdoor bikes': (n) => (matchesAny(n, ['exercise bike', 'stationary bike', 'spin bike', 'spinning bike', 'recumbent', 'indoor cycle', 'indoor cycling', 'upright bike']) ? 'exercise-bikes' : 'outdoor-bikes'),
 };
 
 // Title keyword rules, ordered specific → broad. First match wins.
@@ -297,6 +300,14 @@ const SPEC_FALLBACK: Record<string, string> = {
   'office chairs': 'office-chair',
   'bookshelf': 'bookcase',
   'patio seating': 'outdoor-bench',
+  // ── Validated GIGA crosswalk (SPEC_FALLBACK only; title rules + safety excludes win first) ──
+  // The step-4 guard re-checks each target type's title exclude/excludeWord, so pet treadmills,
+  // golf organizers, fountain components, and indoor figurines are NEVER resurrected here.
+  'water fountains': 'water-fountains',
+  'step machines': 'step-machines',
+  'statues & sculptures': 'statues-sculptures',
+  'treadmills': 'treadmills',
+  'golf sets': 'golf-sets',
 };
 
 function matchesAny(text: string, keywords: string[]): boolean {
@@ -338,8 +349,16 @@ function resolveProductTypeId(
     return LABEL_TYPE_MAP[product.categoryLabel];
   }
 
-  // 4. Supplier spec category fallback.
-  if (SPEC_FALLBACK[specLc]) return SPEC_FALLBACK[specLc];
+  // 4. Supplier spec category fallback — INVARIANT: a fallback must never resurrect a type whose
+  //    title safety-exclusion matches this product (excludes always win over the crosswalk).
+  const fb = SPEC_FALLBACK[specLc];
+  if (fb) {
+    const fbRule = TITLE_RULES.find(r => r.type === fb);
+    const fbExcluded =
+      (fbRule?.exclude && matchesAny(nameLc, fbRule.exclude)) ||
+      (fbRule?.excludeWord && matchesAnyWord(nameLc, fbRule.excludeWord));
+    return fbExcluded ? NEEDS_REVIEW : fb;
+  }
 
   // 5. Explicit — never a silent "Other".
   return NEEDS_REVIEW;
