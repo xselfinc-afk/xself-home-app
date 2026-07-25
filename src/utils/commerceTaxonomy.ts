@@ -194,9 +194,12 @@ const AUTHORITATIVE_SPEC: Record<string, (nameLc: string) => string> = {
 };
 
 // Title keyword rules, ordered specific → broad. First match wins.
-// `exclude` (optional): if any exclude token is present the rule is skipped, so
+// `exclude` (optional): if any exclude SUBSTRING is present the rule is skipped, so
 // ambiguous/component items fall through to NEEDS_REVIEW instead of misclassifying.
-const TITLE_RULES: { type: string; kw: string[]; exclude?: string[] }[] = [
+// `excludeWord` (optional): same, but matched on WHOLE words (regex \b) — for short
+// tokens ('pet','cat','rack','stand') that must not substring-match innocent words
+// ('carpet','application','tracking','standard').
+const TITLE_RULES: { type: string; kw: string[]; exclude?: string[]; excludeWord?: string[] }[] = [
   // ── Commerce Semantic Layer expansion (Outdoor Décor + Fitness & Sports) ──
   // Domain-specific multi-word tokens only — NEVER bare 'bike'/'table'/'rack'/'mat'/
   // 'fountain'/'statue' — so these cannot collide with furniture titles. Ordered for
@@ -204,7 +207,8 @@ const TITLE_RULES: { type: string; kw: string[]; exclude?: string[] }[] = [
   // inflatable-paddle-boards before water-sports.
   { type: 'gym-mats',             kw: ['gym mat', 'exercise mat', 'workout mat', 'equipment mat', 'treadmill mat', 'fitness floor mat', 'interlocking gym mat'] },
   { type: 'exercise-bikes',       kw: ['exercise bike', 'stationary bike', 'indoor cycling bike', 'indoor cycle', 'spin bike', 'spinning bike', 'recumbent exercise bike', 'upright exercise bike', 'recumbent bike'] },
-  { type: 'treadmills',           kw: ['treadmill', 'walking pad'] },
+  { type: 'treadmills',           kw: ['treadmill', 'walking pad'],
+    excludeWord: ['dog', 'dogs', 'pet', 'pets', 'puppy', 'puppies', 'canine', 'cat', 'cats', 'kitten', 'kittens'] }, // pet treadmills are not human fitness → NEEDS_REVIEW
   { type: 'elliptical-trainers',  kw: ['elliptical', 'cross trainer'] },
   { type: 'step-machines',        kw: ['stair stepper', 'stair climber', 'mini stepper', 'stepping machine', 'step machine'] },
   { type: 'trampolines',          kw: ['trampoline', 'rebounder'] },
@@ -216,7 +220,8 @@ const TITLE_RULES: { type: string; kw: string[]; exclude?: string[] }[] = [
   { type: 'pool-tables',          kw: ['pool table', 'billiard table', 'billiards table'] },
   { type: 'basketball-hoops',     kw: ['basketball hoop', 'basketball goal', 'basketball system', 'portable basketball'] },
   { type: 'golf-bag-push-carts',  kw: ['golf push cart', 'golf bag cart', 'golf bag push cart', 'golf trolley', 'golf pull cart'] },
-  { type: 'golf-sets',            kw: ['golf set', 'golf club set', 'complete golf set', 'golf clubs', 'junior golf set'] },
+  { type: 'golf-sets',            kw: ['golf set', 'golf club set', 'complete golf set', 'golf clubs', 'junior golf set'],
+    excludeWord: ['organizer', 'organizers', 'storage', 'rack', 'racks', 'holder', 'holders', 'stand', 'cabinet', 'trunk'] }, // golf storage/organizers are not club sets → NEEDS_REVIEW
   { type: 'inflatable-paddle-boards', kw: ['inflatable paddle board', 'inflatable stand up paddle board', 'inflatable sup', 'sup board', 'paddleboard', 'paddle board'] },
   { type: 'kick-scooters',        kw: ['kick scooter', 'push scooter', 'non-electric scooter', 'kids kick scooter'] },
   { type: 'rod-racks',            kw: ['fishing rod rack', 'fishing rod holder', 'fishing pole rack', 'rod storage rack', 'fishing rack'] },
@@ -298,6 +303,13 @@ function matchesAny(text: string, keywords: string[]): boolean {
   return keywords.some(kw => text.includes(kw));
 }
 
+// Whole-word match (regex \b boundaries) for single-word excludes, so short tokens
+// (e.g. 'pet','cat','rack','stand') cannot substring-match innocent words
+// ('carpet','application','tracking','standard') and wrongly drop valid products.
+function matchesAnyWord(text: string, words: string[]): boolean {
+  return words.some(w => new RegExp(`\\b${w}\\b`).test(text));
+}
+
 /** Resolve the canonical Product Type slug, or NEEDS_REVIEW. */
 function resolveProductTypeId(
   product: Pick<Product, 'name' | 'category' | 'categoryLabel'>,
@@ -316,7 +328,9 @@ function resolveProductTypeId(
   //    A rule with `exclude` is skipped when any exclude token is present, so ambiguous
   //    component/indoor items fall through to needs-review instead of misclassifying.
   for (const rule of TITLE_RULES) {
-    if (matchesAny(nameLc, rule.kw) && !(rule.exclude && matchesAny(nameLc, rule.exclude))) return rule.type;
+    if (matchesAny(nameLc, rule.kw)
+        && !(rule.exclude && matchesAny(nameLc, rule.exclude))
+        && !(rule.excludeWord && matchesAnyWord(nameLc, rule.excludeWord))) return rule.type;
   }
 
   // 3. Normalized category_label.

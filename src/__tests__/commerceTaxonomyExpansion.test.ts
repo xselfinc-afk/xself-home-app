@@ -118,4 +118,33 @@ it('filterProducts narrows by the new department / category / product type', () 
   assert.equal(filterProducts(pool, { department: 'outdoor-garden', category: 'outdoor-decor', productType: 'water-fountains' }).length, 1);
 });
 
+// ── Rule correction: pet treadmills & golf storage excludes (word-boundary) ──
+it('pet treadmills are excluded from human treadmills (→ needs-review)', () => {
+  assert.notEqual(type('Small Dog Treadmill'), 'treadmills');
+  assert.notEqual(type('Pet Treadmill for Dogs'), 'treadmills');
+  assert.notEqual(type('Puppy Exercise Treadmill'), 'treadmills');
+  assert.equal(type('Small Dog Treadmill'), 'needs-review');
+  assert.equal(type('2025 New Quiet Smart Pet Treadmill, Adjustable Speed, Perfect for Small/Medium Dogs'), 'needs-review');
+});
+it('human treadmills still classify as treadmills (no substring false-positives)', () => {
+  assert.equal(type('Folding Home Treadmill'), 'treadmills');
+  assert.equal(type('Walking Pad'), 'treadmills');
+  assert.equal(type('Folding Treadmill for Home Gym'), 'treadmills');
+  assert.equal(type('Walking Pad for Home Office'), 'treadmills');
+  assert.equal(type('Treadmill for Carpet Floors'), 'treadmills');       // 'carpet' must NOT trip 'pet'
+  assert.equal(type('Treadmill with Application LCD'), 'treadmills');     // 'application' must NOT trip 'cat'
+});
+it('golf storage/organizers are excluded from golf club sets (→ not golf-sets)', () => {
+  assert.notEqual(type('Golf Bag Organizer Storage Rack'), 'golf-sets');
+  assert.notEqual(type('Golf Club Storage Rack'), 'golf-sets');
+  assert.notEqual(type('Golf Equipment Organizer'), 'golf-sets');
+  assert.notEqual(type('Premium Wooden Golf Clubs Storage Rack Fit 2 Golf Bags'), 'golf-sets'); // real 'golf clubs' match, excluded
+});
+it('real golf club sets & push carts still classify correctly', () => {
+  assert.equal(type('Complete Golf Club Set'), 'golf-sets');
+  assert.equal(type('Junior Golf Set'), 'golf-sets');
+  assert.equal(type('Golf Bag Push Cart'), 'golf-bag-push-carts');
+  assert.equal(type('Golf Club Set with Shot Tracking'), 'golf-sets');   // 'tracking' must NOT trip 'rack'
+});
+
 console.log(`\n${passed} passed`);
