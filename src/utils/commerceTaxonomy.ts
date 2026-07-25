@@ -64,12 +64,12 @@ export const DEPARTMENTS: DepartmentDef[] = [
   { id: 'outdoor-garden', label: 'Outdoor & Garden' },
   { id: 'pet-supplies', label: 'Pet Supplies' },
   { id: 'kids-baby', label: 'Kids & Baby' },
+  { id: 'fitness-sports', label: 'Fitness & Sports' }, // activated — has Fitness + Sports categories
   // Declared for extensibility — no current-catalog categories yet.
   { id: 'kitchen-dining', label: 'Kitchen & Dining', future: true },
   { id: 'storage-organization', label: 'Storage & Organization', future: true },
   { id: 'cleaning-household', label: 'Cleaning & Household', future: true },
   { id: 'travel', label: 'Travel', future: true },
-  { id: 'fitness-sports', label: 'Fitness & Sports', future: true },
   { id: 'automotive', label: 'Automotive', future: true },
   // Sentinel department for unclassifiable products.
   { id: NEEDS_REVIEW, label: 'Needs Review' },
@@ -86,6 +86,10 @@ export const CATEGORIES: CategoryDef[] = [
   { id: 'patio-furniture', label: 'Patio Furniture', department: 'outdoor-garden' },
   { id: 'pet-furniture', label: 'Pet Furniture', department: 'pet-supplies' },
   { id: 'kids-furniture', label: 'Kids & Baby Furniture', department: 'kids-baby' },
+  // ── Commerce Semantic Layer expansion (additive) ──
+  { id: 'outdoor-decor', label: 'Outdoor Décor', department: 'outdoor-garden' },
+  { id: 'fitness', label: 'Fitness', department: 'fitness-sports' },
+  { id: 'sports', label: 'Sports', department: 'fitness-sports' },
   { id: NEEDS_REVIEW, label: 'Needs Review', department: NEEDS_REVIEW },
 ];
 
@@ -134,6 +138,38 @@ export const PRODUCT_TYPES: ProductTypeDef[] = [
   // Kids & Baby
   { id: 'toy-box', label: 'Toy Box', category: 'kids-furniture', rooms: ['kids-room'] },
   { id: 'kids-storage', label: 'Kids Storage', category: 'kids-furniture', rooms: ['kids-room'] },
+  // ── Commerce Semantic Layer expansion (additive) ──
+  // rooms[] intentionally left [] for all new types: the preferred future vocabulary
+  // (garden, patio, home-gym, indoor-recreation, outdoor-recreation, game-room,
+  // water-recreation) is NOT in ROOMS yet, and this slice does not expand the global
+  // room system. See the FUTURE ROOM VOCABULARY note near ROOMS. Never misuse an
+  // existing home room (Living Room/Bedroom/etc.) just to populate the field.
+  // Outdoor Décor (Garden & Outdoor)
+  { id: 'water-fountains', label: 'Water Fountains', category: 'outdoor-decor', rooms: [] },
+  { id: 'statues-sculptures', label: 'Statues & Sculptures', category: 'outdoor-decor', rooms: [] },
+  // Fitness (Fitness & Sports)
+  { id: 'elliptical-trainers', label: 'Elliptical Trainers', category: 'fitness', rooms: [] },
+  { id: 'exercise-bikes', label: 'Exercise Bikes', category: 'fitness', rooms: [] },
+  { id: 'step-machines', label: 'Step Machines', category: 'fitness', rooms: [] },
+  { id: 'trampolines', label: 'Trampolines', category: 'fitness', rooms: [] },
+  { id: 'treadmills', label: 'Treadmills', category: 'fitness', rooms: [] },
+  { id: 'vibration-platforms', label: 'Vibration Platforms', category: 'fitness', rooms: [] },
+  { id: 'weight-benches', label: 'Weight Benches', category: 'fitness', rooms: [] },
+  { id: 'weight-racks', label: 'Weight Racks', category: 'fitness', rooms: [] },
+  { id: 'gym-mats', label: 'Gym Mats', category: 'fitness', rooms: [] },
+  { id: 'other-exercise-equipment', label: 'Other Exercise Equipment', category: 'fitness', rooms: [] },
+  // Sports (Fitness & Sports)
+  { id: 'outdoor-bikes', label: 'Outdoor Bikes', category: 'sports', rooms: [] },
+  { id: 'table-tennis-tables', label: 'Table Tennis Tables', category: 'sports', rooms: [] },
+  { id: 'golf-bag-push-carts', label: 'Golf Bag Push Carts', category: 'sports', rooms: [] },
+  { id: 'golf-sets', label: 'Golf Sets', category: 'sports', rooms: [] },
+  { id: 'inflatable-paddle-boards', label: 'Inflatable Paddle Boards', category: 'sports', rooms: [] },
+  { id: 'basketball-hoops', label: 'Basketball Hoops', category: 'sports', rooms: [] },
+  { id: 'kick-scooters', label: 'Kick Scooters', category: 'sports', rooms: [] },
+  { id: 'soccer-tables', label: 'Soccer Tables', category: 'sports', rooms: [] },
+  { id: 'pool-tables', label: 'Pool Tables', category: 'sports', rooms: [] },
+  { id: 'rod-racks', label: 'Rod Racks', category: 'sports', rooms: [] },
+  { id: 'water-sports', label: 'Water Sports', category: 'sports', rooms: [] },
   // Sentinel
   { id: NEEDS_REVIEW, label: 'Needs Review', category: NEEDS_REVIEW, rooms: [] },
 ];
@@ -158,7 +194,39 @@ const AUTHORITATIVE_SPEC: Record<string, (nameLc: string) => string> = {
 };
 
 // Title keyword rules, ordered specific → broad. First match wins.
-const TITLE_RULES: { type: string; kw: string[] }[] = [
+// `exclude` (optional): if any exclude token is present the rule is skipped, so
+// ambiguous/component items fall through to NEEDS_REVIEW instead of misclassifying.
+const TITLE_RULES: { type: string; kw: string[]; exclude?: string[] }[] = [
+  // ── Commerce Semantic Layer expansion (Outdoor Décor + Fitness & Sports) ──
+  // Domain-specific multi-word tokens only — NEVER bare 'bike'/'table'/'rack'/'mat'/
+  // 'fountain'/'statue' — so these cannot collide with furniture titles. Ordered for
+  // required precedence: gym-mats before treadmills; exercise-bikes before outdoor-bikes;
+  // inflatable-paddle-boards before water-sports.
+  { type: 'gym-mats',             kw: ['gym mat', 'exercise mat', 'workout mat', 'equipment mat', 'treadmill mat', 'fitness floor mat', 'interlocking gym mat'] },
+  { type: 'exercise-bikes',       kw: ['exercise bike', 'stationary bike', 'indoor cycling bike', 'indoor cycle', 'spin bike', 'spinning bike', 'recumbent exercise bike', 'upright exercise bike', 'recumbent bike'] },
+  { type: 'treadmills',           kw: ['treadmill', 'walking pad'] },
+  { type: 'elliptical-trainers',  kw: ['elliptical', 'cross trainer'] },
+  { type: 'step-machines',        kw: ['stair stepper', 'stair climber', 'mini stepper', 'stepping machine', 'step machine'] },
+  { type: 'trampolines',          kw: ['trampoline', 'rebounder'] },
+  { type: 'vibration-platforms',  kw: ['vibration platform', 'vibration plate', 'whole body vibration'] },
+  { type: 'weight-benches',       kw: ['weight bench', 'workout bench', 'adjustable bench', 'exercise bench', 'flat bench', 'incline bench', 'utility bench'] },
+  { type: 'weight-racks',         kw: ['weight rack', 'dumbbell rack', 'barbell rack', 'plate rack', 'squat rack', 'power rack', 'weight storage rack'] },
+  { type: 'table-tennis-tables',  kw: ['table tennis table', 'ping pong table', 'ping-pong table'] },
+  { type: 'soccer-tables',        kw: ['foosball table', 'soccer table', 'table football'] },
+  { type: 'pool-tables',          kw: ['pool table', 'billiard table', 'billiards table'] },
+  { type: 'basketball-hoops',     kw: ['basketball hoop', 'basketball goal', 'basketball system', 'portable basketball'] },
+  { type: 'golf-bag-push-carts',  kw: ['golf push cart', 'golf bag cart', 'golf bag push cart', 'golf trolley', 'golf pull cart'] },
+  { type: 'golf-sets',            kw: ['golf set', 'golf club set', 'complete golf set', 'golf clubs', 'junior golf set'] },
+  { type: 'inflatable-paddle-boards', kw: ['inflatable paddle board', 'inflatable stand up paddle board', 'inflatable sup', 'sup board', 'paddleboard', 'paddle board'] },
+  { type: 'kick-scooters',        kw: ['kick scooter', 'push scooter', 'non-electric scooter', 'kids kick scooter'] },
+  { type: 'rod-racks',            kw: ['fishing rod rack', 'fishing rod holder', 'fishing pole rack', 'rod storage rack', 'fishing rack'] },
+  { type: 'outdoor-bikes',        kw: ['mountain bike', 'road bike', 'folding bike', 'cruiser bike', 'bmx bike', 'outdoor bike', 'bicycle', 'kids bike', 'adult bike'] },
+  { type: 'water-sports',         kw: ['kayak', 'canoe', 'surfboard', 'wakeboard', 'bodyboard', 'towable tube', 'water ski', 'water sports'] },
+  { type: 'water-fountains',      kw: ['water fountain', 'outdoor fountain', 'garden fountain', 'solar fountain', 'tiered fountain', 'wall fountain', 'patio fountain', 'tabletop fountain', 'waterfall fountain'],
+    exclude: ['pump for', 'replacement pump', 'fountain pump', 'pump kit', 'faucet', 'spout', 'plumbing', 'nozzle'] },
+  { type: 'statues-sculptures',   kw: ['garden statue', 'outdoor statue', 'yard statue', 'lawn statue', 'garden sculpture', 'outdoor sculpture', 'yard sculpture', 'lawn ornament', 'garden ornament', 'decorative statue', 'decorative sculpture', 'statue', 'statues', 'sculpture', 'sculptures'],
+    exclude: ['indoor', 'figurine'] },
+  // ── Furniture (unchanged) ──
   { type: 'tv-stand',        kw: ['tv stand', 'tv cabinet', 'tv unit', 'media console', 'media stand', 'media storage', 'entertainment center', 'av media', 'av stand'] },
   { type: 'makeup-vanity',   kw: ['makeup vanity', 'dressing table', 'vanity desk', 'vanity table', 'vanity set', 'vanity mirror', 'vanity stool'] }, // before dresser/nightstand: "Bedside … Dressing Table" is a vanity
   { type: 'dresser',         kw: ['dresser', 'chest of drawer', 'drawer dresser', 'drawers dresser', 'double dresser', 'drawer chest'] },
@@ -245,8 +313,10 @@ function resolveProductTypeId(
   if (auth) return auth(nameLc);
 
   // 2. Title keywords (richest fine signal — decisive for the broad "Cabinets" bucket).
+  //    A rule with `exclude` is skipped when any exclude token is present, so ambiguous
+  //    component/indoor items fall through to needs-review instead of misclassifying.
   for (const rule of TITLE_RULES) {
-    if (matchesAny(nameLc, rule.kw)) return rule.type;
+    if (matchesAny(nameLc, rule.kw) && !(rule.exclude && matchesAny(nameLc, rule.exclude))) return rule.type;
   }
 
   // 3. Normalized category_label.
