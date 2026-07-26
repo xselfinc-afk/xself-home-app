@@ -44,6 +44,9 @@ loadEnv({ path: '.env.giga-alt.local' }); loadEnv({ path: '.env.local' }); loadE
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+// Commerce Taxonomy is the production classification authority (reused as-is; no parallel classifier).
+import { classifyCommerce, NEEDS_REVIEW } from '../src/utils/commerceTaxonomy';
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -125,10 +128,33 @@ type Cand = {
   id: string; title: string; normTitle: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
-  isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; bucket: string; reasons: string[];
+  isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
 };
 
-(async () => {
+/**
+ * Base per-SKU classification. Commerce Taxonomy (classifyCommerce) is the AUTHORITY: a canonical
+ * product is NEVER rejected/held for a legacy HARD_JUNK word (outdoor/garden/kids/pet/…) or an 'Other'
+ * legacy category_label. Only products the taxonomy cannot place (needs-review) fall back to the legacy
+ * junk-reject / hold gates. Pure; exported for tests. (Variant-family grouping downstream is unchanged.)
+ */
+export function baseBucketOf(c: { img: boolean; normCost: number; title: string; normTitle: string; commerceCanonical: boolean }): { bucket: string; reason: string } {
+  if (!c.img) return { bucket: 'REJECT', reason: 'no_image' };
+  if (!(c.normCost > 0)) return { bucket: 'REJECT', reason: 'no_price' };
+  if (!c.commerceCanonical) {
+    // Taxonomy cannot place it → genuine junk is rejected; everything else is held for review.
+    if (HARD_JUNK.test(c.title)) return { bucket: 'REJECT', reason: 'junk_category' };
+    return { bucket: 'HOLD_QUALITY', reason: 'needs_review_taxonomy' };
+  }
+  // Canonical → legacy HARD_JUNK term and 'Other' legacy label are IGNORED (taxonomy is authoritative).
+  if (BRAND_PREFIX.test(c.normTitle)) return { bucket: 'HOLD_QUALITY', reason: 'brand_prefix' };
+  if (MARKETING.test(c.normTitle)) return { bucket: 'HOLD_QUALITY', reason: 'marketing_text' };
+  if (c.normCost < LOW_PRICE) return { bucket: 'HOLD_QUALITY', reason: 'low_price' };
+  if (c.title.length < 12) return { bucket: 'HOLD_QUALITY', reason: 'weak_title' };
+  if (c.normTitle.length < 12) return { bucket: 'HOLD_QUALITY', reason: 'title_not_ready' };
+  return { bucket: 'CLEAN', reason: '' }; // provisional — refined by variant grouping below
+}
+
+export async function main() {
   const { createClient } = await import('@supabase/supabase-js');
   const pipe = await import('../src/services/normalizationPipeline');
   const normalizeProduct = (pipe as any).normalizeProduct;
@@ -179,6 +205,8 @@ type Cand = {
       ? (raw.associateProductList as unknown[]).filter((s): s is string => typeof s === 'string').map(s => s.trim()).filter(Boolean)
       : [];
     const hasLiveSibling = assoc.some(s => s !== id && sharedPrefixLen(id, s) >= PREFIX_MIN && (stdSet.has(s) || sellSet.has(s)));
+    // Commerce Taxonomy classification (same input mapping as the production adapter).
+    const commerce = classifyCommerce({ name: String(n.product_title ?? r.title ?? ''), category: String((n.specifications_json ?? {})['Category'] ?? raw.category ?? ''), categoryLabel: String(n.category_label ?? '') });
     return {
       id, title: String(r.title ?? ''), normTitle: String(n.product_title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
@@ -189,27 +217,19 @@ type Cand = {
       // unstable for future merges, so they must not seed a standalone Fast-Lane card.
       isVg: key.includes('-vg-'), hasLiveSibling,
       cfgMissing: key.includes('-cfgmissing-'), widthMissing: key.endsWith('-wmissing'),
+      commerceCanonical: commerce.productType !== NEEDS_REVIEW,
       bucket: '', reasons: [],
     };
   });
   console.log = log;
 
-  // ── Base per-SKU quality classification (REJECT / HOLD_QUALITY / clean) ───
+  // ── Base per-SKU classification — Commerce Taxonomy authority (see baseBucketOf) ───
+  // Canonical products are never rejected/held for a legacy HARD_JUNK word or 'Other' legacy label;
+  // needs-review products fall back to junk-reject / hold. Variant grouping below is unchanged.
   for (const c of cands) {
-    if (!c.img) { c.bucket = 'REJECT'; c.reasons.push('no_image'); continue; }
-    if (!(c.normCost > 0)) { c.bucket = 'REJECT'; c.reasons.push('no_price'); continue; }
-    if (HARD_JUNK.test(c.title)) { c.bucket = 'REJECT'; c.reasons.push('junk_category'); continue; }
-    // Strategy A: gate on the NORMALIZED title so brand/marketing the normalizer has
-    // already stripped (titleGenerator.cleanTitle) no longer holds a clean product.
-    if (BRAND_PREFIX.test(c.normTitle)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('brand_prefix'); continue; }
-    if (MARKETING.test(c.normTitle)) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('marketing_text'); continue; }
-    if (c.normCost < LOW_PRICE) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('low_price'); continue; }
-    if (c.title.length < 12) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('weak_title'); continue; }
-    // Match the runner's title gate: it holds when the NORMALIZED product_title (not the raw supplier
-    // title) is < 12 chars. Checking raw title alone let such SKUs pass here and re-hold at the runner.
-    if (c.normTitle.length < 12) { c.bucket = 'HOLD_QUALITY'; c.reasons.push('title_not_ready'); continue; }
-    if (c.cat === 'Other') { c.bucket = 'HOLD_QUALITY'; c.reasons.push('uncertain_category'); continue; }
-    c.bucket = 'CLEAN'; // provisional — refined by grouping below
+    const r = baseBucketOf(c);
+    c.bucket = r.bucket;
+    if (r.reason) c.reasons.push(r.reason);
   }
 
   // ── Group CLEAN candidates by family key ──────────────────────────────────
@@ -402,4 +422,9 @@ type Cand = {
     console.log(`[plan] reports: ${rel(REPORT_JSON)} , ${rel(REPORT_MD)}`);
   }
   console.log = log;
-})().catch(e => { console.error('[plan] fatal:', e instanceof Error ? e.message : e); process.exit(1); });
+}
+
+const invokedDirectly = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch(e => { console.error('[plan] fatal:', e instanceof Error ? e.message : e); process.exit(1); });
+}
