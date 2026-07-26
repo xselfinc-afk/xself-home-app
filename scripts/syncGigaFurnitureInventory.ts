@@ -505,6 +505,16 @@ type ScrapeOutcome =
   | { kind: 'success'; rows: WarehouseRow[]; totalAvailable: number | null; resolvedUrl: string }
   | { kind: 'retriable_failure'; reason: string; resolvedUrl: string };
 
+/** PURE + exported: classify a product page that yielded ZERO warehouse rows.
+ *  Authoritative OUT_OF_STOCK requires the affirmative, rendered top-level `"0 Available"`
+ *  signal. The other signals ("Warehouse Quantity: No data", "Total Item Cost: N/A",
+ *  "Buy/AddToCart disabled") are ALSO produced when the warehouse component fails to render
+ *  / times out, so on their own they are a technical failure → INCONCLUSIVE (retryable).
+ *  Callers must NOT write zero inventory for an inconclusive result. */
+export function classifyEmptyWarehouse(signals: string[]): 'out_of_stock' | 'inconclusive' {
+  return signals.includes('"0 Available"') ? 'out_of_stock' : 'inconclusive';
+}
+
 async function detectOosSignals(page: Page): Promise<{ score: number; details: string[] }> {
   return page.evaluate(() => {
     const text = (document.body?.innerText ?? '');
@@ -584,11 +594,15 @@ async function scrapeProductOnce(
 
     if (rows.length === 0) {
       const oosSignals = await detectOosSignals(page);
-      const isOutOfStock = oosSignals.score >= 2 || oosSignals.details.includes('"0 Available"');
-      if (isOutOfStock) {
+      // HARDENING (proven defect fix): only an affirmative rendered zero ("0 Available")
+      // is authoritative out-of-stock. An absent / unrendered / timed-out / "No data"
+      // warehouse component is a TECHNICAL failure — INCONCLUSIVE/retryable — and must NOT
+      // zero inventory (the previous `score >= 2` rule zeroed on those ambiguous signals).
+      if (classifyEmptyWarehouse(oosSignals.details) === 'out_of_stock') {
         return { kind: 'out_of_stock', signals: oosSignals.details };
       }
-      return { kind: 'retriable_failure', reason: 'no_rows_extracted', resolvedUrl };
+      warnings.push(`warehouse component inconclusive (no rows; signals: ${oosSignals.details.join(', ') || 'none'}) — NOT treated as out-of-stock`);
+      return { kind: 'retriable_failure', reason: 'warehouse_inconclusive', resolvedUrl };
     }
 
     return { kind: 'success', rows, totalAvailable, resolvedUrl };
