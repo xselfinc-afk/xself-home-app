@@ -52,6 +52,7 @@ import SupportScreen from './src/screens/SupportScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProductConversationScreen from './src/screens/ProductConversationScreen';
 import { supabase } from './src/lib/supabase';
+import { summarizeActiveReviews } from './src/utils/reviewSummary';
 import { adaptStandardizedRow } from './src/services/detailProductAdapter';
 import { isGoodFitForFeatured } from './src/services/imageRatioCache';
 import OrdersScreen from './src/screens/OrdersScreen';
@@ -852,6 +853,8 @@ function ProductDetailScreen({ route, navigation }) {
   const [added, setAdded] = useState(false);
   const [addedPermanent, setAddedPermanent] = useState(false);
   const [bundleAdded, setBundleAdded] = useState(false);
+  // Live header rating/review-count — same product_reviews data ReviewSection uses. null = loading.
+  const [reviewSummary, setReviewSummary] = useState<{ count: number; avg: number } | null>(null);
   const carouselRef = useRef<ScrollView>(null);
   const btnRef = useRef<View>(null);
   const btnScaleAnim = useRef(new Animated.Value(1)).current;
@@ -868,6 +871,25 @@ function ProductDetailScreen({ route, navigation }) {
 
   // Track product view (weight 1)
   React.useEffect(() => { trackView(product.id); }, [product.id]);
+
+  // Header rating/review count — read the SAME live product_reviews data as ReviewSection
+  // (status='active'; real reviews if any exist, else the generated bootstrap). Header hides
+  // its rating row when there are 0 active reviews. Read-only; ReviewSection is unchanged.
+  React.useEffect(() => {
+    let active = true;
+    setReviewSummary(null);
+    supabase
+      .from('product_reviews')
+      .select('rating, is_generated')
+      .eq('supplier_product_id', product.id)
+      .eq('status', 'active')
+      .then(({ data, error }: { data: Array<{ rating: number; is_generated?: boolean | null }> | null; error: unknown }) => {
+        if (!active) return;
+        if (error || !data) { setReviewSummary({ count: 0, avg: 0 }); return; }
+        setReviewSummary(summarizeActiveReviews(data));
+      });
+    return () => { active = false; };
+  }, [product.id]);
 
   // Reset add-state when screen comes back into focus
   React.useEffect(() => {
@@ -1237,10 +1259,12 @@ function ProductDetailScreen({ route, navigation }) {
               </View>
             )}
           </View>
-          <View style={styles.detailRating}>
-            <Text style={styles.detailStars}>★ {product.rating ?? 4.5}</Text>
-            <Text style={styles.detailReviews}>({product.reviewCount ?? 0} reviews)</Text>
-          </View>
+          {reviewSummary && reviewSummary.count > 0 && (
+            <View style={styles.detailRating}>
+              <Text style={styles.detailStars}>★ {reviewSummary.avg.toFixed(1)}</Text>
+              <Text style={styles.detailReviews}>({reviewSummary.count} {reviewSummary.count === 1 ? 'review' : 'reviews'})</Text>
+            </View>
+          )}
           {(() => {
             const cached = getCachedDelivery();
             const mode = cached?.eligibility.mode;
