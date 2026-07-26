@@ -40,6 +40,7 @@
     "test:native-insertion": "tsx src/__tests__/discoverAdInsertion.test.ts",
     "verify:review-coverage": "tsx scripts/checkReviewCoverage.ts",
     "giga:seed-reviews:sellable": "tsx scripts/seedReviewsForSellable.ts",
+    "giga:onboard:scoped": "tsx scripts/onboardScopedSkus.ts",
     "guard:prod": "tsx scripts/productionGuardrails.ts",
     "verify:before-final": "npm run guard:prod",
     "ios:clean-rebuild": "bash scripts/iosCleanRebuild.sh",
