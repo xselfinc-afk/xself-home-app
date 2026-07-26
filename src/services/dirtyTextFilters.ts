@@ -53,6 +53,11 @@ export const SKIP_BULLET_PATTERNS: RegExp[] = [
   /^package\s+(size|dimensions?|weight)\b/i,
   // Dimension with letter AFTER the number: "18.7"W x 18.3"D" (supplier raw format)
   /\b\d+(\.\d+)?\s*[""']?\s*[LWDHlwdh]\s*[xX×]/,
+  // Supplier AI-image disclaimers about the listing PHOTOS (not the product). Require an image/photo
+  // word + AI-generated/artificial-intelligence + a person/model/figure word so genuine AI PRODUCT
+  // features (e.g. "AI-powered scale", "artificial intelligence voice assistant") are NEVER removed.
+  /\b(image|images|photo|photos|picture|pictures|lifestyle)\b[^.?!]{0,80}\b(ai[-\s]?generated|artificial\s+intelligence)\b[^.?!]{0,60}\b(model|models|human|humans|people|person|persons|figure|figures)\b/i,
+  /\b(model|models|human|humans|people|person|persons|figure|figures)\b[^.?!]{0,80}\b(photo|photos|image|images|picture|pictures|lifestyle)\b[^.?!]{0,60}\b(ai[-\s]?generated|artificial\s+intelligence|created\s+using\s+(?:ai|artificial\s+intelligence))\b/i,
 ];
 
 export function isUsableBullet(s: string): boolean {
