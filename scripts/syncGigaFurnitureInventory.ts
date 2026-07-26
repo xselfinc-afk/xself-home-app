@@ -35,6 +35,7 @@ import { chromium, Page } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
 import * as path from 'path';
 import * as fs from 'fs';
+import { pathToFileURL } from 'url';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,22 @@ const INVENTORY_LIMIT = process.env.INVENTORY_LIMIT
 const PAGE_DELAY_MS = process.env.PAGE_DELAY_MS
   ? parseInt(process.env.PAGE_DELAY_MS, 10)
   : 1200;
+
+// ── Scoped SKU allowlist (ADDITIVE) ───────────────────────────────────────────
+// `--skus SKU1,SKU2,...` (or `--skus=SKU1,SKU2,...`) restricts the run to EXACTLY
+// those SKUs, sourced from supplier_products (NOT the giga_products / standardized
+// catalog). When the flag is absent, behavior is byte-for-byte the legacy furniture
+// sync. Pure + exported for offline tests.
+export function parseSkusArg(argv: string[]): string[] {
+  const idx = argv.findIndex(a => a === '--skus' || a.startsWith('--skus='));
+  if (idx === -1) return [];
+  const arg = argv[idx];
+  const raw = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : (argv[idx + 1] ?? '');
+  const skus = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  return [...new Set(skus)];
+}
+const SCOPED = process.argv.slice(2).some(a => a === '--skus' || a.startsWith('--skus='));
+const SCOPED_SKUS = parseSkusArg(process.argv.slice(2));
 
 // ── Incremental / priority-batching config ────────────────────────────────────
 // Default mode is incremental: each run selects a bounded slice of products
@@ -601,6 +618,41 @@ async function saveDebugArtifacts(page: Page, productId: string): Promise<void> 
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// Work-list item shape consumed by the scrape loop (identical to the legacy inline shape).
+type CandidateProduct = {
+  product_id: string;
+  product_url: string;
+  title: string | null;
+  inventory_status: string | null;
+};
+
+// PURE + exported: map supplier_products rows → CandidateProduct[], scoped to the allowlist.
+// Rejects any row whose SKU is not in the allowlist (strict exclusion), dedupes, skips empty
+// SKUs. A malformed/empty row cannot corrupt the others. Product URL uses the sku= form the
+// existing resolveProductUrl() already follows to the canonical product_id= page.
+export function buildScopedTargets(
+  rows: Array<{ supplier_product_id?: string | null; title?: string | null }>,
+  allowlist: string[],
+): CandidateProduct[] {
+  const allow = new Set(allowlist);
+  const seen = new Set<string>();
+  const out: CandidateProduct[] = [];
+  for (const row of rows) {
+    const sku = row?.supplier_product_id;
+    if (typeof sku !== 'string' || sku.length === 0) continue;
+    if (!allow.has(sku)) continue;   // strict exclusion of anything outside the allowlist
+    if (seen.has(sku)) continue;     // dedupe
+    seen.add(sku);
+    out.push({
+      product_id: sku,
+      product_url: `https://www.gigab2b.com/index.php?route=product/product&sku=${encodeURIComponent(sku)}`,
+      title: row?.title ?? null,
+      inventory_status: null,
+    });
+  }
+  return out;
+}
+
 async function run() {
   // ── Validate prerequisites ──────────────────────────────────────────────────
   if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -639,46 +691,73 @@ async function run() {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data: products, error: fetchError } = await supabase
-    .from('standardized_products')
-    .select('supplier_product_id, product_title, inventory_status')
-    .eq('normalization_status', 'done')
-    .not('supplier_product_id', 'is', null)
-    .order('created_at', { ascending: false });
+  // Work-list. Default (no --skus): the full standardized_products catalog, UNCHANGED.
+  // Scoped (--skus): EXACTLY the allowlist, sourced from supplier_products.
+  let allProducts: CandidateProduct[];
 
-  if (fetchError) {
-    console.error('[FurnitureInventory] Failed to fetch standardized_products:', fetchError.message);
-    process.exit(1);
-  }
+  if (SCOPED) {
+    if (SCOPED_SKUS.length === 0) {
+      console.error('[FurnitureInventory] ERROR: --skus was provided but resolved to an empty/malformed allowlist — refusing to run (fail-closed).');
+      process.exit(1);
+    }
+    console.log(`[FurnitureInventory] SCOPED --skus mode: sourcing EXACTLY ${SCOPED_SKUS.length} SKU(s) from supplier_products (giga_products / standardized catalog NOT used).`);
+    const { data: supRows, error: supErr } = await supabase
+      .from('supplier_products')
+      .select('supplier_product_id, title')
+      .in('supplier_product_id', SCOPED_SKUS);
+    if (supErr) {
+      console.error('[FurnitureInventory] Failed to fetch supplier_products:', supErr.message);
+      process.exit(1);
+    }
+    allProducts = buildScopedTargets(
+      (supRows ?? []) as Array<{ supplier_product_id?: string | null; title?: string | null }>,
+      SCOPED_SKUS,
+    );
+    const found = new Set(allProducts.map(p => p.product_id));
+    const missing = SCOPED_SKUS.filter(s => !found.has(s));
+    if (missing.length > 0) {
+      console.warn(`[FurnitureInventory] ${missing.length}/${SCOPED_SKUS.length} allowlist SKU(s) NOT FOUND in supplier_products (skipped): ${missing.join(',')}`);
+    }
+    if (allProducts.length === 0) {
+      console.error('[FurnitureInventory] ERROR: none of the --skus were found in supplier_products — nothing to do.');
+      process.exit(1);
+    }
+  } else {
+    const { data: products, error: fetchError } = await supabase
+      .from('standardized_products')
+      .select('supplier_product_id, product_title, inventory_status')
+      .eq('normalization_status', 'done')
+      .not('supplier_product_id', 'is', null)
+      .order('created_at', { ascending: false });
 
-  if (!products || products.length === 0) {
-    console.log('[FurnitureInventory] No normalized products found in standardized_products — nothing to do.');
-    return;
-  }
+    if (fetchError) {
+      console.error('[FurnitureInventory] Failed to fetch standardized_products:', fetchError.message);
+      process.exit(1);
+    }
 
-  // Remap to the legacy { product_id, product_url, title } shape so the scrape
-  // loop below is unchanged. A sku= URL is constructed from the GIGA SKU;
-  // resolveProductUrl() follows it to the canonical product_id= portal page
-  // on first navigation, exactly as it did for legacy giga_products rows.
-  type CandidateProduct = {
-    product_id: string;
-    product_url: string;
-    title: string | null;
-    inventory_status: string | null;
-  };
-  const seen = new Set<string>();
-  const allProducts: CandidateProduct[] = [];
-  for (const row of products) {
-    const sku = (row as { supplier_product_id?: string | null })?.supplier_product_id;
-    if (typeof sku !== 'string' || sku.length === 0 || seen.has(sku)) continue;
-    seen.add(sku);
-    allProducts.push({
-      product_id: sku,
-      product_url: `https://www.gigab2b.com/index.php?route=product/product&sku=${encodeURIComponent(sku)}`,
-      title: (row as { product_title?: string | null })?.product_title ?? null,
-      inventory_status:
-        (row as { inventory_status?: string | null })?.inventory_status ?? null,
-    });
+    if (!products || products.length === 0) {
+      console.log('[FurnitureInventory] No normalized products found in standardized_products — nothing to do.');
+      return;
+    }
+
+    // Remap to the { product_id, product_url, title } shape so the scrape loop below is
+    // unchanged. A sku= URL is constructed from the GIGA SKU; resolveProductUrl() follows
+    // it to the canonical product_id= portal page, exactly as for legacy giga_products rows.
+    const seen = new Set<string>();
+    const built: CandidateProduct[] = [];
+    for (const row of products) {
+      const sku = (row as { supplier_product_id?: string | null })?.supplier_product_id;
+      if (typeof sku !== 'string' || sku.length === 0 || seen.has(sku)) continue;
+      seen.add(sku);
+      built.push({
+        product_id: sku,
+        product_url: `https://www.gigab2b.com/index.php?route=product/product&sku=${encodeURIComponent(sku)}`,
+        title: (row as { product_title?: string | null })?.product_title ?? null,
+        inventory_status:
+          (row as { inventory_status?: string | null })?.inventory_status ?? null,
+      });
+    }
+    allProducts = built;
   }
 
   // ── Build the batch ────────────────────────────────────────────────────────
@@ -696,7 +775,10 @@ async function run() {
   //              today drift to the back tomorrow.
   let batch: CandidateProduct[];
 
-  if (FULL_SYNC) {
+  if (SCOPED) {
+    batch = allProducts;   // explicit allowlist → scrape every matched target (no tier/freshness filtering)
+    console.log(`[FurnitureInventory] SCOPED mode — scanning ${batch.length} allowlisted product(s)\n`);
+  } else if (FULL_SYNC) {
     batch = allProducts.slice(
       0,
       isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : allProducts.length,
@@ -981,7 +1063,10 @@ async function run() {
   }
 }
 
-run().catch(err => {
-  console.error('[FurnitureInventory] Fatal:', err.message);
-  process.exit(1);
-});
+const invokedDirectly = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  run().catch(err => {
+    console.error('[FurnitureInventory] Fatal:', err.message);
+    process.exit(1);
+  });
+}

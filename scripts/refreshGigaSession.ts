@@ -25,6 +25,7 @@ import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { pathToFileURL } from 'url';
 
 // Load env vars from .env.local first (script-only secrets — SUPABASE_URL,
 // SUPABASE_SERVICE_ROLE_KEY), then .env as fallback. dotenv does NOT
@@ -36,7 +37,20 @@ dotenv.config({ path: path.join(process.cwd(), '.env') });
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const PROJECT_ROOT = process.cwd();
-const SESSION_FILE = path.join(PROJECT_ROOT, 'scripts', '.giga-session.json');
+
+// ── Configurable output path + SESSION_ONLY mode (ADDITIVE) ───────────────────
+// GIGA_SESSION_FILE  → output storageState path (default: scripts/.giga-session.json).
+// SESSION_ONLY=1     → open browser, wait for manual login, save storageState, then STOP:
+//                      no gh-auth requirement, no inventory validation, no GitHub secret,
+//                      no workflow trigger/watch. Default (unset) preserves current behavior.
+// Pure + exported for offline tests.
+export function resolveSessionConfig(env: Record<string, string | undefined>): { sessionFile: string; sessionOnly: boolean } {
+  return {
+    sessionFile: env.GIGA_SESSION_FILE ?? path.join(PROJECT_ROOT, 'scripts', '.giga-session.json'),
+    sessionOnly: env.SESSION_ONLY === '1',
+  };
+}
+const { sessionFile: SESSION_FILE, sessionOnly: SESSION_ONLY } = resolveSessionConfig(process.env);
 const PROFILE_DIR  = path.join(PROJECT_ROOT, 'scripts', '.giga-chrome-profile');
 
 const HOME_URL    = 'https://www.gigab2b.com/index.php?route=common/home';
@@ -152,15 +166,20 @@ async function main(): Promise<void> {
   info('────────────────────────────────────────────────────────────');
   info(' GIGA session refresh');
   info('────────────────────────────────────────────────────────────');
+  info(`Session output : ${path.relative(PROJECT_ROOT, SESSION_FILE)}`);
+  info(`Mode           : ${SESSION_ONLY ? 'SESSION_ONLY (manual login + save only)' : 'full (validate + deploy)'}`);
 
-  // 0) Pre-flight: GitHub CLI must be authenticated.
-  if (!ghAuthOk()) {
-    fail(
-      'GitHub CLI is not authenticated.\n' +
-      '       Run `gh auth login` first, then re-run `npm run giga:refresh-session`.',
-    );
+  // 0) Pre-flight: GitHub CLI must be authenticated — skipped in SESSION_ONLY
+  //    (no secret update / workflow trigger, so gh is not needed).
+  if (!SESSION_ONLY) {
+    if (!ghAuthOk()) {
+      fail(
+        'GitHub CLI is not authenticated.\n' +
+        '       Run `gh auth login` first, then re-run `npm run giga:refresh-session`.',
+      );
+    }
+    info('GitHub CLI ready');
   }
-  info('GitHub CLI ready');
 
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
@@ -215,6 +234,15 @@ async function main(): Promise<void> {
     await context.storageState({ path: SESSION_FILE });
   } finally {
     await context.close().catch(() => {});
+  }
+
+  // SESSION_ONLY: authenticated storageState is saved — stop here. No inventory
+  // validation, no GitHub secret update, no workflow trigger/watch, no DB access.
+  if (SESSION_ONLY) {
+    info(`SESSION_ONLY=1 — storageState saved to ${path.relative(PROJECT_ROOT, SESSION_FILE)}.`);
+    info('Skipped: inventory validation, GitHub secret update, workflow trigger/watch.');
+    info('Done (session-only).');
+    return;
   }
 
   // 5) Validate by invoking the existing sync script in DRY_RUN mode.
@@ -308,8 +336,11 @@ async function main(): Promise<void> {
   info('Done.');
 }
 
-main().catch(e => {
-  const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
-  console.error(`[refresh] Fatal: ${msg}`);
-  process.exit(1);
-});
+const invokedDirectly = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch(e => {
+    const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    console.error(`[refresh] Fatal: ${msg}`);
+    process.exit(1);
+  });
+}
