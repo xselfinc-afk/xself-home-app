@@ -15,6 +15,8 @@
     "giga:newly-saved:plan": "tsx scripts/planGigaNewlySavedCandidates.ts",
     "giga:newly-saved:sync:dry": "DRY_RUN=1 tsx scripts/syncGigaNewlySavedCandidates.ts",
     "giga:newly-saved:sync": "tsx scripts/syncGigaNewlySavedCandidates.ts --sync",
+    "giga:candidates:sync:dry": "DRY_RUN=1 tsx scripts/syncGigaNewlySavedCandidates.ts --candidates",
+    "giga:candidates:sync": "tsx scripts/syncGigaNewlySavedCandidates.ts --candidates --sync",
     "giga:saved-to-live:plan": "tsx scripts/gigaSavedToLiveOrchestrator.ts",
     "giga:saved-to-live:apply": "tsx scripts/gigaSavedToLiveOrchestrator.ts --apply",
     "giga:manual-product:plan": "tsx scripts/gigaManualProductUpload.ts",

@@ -37,6 +37,7 @@ import * as fsForEnv from 'node:fs';
 import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 const SUMMARY = argv.includes('--summary');
@@ -45,6 +46,10 @@ const FORCE = argv.includes('--force');
 // ready_for_sync). Used for controlled single-SKU publishes so other newly-saved SKUs are untouched.
 const onlyArg = argv.find(a => a.startsWith('--only='));
 const ONLY_SKUS = onlyArg ? onlyArg.split('=')[1].split(',').map(s => s.trim()).filter(Boolean) : null;
+// --candidates: source the eligible SKU set from reports/giga-auto-publish/candidates.csv
+// (headline_bucket=ready) instead of the newly-saved-delta ready_for_sync report. Additive + flag-gated;
+// the entire downstream re-verify + fetch + upsertPickupProducts path is reused unchanged.
+const CANDIDATES = argv.includes('--candidates');
 // DRY_RUN=1 always forces dry (safer); real sync needs --sync or APPLY=1 AND no DRY_RUN=1.
 const FORCE_DRY = process.env.DRY_RUN === '1';
 const REAL_SYNC = !FORCE_DRY && (argv.includes('--sync') || process.env.APPLY === '1');
@@ -67,32 +72,124 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   process.exit(1);
 }
 
-(async () => {
+// ── Candidate-source helpers (PURE; exported for offline tests) ───────────────
+/** Minimal RFC-4180 parser: handles quoted commas, escaped "" quotes, embedded newlines, empty cells. */
+export function parseCsvRfc4180(text: string): string[][] {
+  const rows: string[][] = []; let row: string[] = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; continue; }
+    if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\r') { /* ignore */ }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+export interface CandidateSelection {
+  eligible: { sku: string; title: string }[];
+  rejections: { sku: string; reason: string }[];
+  readyCount: number;
+}
+/**
+ * Determine which SKUs are eligible for import from candidates.csv. A SKU is eligible only when its
+ * row is headline_bucket=ready AND not duplicate AND not needs-review AND absent from all 3 tables
+ * (per the report) AND not explicitly unavailable. When onlySkus is given, evaluate EXACTLY those and
+ * return a rejection (never a silent skip) for any that fail; otherwise return all ready rows.
+ */
+export function selectApprovedCandidates(csvText: string, onlySkus: string[] | null): CandidateSelection {
+  const rows = parseCsvRfc4180(csvText);
+  if (rows.length === 0) return { eligible: [], rejections: [], readyCount: 0 };
+  const header = rows[0];
+  const idx: Record<string, number> = {};
+  header.forEach((h, i) => { idx[h] = i; });
+  for (const col of ['supplier_product_id', 'title', 'headline_bucket', 'duplicate_of', 'needs_review_reason', 'product_type_id', 'in_supplier_products', 'in_standardized_products', 'in_sellable_products', 'sku_available']) {
+    if (!(col in idx)) throw new Error(`candidates.csv missing required column: ${col}`);
+  }
+  const bySku = new Map<string, string[]>();
+  let readyCount = 0;
+  for (const r of rows.slice(1)) {
+    if (r.length <= idx.supplier_product_id) continue;
+    const sku = r[idx.supplier_product_id];
+    if (!sku) continue;
+    if (!bySku.has(sku)) bySku.set(sku, r);
+    if (r[idx.headline_bucket] === 'ready') readyCount++;
+  }
+  const evaluate = (sku: string): { ok: boolean; reason?: string; title?: string } => {
+    const r = bySku.get(sku);
+    if (!r) return { ok: false, reason: 'not_in_candidates' };
+    const g = (c: string) => (r[idx[c]] ?? '').trim();
+    if (g('headline_bucket') !== 'ready') return { ok: false, reason: `not_ready(headline=${g('headline_bucket') || '?'})` };
+    if (g('duplicate_of')) return { ok: false, reason: `duplicate_of=${g('duplicate_of')}` };
+    if (g('needs_review_reason') || g('product_type_id') === 'needs-review') return { ok: false, reason: 'needs_review' };
+    if (g('in_supplier_products') === 'true' || g('in_standardized_products') === 'true' || g('in_sellable_products') === 'true') return { ok: false, reason: 'already_imported_or_published_per_report' };
+    if (g('sku_available') === 'unavailable') return { ok: false, reason: 'unavailable' };
+    return { ok: true, title: g('title') };
+  };
+  const targets = (onlySkus && onlySkus.length)
+    ? onlySkus
+    : [...bySku.keys()].filter(s => (bySku.get(s)![idx.headline_bucket] ?? '') === 'ready');
+  const eligible: { sku: string; title: string }[] = [];
+  const rejections: { sku: string; reason: string }[] = [];
+  for (const sku of targets) {
+    const e = evaluate(sku);
+    if (e.ok) eligible.push({ sku, title: e.title ?? '' });
+    else rejections.push({ sku, reason: e.reason! });
+  }
+  return { eligible, rejections, readyCount };
+}
+
+export async function main(): Promise<void> {
   const RUN_ID = crypto.randomUUID();
   const TIMESTAMP = new Date().toISOString();
+  let sourceFileRel = rel(INPUT_FILE);
+  let candidatesRunId: string | null = null;
 
-  // ── 1. Read Phase 2A report; extract ONLY ready_for_sync SKUs ──────────────
-  if (!fs.existsSync(INPUT_FILE)) die('newly-saved candidates report not found; run `npm run giga:newly-saved:plan` first', { input_file: rel(INPUT_FILE) });
-  let report: any;
-  try { report = JSON.parse(fs.readFileSync(INPUT_FILE, 'utf8')); }
-  catch (e) { die(`candidates report is not valid JSON: ${e instanceof Error ? e.message : String(e)}`, { input_file: rel(INPUT_FILE) }); }
-  if (!Array.isArray(report?.candidates)) die('candidates report missing candidates[] (corrupt/wrong shape)', { input_file: rel(INPUT_FILE), keys: report ? Object.keys(report) : 'null' });
-
+  // ── 1. Determine the eligible SKU set ──────────────────────────────────────
+  // Default: newly-saved-delta ready_for_sync (Phase 2A report). --candidates: approved rows from the
+  // candidate scan (candidates.csv, headline_bucket=ready). BOTH feed the SAME downstream re-verify +
+  // fetch + upsertPickupProducts path below — only the SKU source differs.
   const readyMap = new Map<string, string>();
-  for (const c of report.candidates) {
-    if (c?.classification === 'ready_for_sync') {
-      const sku = String(c?.sku ?? '').trim();
-      if (sku && !readyMap.has(sku)) readyMap.set(sku, String(c?.title ?? '').trim());
+  let readySkus: string[];
+  if (CANDIDATES) {
+    const CSV_FILE = path.join(REPORT_DIR, 'candidates.csv');
+    sourceFileRel = rel(CSV_FILE);
+    if (!fs.existsSync(CSV_FILE)) die('candidates report not found; run `npm run giga:saved:candidate-scan` first', { candidates_file: sourceFileRel });
+    let sel;
+    try { sel = selectApprovedCandidates(fs.readFileSync(CSV_FILE, 'utf8'), ONLY_SKUS); }
+    catch (e) { die(`candidates.csv could not be read: ${e instanceof Error ? e.message : String(e)}`, { candidates_file: sourceFileRel }); }
+    // Every requested SKU must be eligible; NEVER silently skip an invalid requested SKU.
+    if (ONLY_SKUS && sel.rejections.length) {
+      die(`--candidates: requested SKU(s) not eligible: ${sel.rejections.map(r => `${r.sku}(${r.reason})`).join('; ')}`, { rejections: sel.rejections, ready_available: sel.readyCount });
     }
-  }
-  let readySkus = [...readyMap.keys()];
-  // Apply hard --only scope (intersect with ready_for_sync). Report any requested SKU that is NOT
-  // ready_for_sync rather than silently proceeding.
-  if (ONLY_SKUS) {
-    const readySet = new Set(readySkus);
-    const notReady = ONLY_SKUS.filter(s => !readySet.has(s));
-    if (notReady.length) die(`--only includes SKU(s) not in ready_for_sync: ${notReady.join(',')}`, { ready_for_sync: readySkus });
-    readySkus = readySkus.filter(s => ONLY_SKUS.includes(s));
+    for (const c of sel.eligible) readyMap.set(c.sku, c.title);
+    readySkus = [...readyMap.keys()];
+    if (readySkus.length === 0) die('--candidates: no eligible ready SKUs selected', { ready_available: sel.readyCount, only: ONLY_SKUS ?? '(none)' });
+  } else {
+    if (!fs.existsSync(INPUT_FILE)) die('newly-saved candidates report not found; run `npm run giga:newly-saved:plan` first', { input_file: rel(INPUT_FILE) });
+    let report: any;
+    try { report = JSON.parse(fs.readFileSync(INPUT_FILE, 'utf8')); }
+    catch (e) { die(`candidates report is not valid JSON: ${e instanceof Error ? e.message : String(e)}`, { input_file: rel(INPUT_FILE) }); }
+    if (!Array.isArray(report?.candidates)) die('candidates report missing candidates[] (corrupt/wrong shape)', { input_file: rel(INPUT_FILE), keys: report ? Object.keys(report) : 'null' });
+    candidatesRunId = report.run_id ?? null;
+    for (const c of report.candidates) {
+      if (c?.classification === 'ready_for_sync') {
+        const sku = String(c?.sku ?? '').trim();
+        if (sku && !readyMap.has(sku)) readyMap.set(sku, String(c?.title ?? '').trim());
+      }
+    }
+    readySkus = [...readyMap.keys()];
+    // Apply hard --only scope (intersect with ready_for_sync). Report any requested SKU that is NOT
+    // ready_for_sync rather than silently proceeding.
+    if (ONLY_SKUS) {
+      const readySet = new Set(readySkus);
+      const notReady = ONLY_SKUS.filter(s => !readySet.has(s));
+      if (notReady.length) die(`--only includes SKU(s) not in ready_for_sync: ${notReady.join(',')}`, { ready_for_sync: readySkus });
+      readySkus = readySkus.filter(s => ONLY_SKUS.includes(s));
+    }
   }
 
   // ── Supabase (read-only here; writes only via upsertPickupProducts in sync mode) ──
@@ -146,8 +243,9 @@ function die(msg: string, extra?: Record<string, unknown>): never {
     fs.mkdirSync(REPORT_DIR, { recursive: true });
     const fullJson = {
       run_id: RUN_ID, timestamp: TIMESTAMP, mode: MODE,
-      input_file: rel(INPUT_FILE),
-      candidates_run_id: report.run_id ?? null,
+      input_file: sourceFileRel,
+      candidates_run_id: candidatesRunId,
+      source_mode: CANDIDATES ? 'candidates.csv' : 'newly-saved-delta',
       published_default_check: publishedCheck,
       safe_limit: SAFE_LIMIT,
       ready_for_sync_input: readySkus,
@@ -161,7 +259,7 @@ function die(msg: string, extra?: Record<string, unknown>): never {
     const md: string[] = [];
     md.push('# GIGA Newly-Saved Sync (Phase 2B)', '');
     md.push(`- run_id: ${RUN_ID}`, `- timestamp: ${TIMESTAMP}`, `- mode: ${MODE}${MODE === 'dry' ? ' (no DB writes)' : ' (insert new only)'}`);
-    md.push(`- input_file: ${rel(INPUT_FILE)}`);
+    md.push(`- input_file: ${sourceFileRel} (source_mode: ${CANDIDATES ? 'candidates.csv' : 'newly-saved-delta'})`);
     md.push(`- published_default_check: verified=${publishedCheck.verified} — ${publishedCheck.evidence}`, '');
     md.push('## Scope',
       `- ready_for_sync input: ${readySkus.length} [${readySkus.join(', ') || '(none)'}]`,
@@ -180,7 +278,8 @@ function die(msg: string, extra?: Record<string, unknown>): never {
     console.log('GIGA_NEWLY_SAVED_SYNC_SUMMARY');
     console.log(`run_id=${RUN_ID}`);
     console.log(`mode=${MODE}`);
-    console.log(`input_file=${rel(INPUT_FILE)}`);
+    console.log(`input_file=${sourceFileRel}`);
+    console.log(`source_mode=${CANDIDATES ? 'candidates.csv' : 'newly-saved-delta'}`);
     console.log(`ready_for_sync=${readySkus.length}`);
     console.log(`processed_skus=${toProcess.join(',') || '(none)'}`);
     console.log(`would_insert=${result?.inserted ?? 0}`);
@@ -234,6 +333,12 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   }
   if (mergedItems.length === 0) die('no enriched items available to sync (GIGA detail fetch returned nothing for ready SKUs)', { missing_detail: missingDetail });
 
+  // Candidate mode is ALL-OR-NOTHING: any missing detail aborts the whole approved batch before any
+  // write (never partially import an approved set). Default mode keeps its existing tolerant behavior.
+  if (CANDIDATES && missingDetail.length > 0) {
+    die(`--candidates: all-or-nothing — GIGA detail missing at sync time for ${missingDetail.length} approved SKU(s); wrote nothing: ${missingDetail.join(',')}`, { missing_detail: missingDetail });
+  }
+
   const mergedPreview = mergedItems.map((m: any) => ({
     supplier_product_id: String(m.sku),
     title: String(m.title ?? m.productName ?? ''),
@@ -241,6 +346,19 @@ function die(msg: string, extra?: Record<string, unknown>): never {
     images_count: Array.isArray(m.imageUrls ?? m.images ?? m.imageList) ? (m.imageUrls ?? m.images ?? m.imageList).length : 0,
     inventory: Number(m.stock ?? m.inventory ?? (m.skuAvailable ? 1 : 0)) || 0,
   }));
+
+  // Candidate mode: validate EVERY mapped row before the single write (all-or-nothing). A stale
+  // price/image at sync time aborts the whole batch rather than importing a degraded row.
+  if (CANDIDATES) {
+    const notFetched = toProcess.filter(s => !detailBySku.has(s));
+    const invalidRows = mergedPreview.filter(r => !(r.price > 0) || r.images_count === 0);
+    if (notFetched.length || invalidRows.length) {
+      die('--candidates: all-or-nothing pre-write validation failed; wrote nothing', {
+        not_fetched: notFetched,
+        invalid_rows: invalidRows.map(r => ({ sku: r.supplier_product_id, price: r.price, images: r.images_count })),
+      });
+    }
+  }
 
   // ── 8. Delegate the write to the canonical path (single source of truth) ──
   const { upsertPickupProducts } = await import('../src/services/supplierPickupService');
@@ -255,4 +373,10 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   if (!SUMMARY) {
     for (const m of mergedPreview) console.log(`row=${m.supplier_product_id} price=${m.price} images=${m.images_count} inv=${m.inventory}`);
   }
-})().catch(e => { console.error('GIGA_NEWLY_SAVED_SYNC_ERROR'); console.error(`error=${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
+}
+
+// Run only when invoked directly (so tests can import the pure helpers without executing the CLI).
+const invokedDirectly = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch(e => { console.error('GIGA_NEWLY_SAVED_SYNC_ERROR'); console.error(`error=${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
+}
