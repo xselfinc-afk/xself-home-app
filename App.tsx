@@ -23,7 +23,8 @@ import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
-import { loadProductDetail } from './src/services/productFamilyService';
+import { loadProductDetail, loadProductFamily } from './src/services/productFamilyService';
+import { isPilotFamily } from './src/config/productFamilyPilot';
 import { LIST_SELECT } from './src/services/detailProductAdapter';
 import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
@@ -869,19 +870,29 @@ function ProductDetailScreen({ route, navigation }) {
   const { startConversation, getConversation } = useConversations();
   const { user } = useAuth();
 
-  // Track product view (weight 1)
-  React.useEffect(() => { trackView(product.id); }, [product.id]);
+  // Currently-selected child SKU id. On a family PDP this switches when the customer
+  // changes colour/size (selectedColor/selectedSize state), so reviews, header rating,
+  // and analytics all follow the SELECTED child — never the family representative.
+  // Mirrors selectedVariant's resolution; falls back to product.id for single-SKU pages.
+  const selectedChildId: string =
+    (product.variants?.find((v: ProductVariant) => v.color === selectedColor && v.size === selectedSize)
+      ?? product.variants?.find((v: ProductVariant) => v.enabled && v.stock > 0)
+      ?? product.variants?.[0])?.supplierProductId ?? product.id;
+
+  // Track the SELECTED child product view (weight 1); refires on option switch.
+  React.useEffect(() => { trackView(selectedChildId); }, [selectedChildId]);
 
   // Header rating/review count — read the SAME live product_reviews data as ReviewSection
-  // (status='active'; real reviews if any exist, else the generated bootstrap). Header hides
-  // its rating row when there are 0 active reviews. Read-only; ReviewSection is unchanged.
+  // for the SELECTED child SKU (status='active'; real reviews if any exist, else the
+  // generated bootstrap). Refires on option switch so the rating tracks the chosen variant.
+  // Header hides its rating row when there are 0 active reviews. Read-only; ReviewSection unchanged.
   React.useEffect(() => {
     let active = true;
     setReviewSummary(null);
     supabase
       .from('product_reviews')
       .select('rating, is_generated')
-      .eq('supplier_product_id', product.id)
+      .eq('supplier_product_id', selectedChildId)
       .eq('status', 'active')
       .then(({ data, error }: { data: Array<{ rating: number; is_generated?: boolean | null }> | null; error: unknown }) => {
         if (!active) return;
@@ -889,7 +900,7 @@ function ProductDetailScreen({ route, navigation }) {
         setReviewSummary(summarizeActiveReviews(data));
       });
     return () => { active = false; };
-  }, [product.id]);
+  }, [selectedChildId]);
 
   // Reset add-state when screen comes back into focus
   React.useEffect(() => {
@@ -960,15 +971,46 @@ function ProductDetailScreen({ route, navigation }) {
   React.useEffect(() => {
     const skuId = initialProduct?.id;
     if (!skuId) return;
-    loadProductDetail(skuId).then(fullProduct => {
-      if (!fullProduct) return;
+    let active = true;
+
+    // Single-SKU loader — the default for every non-pilot product. Opens exactly the
+    // tapped supplier_product_id with its full gallery; no family color selector.
+    const openSingle = () => loadProductDetail(skuId).then(fullProduct => {
+      if (!active || !fullProduct) return;
       setProduct(fullProduct);
       const v = fullProduct.variants?.[0];
       if (v) { setSelectedColor(v.color); setSelectedSize(v.size); }
       setActiveImage(0);
       carouselRef.current?.scrollTo({ x: 0, animated: false });
     });
-  }, [initialProduct?.id]);
+
+    // Pilot families ONLY: load the whole family (per-sibling variantProducts) and
+    // preselect the exact opened child. Everything else keeps the single-SKU path.
+    if (isPilotFamily(familyKey)) {
+      loadProductFamily(familyKey!).then(fam => {
+        if (!active) return;
+        if (fam && (fam.variants?.length ?? 0) > 1 && (fam.variantProducts?.length ?? 0) > 0) {
+          setProduct(fam);
+          // Deterministic default: the tapped SKU if it belongs to the family, else the
+          // first in-stock child, else the first variant — never a phantom selection.
+          const opened = fam.variants!.find(v => v.supplierProductId === skuId);
+          const pick = opened
+            ?? fam.variants!.find(v => v.enabled && v.stock > 0)
+            ?? fam.variants![0];
+          if (pick) { setSelectedColor(pick.color); setSelectedSize(pick.size); }
+          setActiveImage(0);
+          carouselRef.current?.scrollTo({ x: 0, animated: false });
+        } else {
+          // Family didn't materialise as multi-child (single sellable child / load error)
+          // → safe single-SKU fallback so the page still opens on the tapped SKU.
+          openSingle();
+        }
+      }).catch(() => { if (active) openSingle(); });
+    } else {
+      openSingle();
+    }
+    return () => { active = false; };
+  }, [initialProduct?.id, familyKey]);
 
   // Derived: resolved SKU
   // Never leave a multi-variant product with a null selection: if the current
@@ -984,10 +1026,28 @@ function ProductDetailScreen({ route, navigation }) {
   // Full detail Product for the selected variant, so selecting a color switches CONTENT
   // (title / description / features / specs / dimensions), not just price+images. Falls back
   // to the family representative when the per-sibling Product isn't available.
-  const selectedSibling: Product =
-    (selectedVariant?.supplierProductId
-      ? product.variantProducts?.find(vp => vp.id === selectedVariant.supplierProductId)
-      : undefined) ?? product;
+  // Family PDP = a multi-variant product carrying per-sibling variantProducts. For a
+  // family the selected variant MUST resolve to exactly one child Product; a single-SKU
+  // page has no siblings and always renders itself.
+  const isFamily = (product.variantProducts?.length ?? 0) > 0 && (product.variants?.length ?? 0) > 1;
+  const resolvedSibling: Product | undefined = selectedVariant?.supplierProductId
+    ? product.variantProducts?.find(vp => vp.id === selectedVariant.supplierProductId)
+    : undefined;
+  // Content source: the resolved child for a family; the product itself for single-SKU.
+  const selectedSibling: Product = resolvedSibling ?? product;
+  // A family selection is "resolved" only when the concrete child Product was found AND
+  // its id equals the selected variant's fulfillment key. If it is NOT resolved we must
+  // never sell/show the representative as if it were the chosen child — the purchase CTAs
+  // are hard-disabled below (assertSelectedVariantConsistency).
+  const variantResolved: boolean = !isFamily
+    || (!!selectedVariant?.supplierProductId && !!resolvedSibling && resolvedSibling.id === selectedVariant.supplierProductId);
+  if (__DEV__ && isFamily && !variantResolved) {
+    // eslint-disable-next-line no-console
+    console.error('[ProductFamily] selected variant did not resolve to a child Product — purchase disabled', {
+      family: product.product_family_key, selectedColor, selectedSize,
+      variantSku: selectedVariant?.supplierProductId,
+    });
+  }
 
   // Derived: gallery / price / savings
   const displayImages: string[] = selectedVariant?.images ?? product.images;
@@ -1052,6 +1112,7 @@ function ProductDetailScreen({ route, navigation }) {
 
   const handleAddToCart = () => {
     if (isOutOfStock) return;
+    if (!variantResolved) return; // never add a family child that didn't resolve to its own SKU
     if (hasVariants && selectedVariant) {
       addItem({
         sku: selectedVariant.sku,
@@ -1072,6 +1133,7 @@ function ProductDetailScreen({ route, navigation }) {
 
   const handleBuyNow = () => {
     if (isOutOfStock) return;
+    if (!variantResolved) return; // never buy a family child that didn't resolve to its own SKU
     navigation.navigate('Checkout', { mode: 'buy_now', product, qty, selectedVariant: selectedVariant ?? null });
   };
 
@@ -1351,13 +1413,13 @@ function ProductDetailScreen({ route, navigation }) {
                 })()
               : (() => {
                   const fallback: { label: string; value: string }[] = [
-                    product.tags?.material?.length ? { label: 'Material', value: product.tags.material.map((m: string) => m.replace(/-/g, ' ')).join(', ') } : null,
-                    { label: 'Weight', value: (product as any).weight ?? '—' },
+                    selectedSibling.tags?.material?.length ? { label: 'Material', value: selectedSibling.tags.material.map((m: string) => m.replace(/-/g, ' ')).join(', ') } : null,
+                    { label: 'Weight', value: (selectedSibling as any).weight ?? '—' },
                     { label: 'Brand', value: 'Xselfhome' },
                     { label: 'SKU', value: resolveSkuDisplay({
-                        skuCustom: product.skuCustom,
-                        sku:       product.variants?.[0]?.sku,
-                        id:        product.id,
+                        skuCustom: selectedSibling.skuCustom,
+                        sku:       selectedVariant?.sku ?? selectedSibling.variants?.[0]?.sku,
+                        id:        selectedChildId,
                     }) },
                   ].filter(Boolean) as { label: string; value: string }[];
                   return (
@@ -1405,11 +1467,11 @@ function ProductDetailScreen({ route, navigation }) {
             <Animated.View style={{ flex: 1, transform: [{ scale: btnScaleAnim }] }}>
               <TouchableOpacity
                 ref={btnRef}
-                style={[styles.addToCartBtn, isOutOfStock && styles.ctaBtnDisabled]}
-                disabled={isOutOfStock}
+                style={[styles.addToCartBtn, (isOutOfStock || !variantResolved) && styles.ctaBtnDisabled]}
+                disabled={isOutOfStock || !variantResolved}
                 activeOpacity={0.85}
                 onPress={() => {
-                  if (isOutOfStock) return;
+                  if (isOutOfStock || !variantResolved) return;
                   if (addedPermanent) {
                     navigation.navigate('Main', { screen: 'Cart' });
                     return;
@@ -1426,18 +1488,18 @@ function ProductDetailScreen({ route, navigation }) {
                   ]).start();
                 }}
               >
-                <Text style={[styles.addToCartText, isOutOfStock && styles.ctaBtnTextDisabled]}>
-                  {addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
+                <Text style={[styles.addToCartText, (isOutOfStock || !variantResolved) && styles.ctaBtnTextDisabled]}>
+                  {!variantResolved ? 'Unavailable' : addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
                 </Text>
               </TouchableOpacity>
             </Animated.View>
             <TouchableOpacity
-              style={[styles.buyNowBtn, isOutOfStock && styles.ctaBtnDisabled]}
-              disabled={isOutOfStock}
+              style={[styles.buyNowBtn, (isOutOfStock || !variantResolved) && styles.ctaBtnDisabled]}
+              disabled={isOutOfStock || !variantResolved}
               onPress={handleBuyNow}
             >
-              <Text style={[styles.buyNowText, isOutOfStock && styles.ctaBtnTextDisabled]}>
-                {isOutOfStock ? 'Unavailable' : 'Buy Now'}
+              <Text style={[styles.buyNowText, (isOutOfStock || !variantResolved) && styles.ctaBtnTextDisabled]}>
+                {(isOutOfStock || !variantResolved) ? 'Unavailable' : 'Buy Now'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -1445,7 +1507,7 @@ function ProductDetailScreen({ route, navigation }) {
         </View>
 
         {/* Reviews */}
-        <ReviewSection product={product} />
+        <ReviewSection product={selectedSibling} />
 
         {/* Frequently Bought Together */}
         {fbt.length > 0 && (
@@ -1559,11 +1621,11 @@ function ProductDetailScreen({ route, navigation }) {
         pointerEvents="box-none"
       >
         <TouchableOpacity
-          style={[styles.floatCtaBtn, isOutOfStock && styles.ctaBtnDisabled]}
-          disabled={isOutOfStock}
+          style={[styles.floatCtaBtn, (isOutOfStock || !variantResolved) && styles.ctaBtnDisabled]}
+          disabled={isOutOfStock || !variantResolved}
           activeOpacity={0.88}
           onPress={() => {
-            if (isOutOfStock) return;
+            if (isOutOfStock || !variantResolved) return;
             if (addedPermanent) {
               navigation.navigate('Main', { screen: 'Cart' });
               return;
@@ -1574,7 +1636,7 @@ function ProductDetailScreen({ route, navigation }) {
           }}
         >
           <Text style={styles.floatCtaBtnText}>
-            {isOutOfStock ? 'Unavailable' : addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
+            {(isOutOfStock || !variantResolved) ? 'Unavailable' : addedPermanent ? 'View Cart' : added ? 'Added \u2713' : 'Add to Cart'}
           </Text>
         </TouchableOpacity>
       </Animated.View>
