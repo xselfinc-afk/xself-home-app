@@ -57,7 +57,7 @@ export function computeCartLineUpdates(
       const quoted = quote.quoted_price_cents / 100;
       const original = quote.original_price_cents / 100;
       if (line.price !== quoted || line.quoteToken !== quote.redeem_token) {
-        updates.push({ sku: line.sku, price: quoted, quoteToken: quote.redeem_token, originalPrice: original });
+        updates.push({ productId: line.productId, price: quoted, quoteToken: quote.redeem_token, originalPrice: original });
       }
       continue;
     }
@@ -66,12 +66,12 @@ export function computeCartLineUpdates(
       // Offer no longer applies — fall back to the current catalog price (or the
       // pre-offer original as a last resort) and clear the offer fields.
       const fallback = catalogPrice ?? line.originalPrice ?? line.price;
-      updates.push({ sku: line.sku, price: fallback, quoteToken: undefined, originalPrice: undefined });
+      updates.push({ productId: line.productId, price: fallback, quoteToken: undefined, originalPrice: undefined });
       continue;
     }
 
     if (catalogPrice != null && catalogPrice !== line.price) {
-      updates.push({ sku: line.sku, price: catalogPrice, quoteToken: undefined, originalPrice: undefined });
+      updates.push({ productId: line.productId, price: catalogPrice, quoteToken: undefined, originalPrice: undefined });
     }
   }
   return updates;

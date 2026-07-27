@@ -52,7 +52,7 @@ it('isQuoteActive: active + unexpired only', () => {
 // ── quote application (Bug 2: offer created AFTER add-to-cart) ──
 it('applies an active quote to a stale plain line (price + token + strikethrough)', () => {
   const u = computeCartLineUpdates([line()], new Map([['P1', quote()]]), new Map([['P1', catalog(100)]]), NOW);
-  assert.deepEqual(u, [{ sku: 'SKU1', price: 80, quoteToken: 'tok-1', originalPrice: 100 }]);
+  assert.deepEqual(u, [{ productId: 'P1', price: 80, quoteToken: 'tok-1', originalPrice: 100 }]);
 });
 it('does NOT apply a quote whose supplier_sku differs from the cart line sku', () => {
   const u = computeCartLineUpdates([line()], new Map([['P1', quote({ supplier_sku: 'OTHER' })]]), new Map([['P1', catalog(100)]]), NOW);
@@ -68,22 +68,22 @@ it('already-quoted line with same token/price → no redundant update', () => {
 it('expired quote on a quoted line reverts to catalog price and clears offer fields', () => {
   const l = line({ price: 80, quoteToken: 'tok-1', originalPrice: 100 });
   const u = computeCartLineUpdates([l], new Map([['P1', quote({ expires_at: PAST })]]), new Map([['P1', catalog(100)]]), NOW);
-  assert.deepEqual(u, [{ sku: 'SKU1', price: 100, quoteToken: undefined, originalPrice: undefined }]);
+  assert.deepEqual(u, [{ productId: 'P1', price: 100, quoteToken: undefined, originalPrice: undefined }]);
 });
 it('quoted line with NO quote returned (revoked/used) also reverts', () => {
   const l = line({ price: 80, quoteToken: 'tok-1', originalPrice: 100 });
   const u = computeCartLineUpdates([l], new Map([['P1', null]]), new Map([['P1', catalog(95)]]), NOW);
-  assert.deepEqual(u, [{ sku: 'SKU1', price: 95, quoteToken: undefined, originalPrice: undefined }]);
+  assert.deepEqual(u, [{ productId: 'P1', price: 95, quoteToken: undefined, originalPrice: undefined }]);
 });
 
 // ── catalog drift on plain lines ──
 it('catalog price drop updates the line (customer sees the lower price)', () => {
   const u = computeCartLineUpdates([line({ price: 100 })], new Map(), new Map([['P1', catalog(90)]]), NOW);
-  assert.deepEqual(u, [{ sku: 'SKU1', price: 90, quoteToken: undefined, originalPrice: undefined }]);
+  assert.deepEqual(u, [{ productId: 'P1', price: 90, quoteToken: undefined, originalPrice: undefined }]);
 });
 it('catalog price rise updates the line (prevents price_changed surprise at checkout)', () => {
   const u = computeCartLineUpdates([line({ price: 100 })], new Map(), new Map([['P1', catalog(110)]]), NOW);
-  assert.deepEqual(u, [{ sku: 'SKU1', price: 110, quoteToken: undefined, originalPrice: undefined }]);
+  assert.deepEqual(u, [{ productId: 'P1', price: 110, quoteToken: undefined, originalPrice: undefined }]);
 });
 it('unchanged catalog price → empty result (no cart churn)', () => {
   const u = computeCartLineUpdates([line({ price: 100 })], new Map(), new Map([['P1', catalog(100)]]), NOW);
@@ -104,8 +104,8 @@ it('mixed cart: quote applies to its line; other line follows catalog', () => {
   ]);
   const u = computeCartLineUpdates(lines, quotes, cat, NOW);
   assert.deepEqual(u, [
-    { sku: 'SKU1', price: 80, quoteToken: 'tok-1', originalPrice: 100 },
-    { sku: 'SKU2', price: 45, quoteToken: undefined, originalPrice: undefined },
+    { productId: 'P1', price: 80, quoteToken: 'tok-1', originalPrice: 100 },
+    { productId: 'P2', price: 45, quoteToken: undefined, originalPrice: undefined },
   ]);
 });
 

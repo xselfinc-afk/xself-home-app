@@ -20,57 +20,62 @@ export interface CartItem {
   originalPrice?: number;
 }
 
-/** Price/offer refresh payload for one existing cart line (matched by sku).
- *  `quoteToken`/`originalPrice` set to undefined explicitly CLEAR the fields
- *  (used when a previously-attached offer expired or was revoked). */
+/** Price/offer refresh payload for one existing cart line (matched by productId
+ *  = supplier_product_id, the physical sellable identity — NOT sku_custom, which
+ *  is not globally unique). `quoteToken`/`originalPrice` set to undefined
+ *  explicitly CLEAR the fields (used when a previously-attached offer expired). */
 export interface CartLineUpdate {
-  sku: string;
+  productId: string;
   price: number;
   quoteToken?: string;
   originalPrice?: number;
 }
 
+// Cart-line identity is the physical sellable SKU = productId (supplier_product_id,
+// globally unique). sku_custom is a display label only and is NOT unique, so it must
+// never be the merge/remove/update key — two different SKUs could collide onto one line.
 type CartAction =
   | { type: 'ADD_ITEM'; item: Omit<CartItem, 'qty'>; qty: number }
-  | { type: 'REMOVE_ITEM'; sku: string }
-  | { type: 'UPDATE_QTY'; sku: string; qty: number }
+  | { type: 'REMOVE_ITEM'; productId: string }
+  | { type: 'UPDATE_QTY'; productId: string; qty: number }
   | { type: 'REFRESH_LINES'; updates: CartLineUpdate[] }
   | { type: 'CLEAR_CART' };
 
-function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
+// Exported for unit tests (cartIdentity.test.ts). Pure — no React/RN dependency.
+export function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
   switch (action.type) {
     case 'ADD_ITEM': {
-      // Quoted lines always REPLACE any prior same-sku row — the new quote
+      // Quoted lines always REPLACE any prior same-SKU row — the new quote
       // token, quoted price, and original price are authoritative. Merging
       // qty would keep the old non-quote price and break server-side quote
-      // validation (qty > quote.max_qty).
+      // validation (qty > quote.max_qty). Identity = productId (supplier_product_id).
       if (action.item.quoteToken) {
-        const filtered = state.filter(i => i.sku !== action.item.sku);
+        const filtered = state.filter(i => i.productId !== action.item.productId);
         return [...filtered, { ...action.item, qty: action.qty }];
       }
-      const existing = state.find(i => i.sku === action.item.sku);
+      const existing = state.find(i => i.productId === action.item.productId);
       if (existing) {
         return state.map(i =>
-          i.sku === action.item.sku ? { ...i, qty: i.qty + action.qty } : i
+          i.productId === action.item.productId ? { ...i, qty: i.qty + action.qty } : i
         );
       }
       return [...state, { ...action.item, qty: action.qty }];
     }
     case 'REMOVE_ITEM':
-      return state.filter(i => i.sku !== action.sku);
+      return state.filter(i => i.productId !== action.productId);
     case 'UPDATE_QTY':
-      if (action.qty <= 0) return state.filter(i => i.sku !== action.sku);
+      if (action.qty <= 0) return state.filter(i => i.productId !== action.productId);
       return state.map(i =>
-        i.sku === action.sku ? { ...i, qty: action.qty } : i
+        i.productId === action.productId ? { ...i, qty: action.qty } : i
       );
     case 'REFRESH_LINES': {
       // Server-freshness sync: update price/offer fields on existing lines only.
       // Never adds/removes lines and never touches qty — display + advisory price
       // only (create-checkout-order remains the pricing authority at charge time).
       if (action.updates.length === 0) return state;
-      const bySku = new Map(action.updates.map(u => [u.sku, u]));
+      const byProductId = new Map(action.updates.map(u => [u.productId, u]));
       return state.map(i => {
-        const u = bySku.get(i.sku);
+        const u = byProductId.get(i.productId);
         if (!u) return i;
         return { ...i, price: u.price, quoteToken: u.quoteToken, originalPrice: u.originalPrice };
       });
@@ -90,8 +95,10 @@ interface CartContextValue {
   /** Timestamp (ms) when the current cart reservation expires — resets to +10min on every add */
   reserveExpiry: number | null;
   addItem: (item: Omit<CartItem, 'qty'>, qty: number) => void;
-  removeItem: (sku: string) => void;
-  updateQty: (sku: string, qty: number) => void;
+  /** Remove the cart line for this productId (= supplier_product_id). */
+  removeItem: (productId: string) => void;
+  /** Set quantity for the cart line with this productId (= supplier_product_id). */
+  updateQty: (productId: string, qty: number) => void;
   /** Apply price/offer freshness updates to existing lines (see CartLineUpdate). */
   refreshLines: (updates: CartLineUpdate[]) => void;
   clearCart: () => void;
@@ -110,11 +117,11 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     setReserveExpiry(Date.now() + 10 * 60 * 1000);
   };
 
-  const removeItem = (sku: string) =>
-    dispatch({ type: 'REMOVE_ITEM', sku });
+  const removeItem = (productId: string) =>
+    dispatch({ type: 'REMOVE_ITEM', productId });
 
-  const updateQty = (sku: string, qty: number) =>
-    dispatch({ type: 'UPDATE_QTY', sku, qty });
+  const updateQty = (productId: string, qty: number) =>
+    dispatch({ type: 'UPDATE_QTY', productId, qty });
 
   const refreshLines = (updates: CartLineUpdate[]) =>
     dispatch({ type: 'REFRESH_LINES', updates });

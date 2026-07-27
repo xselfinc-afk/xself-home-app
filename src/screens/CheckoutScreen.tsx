@@ -264,8 +264,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
       .catch(() => {/* network error — addresses stay empty */});
   }, [user?.id]);
 
-// Stable key to detect cart content changes (SKU or quantity)
-  const orderItemsKey = orderItems.map(i => `${i.sku}:${i.qty}`).join(',');
+// Stable key to detect cart content changes (productId = supplier_product_id, or quantity).
+  // Keyed on productId (not sku_custom, which is not unique) so a change in the physical
+  // SKU set can never be masked by two items sharing a sku_custom.
+  const orderItemsKey = orderItems.map(i => `${i.productId}:${i.qty}`).join(',');
 
   // Fulfillment planning — reruns on address change OR cart contents change
   useEffect(() => {
@@ -1126,7 +1128,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <>
                 {orderItems.map((item, idx) => (
                   <View
-                    key={item.sku}
+                    key={`${item.productId}-${idx}`}
                     style={[styles.orderItem, idx === orderItems.length - 1 && { borderBottomWidth: 0 }]}
                   >
                     <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.orderImg} cachePolicy="memory-disk" transition={150} />

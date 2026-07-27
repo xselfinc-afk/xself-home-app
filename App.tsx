@@ -1893,31 +1893,33 @@ function CartScreen({ navigation }) {
   const [savedItems, setSavedItems] = useState<CartItem[]>([]);
   const removeAnims = useRef<Record<string, Animated.Value>>({});
 
-  // Ensure each cart item has a removal animation value
+  // Ensure each cart item has a removal animation value. Cart-line identity is
+  // productId (= supplier_product_id, globally unique); sku_custom is NOT unique
+  // and must never key line state, or two distinct SKUs could collide onto one row.
   cart.forEach(item => {
-    if (!removeAnims.current[item.sku]) {
-      removeAnims.current[item.sku] = new Animated.Value(1);
+    if (!removeAnims.current[item.productId]) {
+      removeAnims.current[item.productId] = new Animated.Value(1);
     }
   });
 
-  const handleRemove = (sku: string) => {
-    const anim = removeAnims.current[sku];
+  const handleRemove = (productId: string) => {
+    const anim = removeAnims.current[productId];
     if (anim) {
       Animated.timing(anim, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
-        removeItem(sku);
-        delete removeAnims.current[sku];
+        removeItem(productId);
+        delete removeAnims.current[productId];
       });
     } else {
-      removeItem(sku);
+      removeItem(productId);
     }
   };
 
   const handleSaveForLater = (item: CartItem) => {
-    const anim = removeAnims.current[item.sku];
+    const anim = removeAnims.current[item.productId];
     const doSave = () => {
-      removeItem(item.sku);
-      delete removeAnims.current[item.sku];
-      setSavedItems(prev => prev.find(s => s.sku === item.sku) ? prev : [...prev, item]);
+      removeItem(item.productId);
+      delete removeAnims.current[item.productId];
+      setSavedItems(prev => prev.find(s => s.productId === item.productId) ? prev : [...prev, item]);
     };
     if (anim) {
       Animated.timing(anim, { toValue: 0, duration: 200, useNativeDriver: true }).start(doSave);
@@ -1927,35 +1929,35 @@ function CartScreen({ navigation }) {
   };
 
   const handleMoveToCart = (item: CartItem) => {
-    setSavedItems(prev => prev.filter(s => s.sku !== item.sku));
+    setSavedItems(prev => prev.filter(s => s.productId !== item.productId));
     const { sku, productId, name, price, img, color, size } = item;
     addItem({ sku, productId, name, price, img, color, size }, item.qty);
   };
 
-  const handleRemoveSaved = (sku: string) => {
-    setSavedItems(prev => prev.filter(s => s.sku !== sku));
+  const handleRemoveSaved = (productId: string) => {
+    setSavedItems(prev => prev.filter(s => s.productId !== productId));
   };
 
-  const flashQty = (sku: string) => {
-    setQtyFlash(prev => ({ ...prev, [sku]: true }));
-    setTimeout(() => setQtyFlash(prev => { const n = { ...prev }; delete n[sku]; return n; }), 400);
+  const flashQty = (productId: string) => {
+    setQtyFlash(prev => ({ ...prev, [productId]: true }));
+    setTimeout(() => setQtyFlash(prev => { const n = { ...prev }; delete n[productId]; return n; }), 400);
   };
 
-  const handleQtyChange = (sku: string, text: string) => {
-    setQtyInputs(prev => ({ ...prev, [sku]: text.replace(/[^0-9]/g, '') }));
+  const handleQtyChange = (productId: string, text: string) => {
+    setQtyInputs(prev => ({ ...prev, [productId]: text.replace(/[^0-9]/g, '') }));
   };
 
-  const handleQtyBlur = (sku: string) => {
-    const draft = qtyInputs[sku];
+  const handleQtyBlur = (productId: string) => {
+    const draft = qtyInputs[productId];
     if (draft !== undefined) {
       const val = parseInt(draft, 10);
-      updateQty(sku, isNaN(val) || val < 1 ? 1 : Math.min(val, 999));
-      setQtyInputs(prev => { const next = { ...prev }; delete next[sku]; return next; });
+      updateQty(productId, isNaN(val) || val < 1 ? 1 : Math.min(val, 999));
+      setQtyInputs(prev => { const next = { ...prev }; delete next[productId]; return next; });
     }
   };
 
-  const clearDraft = (sku: string) =>
-    setQtyInputs(prev => { const next = { ...prev }; delete next[sku]; return next; });
+  const clearDraft = (productId: string) =>
+    setQtyInputs(prev => { const next = { ...prev }; delete next[productId]; return next; });
 
   React.useEffect(() => {
     return navigation.addListener('focus', () => setCheckoutLoading(false));
@@ -2100,8 +2102,8 @@ function CartScreen({ navigation }) {
       <ScrollView contentContainerStyle={{ paddingTop: 8, paddingBottom: insets.bottom + 100 }}>
         {cart.map(item => (
           <Animated.View
-            key={item.sku}
-            style={[styles.cartItem, { opacity: removeAnims.current[item.sku] ?? 1 }]}
+            key={item.productId}
+            style={[styles.cartItem, { opacity: removeAnims.current[item.productId] ?? 1 }]}
           >
             <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.cartImage} contentFit="cover" cachePolicy="memory-disk" transition={150} />
             <View style={styles.cartInfo}>
@@ -2116,22 +2118,22 @@ function CartScreen({ navigation }) {
                 <View style={styles.cartQtyControls}>
                   <TouchableOpacity
                     style={styles.cartQtyBtn}
-                    onPress={() => { clearDraft(item.sku); flashQty(item.sku); updateQty(item.sku, Math.max(1, item.qty - 1)); }}
+                    onPress={() => { clearDraft(item.productId); flashQty(item.productId); updateQty(item.productId, Math.max(1, item.qty - 1)); }}
                   >
                     <Ionicons name="remove" size={14} color="#1C1917" />
                   </TouchableOpacity>
                   <TextInput
-                    style={[styles.cartQtyText, qtyFlash[item.sku] && { color: '#EAB320' }]}
-                    value={qtyInputs[item.sku] !== undefined ? qtyInputs[item.sku] : String(item.qty)}
-                    onChangeText={text => handleQtyChange(item.sku, text)}
-                    onBlur={() => handleQtyBlur(item.sku)}
+                    style={[styles.cartQtyText, qtyFlash[item.productId] && { color: '#EAB320' }]}
+                    value={qtyInputs[item.productId] !== undefined ? qtyInputs[item.productId] : String(item.qty)}
+                    onChangeText={text => handleQtyChange(item.productId, text)}
+                    onBlur={() => handleQtyBlur(item.productId)}
                     keyboardType="number-pad"
                     selectTextOnFocus
                     maxLength={3}
                   />
                   <TouchableOpacity
                     style={styles.cartQtyBtn}
-                    onPress={() => { clearDraft(item.sku); flashQty(item.sku); updateQty(item.sku, item.qty + 1); }}
+                    onPress={() => { clearDraft(item.productId); flashQty(item.productId); updateQty(item.productId, item.qty + 1); }}
                   >
                     <Ionicons name="add" size={14} color="#1C1917" />
                   </TouchableOpacity>
@@ -2141,7 +2143,7 @@ function CartScreen({ navigation }) {
                 <Text style={styles.cartSaveText}>Save for later</Text>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.cartDeleteBtn} onPress={() => handleRemove(item.sku)}>
+            <TouchableOpacity style={styles.cartDeleteBtn} onPress={() => handleRemove(item.productId)}>
               <Ionicons name="close" size={16} color="#9CA3AF" />
             </TouchableOpacity>
           </Animated.View>
@@ -2197,7 +2199,7 @@ function CartScreen({ navigation }) {
           <View style={styles.savedSection}>
             <Text style={styles.savedSectionTitle}>Saved for later ({savedItems.length})</Text>
             {savedItems.map(item => (
-              <View key={item.sku} style={styles.savedItem}>
+              <View key={item.productId} style={styles.savedItem}>
                 <Image source={{ uri: variantUrl(item.img, { width: 320 }) }} style={styles.savedItemImg} cachePolicy="memory-disk" transition={150} />
                 <View style={styles.savedItemInfo}>
                   <Text style={styles.savedItemName} numberOfLines={2}>{item.name}</Text>
@@ -2206,7 +2208,7 @@ function CartScreen({ navigation }) {
                     <TouchableOpacity style={styles.savedMoveBtn} onPress={() => handleMoveToCart(item)}>
                       <Text style={styles.savedMoveBtnText}>Move to cart</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => handleRemoveSaved(item.sku)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <TouchableOpacity onPress={() => handleRemoveSaved(item.productId)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                       <Text style={styles.savedRemoveText}>Remove</Text>
                     </TouchableOpacity>
                   </View>
