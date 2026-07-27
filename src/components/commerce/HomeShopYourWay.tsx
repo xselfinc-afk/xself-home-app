@@ -89,8 +89,15 @@ export default function HomeShopYourWay({ navigation }: { navigation: any }) {
         <Text style={styles.title}>Shop your way</Text>
       </View>
 
-      {/* Lens pills — active dark/filled, inactive light/outlined. 44pt tap targets. */}
-      <View style={styles.pills}>
+      {/* Lens pills — horizontally scrollable so every mode stays fully readable and
+          tappable on narrow screens (no clipping); active dark/filled, inactive
+          light/outlined. 44pt tap targets. First/last pills keep 16pt edge padding. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.pills}
+        style={styles.pillsScroll}
+      >
         {MODES.map(m => {
           const on = m.key === mode;
           return (
@@ -105,13 +112,18 @@ export default function HomeShopYourWay({ navigation }: { navigation: any }) {
             </TouchableOpacity>
           );
         })}
-      </View>
+      </ScrollView>
 
-      {/* Single horizontal content rail; height reserved to prevent layout shift. */}
+      {/* Single horizontal content rail; height reserved to prevent layout shift.
+          While the catalog is still loading (content === null) show skeleton cards
+          instead of a blank rail, so the module never appears empty on a cold start.
+          Warm in-memory cache resolves in a tick, so this is a brief placeholder. */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail} style={{ minHeight: RAIL_H }}>
-        {mode === 'need'
-          ? entries.map(e => <NeedCard key={e.id} entry={e} onPress={() => go(e)} />)
-          : entries.map(e => <MediaCard key={e.id} entry={e} onPress={() => go(e)} width={156} />)}
+        {content === null
+          ? [0, 1, 2].map(i => <View key={`sk-${i}`} style={styles.skeletonCard} />)
+          : mode === 'need'
+            ? entries.map(e => <NeedCard key={e.id} entry={e} onPress={() => go(e)} />)
+            : entries.map(e => <MediaCard key={e.id} entry={e} onPress={() => go(e)} width={156} />)}
       </ScrollView>
     </View>
   );
@@ -121,7 +133,8 @@ const styles = StyleSheet.create({
   wrap: { paddingBottom: 4 },
   header: { paddingHorizontal: 16, paddingTop: 22, paddingBottom: 10 },
   title: { fontSize: 15, fontWeight: '700', color: INK, letterSpacing: -0.1 },
-  pills: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingBottom: 12 },
+  pillsScroll: { flexGrow: 0 },
+  pills: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingRight: 20, paddingBottom: 12 },
   pill: { height: 38, paddingHorizontal: 16, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
   pillOn: { backgroundColor: INK },
   pillOff: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: LINE },
@@ -130,6 +143,7 @@ const styles = StyleSheet.create({
   pillTextOff: { color: INK },
   rail: { paddingHorizontal: 16, paddingRight: 24, gap: 12 },
   card: { height: RAIL_H - 12, borderRadius: 16, overflow: 'hidden', backgroundColor: WARM, justifyContent: 'flex-end' },
+  skeletonCard: { width: 156, height: RAIL_H - 12, borderRadius: 16, backgroundColor: WARM },
   cardFallback: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: WARM },
   cardScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(28,25,23,0.32)' },
   cardBody: { padding: 12 },
