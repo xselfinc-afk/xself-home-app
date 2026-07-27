@@ -44,6 +44,9 @@ reports/release/
 reports/giga-manual-product/
 scripts/manual-inputs/
 
+# Product Family pilot precheck — regenerated read-only DB analysis (not source)
+reports/product-family/
+
 # Local backups, debug output, and Deno lockfile (not part of the app/release)
 backups/
 scripts/debug-output/
