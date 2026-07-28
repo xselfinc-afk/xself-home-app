@@ -1926,6 +1926,23 @@ function SearchScreen({ navigation, route }) {
   );
 }
 
+// Per-line advisory fulfillment state for the Cart, reusing the SAME fulfillmentAdvisoryService
+// (5-min sku|zip cache, server-authoritative). Non-blocking (renders nothing while loading);
+// a request-version guard drops out-of-order responses so a SKU/ZIP change never shows a stale
+// line result. Advisory failure → 'unknown' → conservative copy (never a false "unavailable").
+// Read-only: never touches pricing, qty, row identity, or the checkout payload.
+function CartLineFulfillment({ sku, zip }: { sku: string; zip: string | null }) {
+  const [adv, setAdv] = useState<FulfillmentAdvisory | null>(null);
+  const reqRef = useRef(0);
+  React.useEffect(() => {
+    const reqId = ++reqRef.current;
+    setAdv(null); // clear on sku/zip change — never render the previous line's result
+    fetchFulfillmentAdvisory(sku, zip).then(a => { if (reqRef.current === reqId) setAdv(a); });
+  }, [sku, zip]);
+  if (!adv) return null; // non-blocking: nothing until resolved
+  return <Text style={styles.cartFulfillment}>{FULFILLMENT_COPY[adv.state]}</Text>;
+}
+
 function CartAddIcon({ onPress }: { onPress: () => void }) {
   const scale = useRef(new Animated.Value(1)).current;
   const handlePress = () => {
@@ -2197,6 +2214,7 @@ function CartScreen({ navigation }) {
                   {[item.color, item.size].filter(Boolean).join(' · ')}
                 </Text>
               )}
+              <CartLineFulfillment sku={item.productId} zip={getCachedDelivery()?.zip ?? null} />
               <View style={styles.cartBottomRow}>
                 <Text style={styles.cartPrice}>${formatPrice(item.price * item.qty)}</Text>
                 <View style={styles.cartQtyControls}>
@@ -2982,6 +3000,7 @@ const styles = StyleSheet.create({
   cartInfo: { flex: 1, marginLeft: 10, paddingRight: 20 },
   cartName: { fontSize: 13, fontWeight: '500', color: '#1C1917', lineHeight: 18 },
   cartVariants: { fontSize: 11, color: '#9CA3AF', marginTop: 3 },
+  cartFulfillment: { fontSize: 11, color: '#6B7280', marginTop: 3 },
   cartBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
   cartPrice: { fontSize: 15, fontWeight: '700', color: '#1C1917' },
   cartDeleteBtn: { position: 'absolute', top: 10, right: 10, padding: 4 },
