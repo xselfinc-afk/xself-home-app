@@ -23,6 +23,7 @@ import { supabase } from '../lib/supabase';
 import { fetchCaAvailableProductIds } from '../services/inventoryCacheService';
 import { CategoryPillRow } from '../components/CategoryPillRow';
 import { adaptStandardizedRow, LIST_SELECT } from '../services/detailProductAdapter';
+import { collapsePilotFamilies } from '../services/productFamilyCollapse';
 import type { Product } from '../data/products';
 import DiscoverCard from '../components/DiscoverCard';
 import SearchPillBar from '../components/SearchPillBar';
@@ -136,9 +137,9 @@ export default function DiscoverScreen({ navigation, route }: any) {
           familySeen.set(key, { id: r.supplier_product_id, hasImage });
         }
       });
-      // Independent-SKU mode: every sellable SKU is its own card — no family collapse.
-      // `deduped` is now an alias for the full mapped list (downstream facet/log code unchanged).
-      const deduped = mapped;
+      // Pilot families collapse to one representative card here (browse grid); the full
+      // per-SKU pool is kept in searchAllItems below so any colour/SKU stays findable in search.
+      const deduped = collapsePilotFamilies(mapped);
       const repByFamily: Record<string, string> = {};
       for (const [key, v] of familySeen) repByFamily[key] = v.id;
       setSearchAllItems(mapped.filter(p => p.images.length > 0));

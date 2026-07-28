@@ -25,6 +25,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
 import { loadProductDetail, loadProductFamily } from './src/services/productFamilyService';
 import { isPilotFamily } from './src/config/productFamilyPilot';
+import { collapsePilotFamilies } from './src/services/productFamilyCollapse';
 import { LIST_SELECT } from './src/services/detailProductAdapter';
 import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
@@ -275,11 +276,11 @@ function HomeScreen({ navigation }) {
           familyPrices.set(key, arr);
         }
       });
-      // Independent-SKU mode: every sellable supplier_product_id is its own card — no family
-      // collapse. (familySeen / familyPrices above are now unused but left in place to keep the
-      // diff minimal; product_family_key remains in the data model for backend grouping.)
+      // Pilot families collapse to ONE representative card ("From $X" when prices differ);
+      // every non-pilot SKU stays independent. (Legacy familySeen/familyPrices retained but
+      // unused — the pure collapse helper recomputes representative + range from the Product list.)
       void familySeen; void familyPrices;
-      return mapped;
+      return collapsePilotFamilies(mapped);
     }
 
     async function bootstrap() {

@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { adaptStandardizedRow } from '../services/detailProductAdapter';
+import { collapsePilotFamilies } from '../services/productFamilyCollapse';
 import type { Product } from '../data/products';
 import ProductCard from '../components/ProductCard';
 import { useRecommendations } from '../context/RecommendationContext';
@@ -65,9 +66,9 @@ export default function CollectionScreen({ route, navigation }: any) {
         catch { return []; }
       });
 
-      // Independent-SKU mode: every sellable SKU is its own card — no family collapse.
-      // `deduped` is an alias for the full mapped list (downstream filter code unchanged).
-      const deduped = mapped;
+      // Pilot families collapse to one representative card ("From $X" when prices differ);
+      // every non-pilot SKU stays its own card. Downstream filter code is unchanged.
+      const deduped = collapsePilotFamilies(mapped);
 
       // Client-side: require originalPrice > price and a valid image
       const discounted = deduped.filter(
