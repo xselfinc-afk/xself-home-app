@@ -18,22 +18,29 @@
 export const PRODUCT_FAMILY_PILOT_ENABLED = true;
 
 /**
- * Initial verified pilot families (subset of the 8 READY_FOR_PILOT authoritative
- * `-vg-` families). Deliberately small; exercises both uniform-price and
- * per-child-varying-price ("From $X") rendering.
+ * Verified pilot families — all 8 READY_FOR_PILOT authoritative `-vg-` families
+ * from reports/product-family/pilot-family-precheck.md. Each is a clean 2-child
+ * colour pair with unique colour labels and complete per-child content/price/
+ * inventory/delivery-fee. Two of the original ten are deliberately EXCLUDED (see
+ * the Held note below). Exercises both uniform-price and per-child-varying-price.
  */
 export const PRODUCT_FAMILY_PILOT_KEYS: ReadonlySet<string> = new Set<string>([
   'dr-vg-w409p266778-2door2drawer-w32', // 2-Door Wardrobe — Black / Natural (uniform $279)
   'dr-vg-n733p307938b',                 // Mirrored Nightstand — Black / White (uniform $199)
-  'cb-vg-w409p327399-4door-w63',        // Buffet Cabinet — Walnut $279 / Natural $219 (per-child price)
+  'cb-vg-w409p327399-4door-w63',        // Buffet Cabinet 62.6" — Walnut $279 / Natural $219 (per-child price)
+  'cb-vg-w331s00057-6door1drawer-w39',  // 70.87" Tall Wardrobe — Black $219 / Walnut $209 (per-child price)
+  'dr-vg-w1445s00002',                  // 6-Drawer Double-Wide Dresser — Antique/Light Brown / Deep Rustic Brown (uniform $479)
+  'dr-vg-w1820s00068',                  // 6-Drawer 55" Dresser — Oak / Walnut (uniform $349)
+  'dr-vg-w409p387577',                  // 9-Drawer Dresser — White / Natural (uniform $349)
+  'dr-vg-w409s00014',                   // 9-Drawer 63" Dresser — White / Black (uniform $289)
 ]);
 
 /**
- * Staged for expansion after the initial pilot validates (all passed precheck):
- *   cb-vg-w331s00057-6door1drawer-w39, dr-vg-w1445s00002, dr-vg-w1820s00068,
- *   dr-vg-w409p387577, dr-vg-w409s00014
- * Held (unresolved config/width axis in key — fragmentation risk):
+ * HELD OUT (do NOT add without manual confirmation) — the 2 remaining multi-child
+ * `-vg-` families carry an unresolved config/width axis in the key, a documented
+ * fragmentation risk (a future sibling could parse a config and split the group):
  *   dr-vg-xw000032aaa-5drawer-wmissing, sb-vg-sp000075aac-cfgmissing-wmissing
+ * Title-derived families are never eligible for the pilot.
  */
 
 /** True only for a family key explicitly approved for the multi-SKU PDP pilot. */
