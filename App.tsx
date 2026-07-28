@@ -1065,7 +1065,9 @@ function ProductDetailScreen({ route, navigation }) {
   })();
   const displayPrice: number = selectedVariant?.price ?? product.price;
   const displayCompare: number | undefined = selectedVariant?.originalPrice ?? product.originalPrice;
-  const savings = displayCompare ? displayCompare - displayPrice : 0;
+  // Round to cents so a float artifact (e.g. 284.99 - 219 = 65.99000000000001) never
+  // surfaces in the "Save $X" badge. Preserves cents for genuinely fractional savings.
+  const savings = displayCompare ? Math.round((displayCompare - displayPrice) * 100) / 100 : 0;
 
   // Derived: stock state
   const stockCount: number = selectedVariant?.stock ?? Infinity;
