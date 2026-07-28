@@ -498,8 +498,10 @@ check('Fulfillment rules', () => {
     failures.push('supabase/functions/plan-fulfillment/index.ts: file missing');
     return failures;
   }
-  if (!/PICKUP_THRESHOLD_MILES\s*=\s*100\b/.test(plan)) {
-    failures.push('supabase/functions/plan-fulfillment/index.ts: PICKUP_THRESHOLD_MILES is not 100');
+  // Dual-radius pickup (CA 100mi / approved out-of-state 50mi) is centralized in the shared
+  // resolver; the planner must consume it via pickupRadiusMiles(state), not a flat constant.
+  if (!/pickupRadiusMiles\(/.test(plan)) {
+    failures.push('supabase/functions/plan-fulfillment/index.ts: must use pickupRadiusMiles(state) (dual-radius pickup)');
   }
   // Forbid stale 30-mile pickup phrasing in shipping runtime sources.
   const runtimeFiles = [
@@ -530,16 +532,17 @@ check('Fulfillment rules', () => {
 check('Pickup rule lock', () => {
   const failures: string[] = [];
 
-  // Radius: edge (authoritative) + frontend mirror are both 100 and in sync.
+  // Dual-radius pickup lock (approved 2026-07): CA = 100mi, approved out-of-state = 50mi,
+  // centralized in supabase/functions/_shared/fulfillmentEligibility.ts. The obsolete
+  // single-100 client/server equality check is intentionally removed — the client no longer
+  // computes a pickup radius (server is authoritative via pickupRadiusMiles(state)).
   const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
-  const cfg  = read('src/config/delivery.ts') ?? '';
-  const edgeRadius = plan.match(/PICKUP_THRESHOLD_MILES\s*=\s*(\d+)/)?.[1];
-  const feRadius   = cfg.match(/PICKUP_RADIUS_MILES\s*=\s*(\d+)/)?.[1];
-  if (edgeRadius !== '100') failures.push(`supabase/functions/plan-fulfillment/index.ts: PICKUP_THRESHOLD_MILES must be 100 (found ${edgeRadius ?? 'none'})`);
-  if (feRadius !== '100')   failures.push(`src/config/delivery.ts: PICKUP_RADIUS_MILES must be 100 (found ${feRadius ?? 'none'})`);
-  if (edgeRadius && feRadius && edgeRadius !== feRadius) {
-    failures.push(`pickup radius out of sync: edge=${edgeRadius} frontend=${feRadius}`);
-  }
+  const elig = read('supabase/functions/_shared/fulfillmentEligibility.ts') ?? '';
+  const caRadius  = elig.match(/PICKUP_RADIUS_MILES_BY_STATE[^}]*CA:\s*(\d+)/)?.[1];
+  const oosRadius = elig.match(/DEFAULT_PICKUP_RADIUS_MILES\s*=\s*(\d+)/)?.[1];
+  if (caRadius !== '100') failures.push(`_shared/fulfillmentEligibility.ts: CA pickup radius must be 100 (found ${caRadius ?? 'none'})`);
+  if (oosRadius !== '50') failures.push(`_shared/fulfillmentEligibility.ts: default out-of-state pickup radius must be 50 (found ${oosRadius ?? 'none'})`);
+  if (!/pickupRadiusMiles\(/.test(plan)) failures.push('supabase/functions/plan-fulfillment/index.ts: must consume pickupRadiusMiles(state)');
 
   // Fee: server computes free pickup, and the locked frontend constant is 0.
   failures.push(...fileMust('supabase/functions/create-checkout-order/index.ts', /usePickup\s*\?\s*0\s*:/));

@@ -9,6 +9,7 @@ import {
   type GigaPriceRow,
   type GigaCacheRow,
 } from '../_shared/deliveryFee.ts';
+import { pickupRadiusMiles, distanceMiles } from '../_shared/fulfillmentEligibility.ts';
 
 // Built-in Supabase env vars — always present in Edge Functions
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -28,10 +29,10 @@ const DELIVERY_PRICE_ENV: 'sandbox' | 'production' =
 // switch back to the live OpenAPI lookup once GIGA enables it — no code change needed.
 const DELIVERY_FEE_SOURCE: 'portal_cache' | 'openapi' =
   Deno.env.get('DELIVERY_FEE_SOURCE') === 'openapi' ? 'openapi' : 'portal_cache';
-// Customers within this distance may CHOOSE pickup or delivery; beyond it,
-// pickup is hidden and only delivery is offered. Bumped from 30 → 100 to give
-// nearby customers the option without forcing pickup on them.
-const PICKUP_THRESHOLD_MILES = 100;
+// Pickup radius is PER WAREHOUSE STATE — CA 100mi, approved out-of-state 50mi — centralized in
+// ../_shared/fulfillmentEligibility.ts pickupRadiusMiles(state). Within the applicable radius a
+// customer may CHOOSE pickup or delivery; beyond it, pickup is hidden and only delivery is
+// offered (shipping is never blocked by distance). Pickup remains free ($0).
 const MAX_CART_ITEMS = 20;
 const MAX_QTY_PER_ITEM = 99;
 const MAX_FIELD_LENGTH = 200;
@@ -132,17 +133,11 @@ interface PlanResponse {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Haversine distance in miles — mirrors src/utils/distance.ts */
+/** Haversine distance in miles. Delegates to the shared canonical implementation
+ *  (../_shared/fulfillmentEligibility.ts, identical R=3958.8) so radius + distance live in
+ *  one authority. Thin wrapper kept to preserve existing call sites. */
 function getDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 3958.8;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return distanceMiles(lat1, lng1, lat2, lng2);
 }
 
 /** Geocode an address string using Google Maps Geocoding API. */
@@ -413,12 +408,12 @@ serve(async (req: Request) => {
     }
 
     // ── 7. Attempt single-warehouse fulfillment ──────────────────────────────
-    // Pickup candidates (within PICKUP_THRESHOLD_MILES + supports_pickup) first, then shipping.
+    // Pickup candidates (within the warehouse's per-state radius + supports_pickup) first, then shipping.
     const pickupCandidates = ranked.filter(
-      (r) => r.distanceMiles <= PICKUP_THRESHOLD_MILES && r.warehouse.supports_pickup,
+      (r) => r.distanceMiles <= pickupRadiusMiles(r.warehouse.state) && r.warehouse.supports_pickup,
     );
     const shippingCandidates = ranked.filter(
-      (r) => !(r.distanceMiles <= PICKUP_THRESHOLD_MILES && r.warehouse.supports_pickup) && r.warehouse.supports_shipping,
+      (r) => !(r.distanceMiles <= pickupRadiusMiles(r.warehouse.state) && r.warehouse.supports_pickup) && r.warehouse.supports_shipping,
     );
     const orderedCandidates = [...pickupCandidates, ...shippingCandidates];
 
@@ -456,7 +451,7 @@ serve(async (req: Request) => {
       console.log('[plan-fulfillment] No single warehouse — attempting multi-warehouse split');
       // Pass 3a: prefer split candidate whose row for the first matching item is fresh
       for (const candidate of ranked) {
-        if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > PICKUP_THRESHOLD_MILES) continue;
+        if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > pickupRadiusMiles(candidate.warehouse.state)) continue;
         const freshAny = items.some((item) => {
           const row = productWarehouseMap.get(item.productId)?.get(candidate.warehouse.code);
           return !!row && row.qty >= item.qty && !!row.syncedAt && row.syncedAt >= staleThreshold;
@@ -474,7 +469,7 @@ serve(async (req: Request) => {
       // Pass 3b: any stock, freshness-blind. Last resort to keep checkout open
       // when the scraper has lapsed entirely.
       for (const candidate of ranked) {
-        if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > PICKUP_THRESHOLD_MILES) continue;
+        if (!candidate.warehouse.supports_shipping && candidate.distanceMiles > pickupRadiusMiles(candidate.warehouse.state)) continue;
         const anyStock = items.some((item) => {
           const qty = productWarehouseMap.get(item.productId)?.get(candidate.warehouse.code)?.qty ?? 0;
           return qty >= item.qty;
@@ -554,7 +549,7 @@ serve(async (req: Request) => {
     }
 
     // ── 9. Determine pickup / delivery eligibility ───────────────────────────
-    const pickupEligible = selectedEntry.distanceMiles <= PICKUP_THRESHOLD_MILES && selectedEntry.warehouse.supports_pickup;
+    const pickupEligible = selectedEntry.distanceMiles <= pickupRadiusMiles(selectedEntry.warehouse.state) && selectedEntry.warehouse.supports_pickup;
     const deliveryEligible = selectedEntry.warehouse.supports_shipping;
 
     // Respect preferredMethod if provided

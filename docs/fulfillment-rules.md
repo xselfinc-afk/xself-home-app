@@ -12,7 +12,7 @@ Pickup rule below.
 
 | Rule | Value | Authoritative source |
 |------|-------|----------------------|
-| Pickup radius | **100 miles** | `supabase/functions/plan-fulfillment/index.ts` → `PICKUP_THRESHOLD_MILES = 100` (server-enforced); mirrored in `src/config/delivery.ts` → `PICKUP_RADIUS_MILES = 100` |
+| Pickup radius | **CA warehouses 100 mi / approved out-of-state warehouses 50 mi** (dual-radius, approved 2026-07) | `supabase/functions/_shared/fulfillmentEligibility.ts` → `pickupRadiusMiles(state)` (`PICKUP_RADIUS_MILES_BY_STATE = { CA: 100 }`, `DEFAULT_PICKUP_RADIUS_MILES = 50`), consumed by `plan-fulfillment` (server-authoritative). Client no longer computes a radius. |
 | Pickup fee | **Free ($0)** | `supabase/functions/create-checkout-order/index.ts` → `shippingCents = usePickup ? 0 : …`; `src/types/fulfillment.ts` → `PICKUP_FEE = 0` |
 | Pickup time window | **10:00 AM – 2:00 PM** | `src/services/pickupDateService.ts` → `PICKUP_TIME_WINDOW` |
 | Pickup date window | **+1 to +4 business days** after order day | `src/services/pickupDateService.ts` → `getPickupWindow` / `PICKUP_EARLIEST_BUSINESS_DAYS = 1`, `PICKUP_LATEST_BUSINESS_DAYS = 4` |
@@ -23,9 +23,28 @@ Pickup rule below.
 | Pickup Pass flow | "View Pickup Pass" + statuses "Preparing Pickup" / "Pickup Ready" + Ordered → Ready for Pickup → Picked Up | `src/screens/OrdersScreen.tsx`, `src/screens/PickupPassScreen.tsx` |
 
 ### Notes
-- The 100-mile radius lives in **two** places (Deno edge function + frontend config)
-  because they're across a runtime boundary and can't share an import. They must stay
-  equal — the guardrail enforces sync.
+- Pickup radius is now **per warehouse state** (CA 100 mi, approved out-of-state 50 mi),
+  centralized in `_shared/fulfillmentEligibility.ts` and consumed by `plan-fulfillment`. The old
+  "two places must stay equal" client/server radius sync no longer applies — the client does not
+  compute pickup eligibility; it calls the server advisory endpoint (see the section below).
+
+## Dual-radius pickup & per-child eligibility (approved 2026-07)
+
+- **Out-of-state pickup is an approved business capability.** Pickup is offered at a warehouse
+  only when it stocks the SELECTED child SKU (qty > 0), is active, `supports_pickup = true`, has
+  valid coordinates, and the buyer is within that warehouse's radius (CA 100 mi / approved OOS 50 mi).
+- **Eligibility is selected-child and buyer-location dependent** — it cannot be a static per-SKU
+  flag. `standardized_products.has_ca_pickup` is **legacy/coarse only** (CA-stock capability) and is
+  NOT the final authority.
+- **The server is authoritative.** `plan-fulfillment` (checkout) and the `fulfillment-eligibility`
+  advisory endpoint (PDP/Cart) both resolve via the shared `_shared/fulfillmentEligibility.ts`.
+  Checkout/order creation remains the final authority; advisory results are cached by
+  (childSku + normalized ZIP, ~5 min) and never reused across siblings.
+- **Family cards must not make per-child fulfillment claims** (no pickup/shipping/warehouse/
+  distance/delivery-fee on a collapsed card) — those depend on the selected child + buyer location.
+- Approved out-of-state pickup warehouses (`supports_pickup = true`): GA `AT1 AT2 AT3 AT4 AT5 ATN1
+  ATX4 ATX6`, MD `NJX3`, NJ `NJ1 NJ2 NJ3 NJ4 NJ5 NJX6`, TX `TX1 TXX1 TXX2` (18 total). CA warehouses
+  unchanged. See the 18-code migration in `supabase/migrations/`.
 - The edge function's ETA string says "Pickup available in 2–5 days"; the actual date
   math is **+1 to +4 business days**. If the wording is ever reconciled, keep the
   date math (the locked rule) unchanged.

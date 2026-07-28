@@ -75,3 +75,18 @@ npm run guard:prod                              # Check 14 = "Delivery account s
 - Whether GIGA exposes a delivery quote/fee endpoint (vs our flat fee).
 - Sandbox auth must be verified with a read-only call once the Delivery sandbox creds are
   provided at runtime (env-only; never committed/printed).
+
+## Pickup eligibility (dual-radius, approved 2026-07)
+- Pickup vs shipping is resolved for the **selected child SKU** by the shared, pure resolver
+  `supabase/functions/_shared/fulfillmentEligibility.ts` (`resolveFulfillmentEligibility` +
+  `pickupRadiusMiles(state)`). Radius is per warehouse state: CA = 100 mi, approved out-of-state
+  = 50 mi. Pickup requires positive evidence (SKU stocked qty>0 at an active, `supports_pickup`,
+  geocoded warehouse within its radius). Shipping is the existing authoritative delivery-fee
+  validator's `available` flag — never inferred from the absence of pickup, never `cents>0`.
+- `plan-fulfillment` (checkout, authoritative) consumes `pickupRadiusMiles(state)`. The advisory
+  edge function `fulfillment-eligibility` reuses the SAME resolver to give PDP/Cart a non-binding
+  `{canPickup, canShip, state, qualifyingWarehouse, distance, radius, evaluatedAt}` result;
+  checkout/order creation revalidates authoritatively. There is ONE distance/warehouse/radius
+  authority — the client never recomputes it.
+- Out-of-state pickup is enabled only for the audited 18-warehouse allowlist (see
+  `docs/fulfillment-rules.md`). `has_ca_pickup` is legacy/coarse, not the eligibility authority.
