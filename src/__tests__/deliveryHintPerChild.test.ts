@@ -38,10 +38,13 @@ it('data plumbing: has_ca_pickup is fetched, typed, and adapted per child', () =
   assert.ok(/hasCaPickup\?:\s*boolean/.test(products), 'Product type carries hasCaPickup');
 });
 
-it('PDP hint keys off the SELECTED child (selectedSibling), not the representative', () => {
+it('PDP hint is now driven by the SERVER advisory for the selected child (supersedes has_ca_pickup)', () => {
   const app = readFileSync(join(process.cwd(), 'App.tsx'), 'utf8');
-  assert.ok(app.includes('selectedSibling.hasCaPickup !== false'), 'hint reads selected child capability');
-  assert.ok(app.includes('resolveAvailabilityHint('), 'hint uses the pure helper');
+  assert.ok(app.includes('fetchFulfillmentAdvisory(selectedChildId'), 'PDP fetches advisory for the selected child');
+  assert.ok(app.includes('FULFILLMENT_COPY[advisory.state]'), 'hint renders the server-resolved 4-state copy');
+  assert.ok(/advisoryReqRef/.test(app), 'request-version guard prevents stale sibling results');
+  // The old client-side hasCaPickup/resolveAvailabilityHint hint authority is retired from the PDP.
+  assert.equal(app.includes('resolveAvailabilityHint(getCachedDelivery'), false, 'old client hint retired');
 });
 
 console.log(`\n${passed} per-child delivery hint assertions passed.`);

@@ -69,7 +69,8 @@ import HomeShopYourWay from './src/components/commerce/HomeShopYourWay';
 import AuthEntryView from './src/components/AuthEntryView';
 import CommerceBrowseScreen from './src/screens/commerce/CommerceBrowseScreen';
 import CommerceResultsScreen from './src/screens/commerce/CommerceResultsScreen';
-import { getCachedDelivery, resolveAvailabilityHint } from './src/utils/deliveryEligibility';
+import { getCachedDelivery } from './src/utils/deliveryEligibility';
+import { fetchFulfillmentAdvisory, FULFILLMENT_COPY, type FulfillmentAdvisory } from './src/services/fulfillmentAdvisoryService';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
 import SearchPillBar from './src/components/SearchPillBar';
@@ -857,6 +858,11 @@ function ProductDetailScreen({ route, navigation }) {
   const [bundleAdded, setBundleAdded] = useState(false);
   // Live header rating/review-count — same product_reviews data ReviewSection uses. null = loading.
   const [reviewSummary, setReviewSummary] = useState<{ count: number; avg: number } | null>(null);
+  // Advisory fulfillment (pickup/shipping) for the SELECTED child SKU — server-authoritative
+  // (fulfillment-eligibility endpoint). null = loading/unresolved → conservative copy. Versioned
+  // so a slow response for a previously-selected sibling can never overwrite the current child.
+  const [advisory, setAdvisory] = useState<FulfillmentAdvisory | null>(null);
+  const advisoryReqRef = useRef(0);
   const carouselRef = useRef<ScrollView>(null);
   const btnRef = useRef<View>(null);
   const btnScaleAnim = useRef(new Animated.Value(1)).current;
@@ -882,6 +888,18 @@ function ProductDetailScreen({ route, navigation }) {
 
   // Track the SELECTED child product view (weight 1); refires on option switch.
   React.useEffect(() => { trackView(selectedChildId); }, [selectedChildId]);
+
+  // Advisory pickup/shipping for the SELECTED child + buyer ZIP (session-cached). Clears prior
+  // state immediately on child change (never shows the previous sibling), and a request-version
+  // guard drops out-of-order responses. ZIP is included in the service cache key.
+  React.useEffect(() => {
+    const zip = getCachedDelivery()?.zip ?? null;
+    const reqId = ++advisoryReqRef.current;
+    setAdvisory(null); // conservative fallback while loading; never a stale sibling result
+    fetchFulfillmentAdvisory(selectedChildId, zip).then(a => {
+      if (advisoryReqRef.current === reqId) setAdvisory(a);
+    });
+  }, [selectedChildId]);
 
   // Header rating/review count — read the SAME live product_reviews data as ReviewSection
   // for the SELECTED child SKU (status='active'; real reviews if any exist, else the
@@ -1331,12 +1349,11 @@ function ProductDetailScreen({ route, navigation }) {
             </View>
           )}
           {(() => {
-            // Per-SKU truth: a selected child with no CA pickup (has_ca_pickup === false) can
-            // only ship — resolveAvailabilityHint never advertises pickup for it. Switches with
-            // the chosen variant; otherwise buyer-location eligibility (getCachedDelivery) decides.
-            const childCanPickup = selectedSibling.hasCaPickup !== false;
-            const hint = resolveAvailabilityHint(childCanPickup, getCachedDelivery()?.eligibility.mode);
-            return <Text style={styles.availabilityHint}>{hint}</Text>;
+            // Server-authoritative advisory for the SELECTED child (dual-radius pickup + the
+            // authoritative delivery-fee validator, via the fulfillment-eligibility endpoint).
+            // Loading / unknown / error → conservative copy; never a false "Currently unavailable".
+            const label = advisory ? FULFILLMENT_COPY[advisory.state] : FULFILLMENT_COPY.unknown;
+            return <Text style={styles.availabilityHint}>{label}</Text>;
           })()}
 
           {/* Color thumbnails — hidden when only 1 color option */}
