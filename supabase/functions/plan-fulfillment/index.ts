@@ -10,6 +10,7 @@ import {
   type GigaCacheRow,
 } from '../_shared/deliveryFee.ts';
 import { pickupRadiusMiles, distanceMiles } from '../_shared/fulfillmentEligibility.ts';
+import { geocodeAddress } from '../_shared/geocode.ts';
 
 // Built-in Supabase env vars — always present in Edge Functions
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -141,19 +142,7 @@ function getDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number
 }
 
 /** Geocode an address string using Google Maps Geocoding API. */
-async function geocodeAddress(address: string): Promise<Coords> {
-  if (!GOOGLE_MAPS_API_KEY) {
-    throw new Error('GOOGLE_MAPS_API_KEY not configured — run: supabase secrets set GOOGLE_MAPS_API_KEY=<key>');
-  }
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${encodeURIComponent(GOOGLE_MAPS_API_KEY)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Geocoding HTTP ${res.status}`);
-  const json = await res.json();
-  if (json.status !== 'OK' || !json.results?.length) {
-    throw new Error(`Geocoding failed (${json.status}) for: "${address}"`);
-  }
-  return json.results[0].geometry.location as Coords;
-}
+// geocodeAddress is now the shared canonical geocoder in ../_shared/geocode.ts (one pipeline).
 
 /** Estimated delivery / pickup string — mirrors fulfillmentPlanner.ts.
  *  When the order is being fulfilled by pickup, returns the real pickup window.
@@ -325,7 +314,7 @@ serve(async (req: Request) => {
 
     let userCoords: Coords;
     try {
-      userCoords = await geocodeAddress(addrString);
+      userCoords = await geocodeAddress(addrString, GOOGLE_MAPS_API_KEY);
       console.log('[plan-fulfillment] Customer coords:', userCoords);
     } catch (err) {
       console.error('[plan-fulfillment] Customer geocode failed:', (err as Error).message);
@@ -343,7 +332,7 @@ serve(async (req: Request) => {
           return { ...w, resolvedLat: Number(w.lat), resolvedLng: Number(w.lng) };
         }
         try {
-          const coords = await geocodeAddress(w.address);
+          const coords = await geocodeAddress(w.address, GOOGLE_MAPS_API_KEY);
           // Cache back to DB — non-fatal if it fails
           supabase.from('warehouses')
             .update({ lat: coords.lat, lng: coords.lng })
