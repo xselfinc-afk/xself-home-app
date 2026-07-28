@@ -68,7 +68,7 @@ import HomeShopYourWay from './src/components/commerce/HomeShopYourWay';
 import AuthEntryView from './src/components/AuthEntryView';
 import CommerceBrowseScreen from './src/screens/commerce/CommerceBrowseScreen';
 import CommerceResultsScreen from './src/screens/commerce/CommerceResultsScreen';
-import { getCachedDelivery } from './src/utils/deliveryEligibility';
+import { getCachedDelivery, resolveAvailabilityHint } from './src/utils/deliveryEligibility';
 import DiscoverScreen from './src/screens/DiscoverScreen';
 import ReviewSection from './src/components/ReviewSection';
 import SearchPillBar from './src/components/SearchPillBar';
@@ -1330,9 +1330,11 @@ function ProductDetailScreen({ route, navigation }) {
             </View>
           )}
           {(() => {
-            const cached = getCachedDelivery();
-            const mode = cached?.eligibility.mode;
-            const hint = mode === 'PICKUP' ? 'Pickup available' : mode === 'SHIPPING' ? 'Shipping available' : 'Pickup & shipping available';
+            // Per-SKU truth: a selected child with no CA pickup (has_ca_pickup === false) can
+            // only ship — resolveAvailabilityHint never advertises pickup for it. Switches with
+            // the chosen variant; otherwise buyer-location eligibility (getCachedDelivery) decides.
+            const childCanPickup = selectedSibling.hasCaPickup !== false;
+            const hint = resolveAvailabilityHint(childCanPickup, getCachedDelivery()?.eligibility.mode);
             return <Text style={styles.availabilityHint}>{hint}</Text>;
           })()}
 

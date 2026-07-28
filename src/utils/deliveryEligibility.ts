@@ -78,6 +78,22 @@ export async function checkDeliveryByZip(zip: string): Promise<DeliveryEligibili
   };
 }
 
+/**
+ * Customer-facing PDP availability line for the SELECTED child SKU.
+ *
+ * Truthfulness rule: a child with no CA pickup (`has_ca_pickup === false`) can only
+ * ship, so pickup is NEVER advertised for it — regardless of buyer location. Otherwise
+ * the buyer-location `mode` (from checkDeliveryByZip / getCachedDelivery) decides;
+ * `mode === undefined` means no ZIP has been entered yet (both options shown generically).
+ * Pure — safe to unit-test.
+ */
+export function resolveAvailabilityHint(childCanPickup: boolean, mode: DeliveryMode | undefined): string {
+  if (!childCanPickup) return 'Shipping available';
+  if (mode === 'PICKUP') return 'Pickup available';
+  if (mode === 'SHIPPING') return 'Shipping available';
+  return 'Pickup & shipping available';
+}
+
 /** Generic fulfillment policy shown when buyer location is unknown. */
 export const GENERIC_DELIVERY_INFO = {
   lines: [

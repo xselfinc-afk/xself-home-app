@@ -77,6 +77,7 @@ export interface Product {
   image?: string;                // convenience alias for images[0]
   thumbnail?: string;            // alias for images[0], used by some card renderers
   coverImage?: string;           // alias for images[0], used by some card renderers
+  hasCaPickup?: boolean;         // per-SKU CA-pickup capability (sellable_products.has_ca_pickup)
   product_family_key?: string;   // groups same-style different-color products
   variants?: ProductVariant[];
   /** Fully-adapted Product for each sellable family sibling (one per variant), so the detail

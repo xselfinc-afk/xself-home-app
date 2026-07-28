@@ -225,6 +225,8 @@ export type StandardizedRow = {
   product_family_key: string;
   normalization_status: string;
   total_available_qty?: number | null;
+  /** Per-SKU CA-pickup capability from the sellable_products view. */
+  has_ca_pickup?: boolean | null;
   // Phase 2b image metadata
   primary_image_blurhash?: string | null;
   primary_image_w?: number | null;
@@ -324,6 +326,7 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
     image: images[0],
     thumbnail: images[0],
     coverImage: images[0],
+    hasCaPickup: r.has_ca_pickup ?? undefined,
     product_family_key: r.product_family_key || undefined,
     skuCustom: r.sku_custom || undefined,
     skuSearch: r.sku_search || undefined,

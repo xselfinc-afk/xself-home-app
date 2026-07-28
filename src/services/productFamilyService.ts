@@ -16,7 +16,7 @@ const FAMILY_SELECT =
   'category_code, scene_code, color, color_options_json, ' +
   'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
   'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, ' +
-  'normalization_status, total_available_qty, ' +
+  'normalization_status, total_available_qty, has_ca_pickup, ' +
   // extra fields so adaptStandardizedRow() can build a COMPLETE per-sibling Product (variant-
   // specific title/specs/images), not just the thin variant used by the color selector.
   'product_title_display, optimized_title, sku_search, category_label, category_priority, ' +
