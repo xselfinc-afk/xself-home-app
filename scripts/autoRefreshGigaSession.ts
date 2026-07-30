@@ -20,7 +20,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const PROJECT_ROOT = process.cwd();
-const SESSION_FILE = path.join(PROJECT_ROOT, 'scripts', '.giga-session.json');
+// Honor GIGA_SESSION_FILE so the auto-heal refreshes the SAME session file the daily
+// sync actually loads (the runner uses the pickup file). Falls back to the historical
+// default when the env var is unset, so behavior is unchanged unless explicitly scoped.
+// Safety fix (Phase 1): previously hardcoded to .giga-session.json (dropship), which
+// could refresh the wrong account and leave the pickup session the sync uses stale.
+const SESSION_FILE = (() => {
+  const override = process.env.GIGA_SESSION_FILE?.trim();
+  if (override) return path.isAbsolute(override) ? override : path.join(PROJECT_ROOT, override);
+  return path.join(PROJECT_ROOT, 'scripts', '.giga-session.json');
+})();
 const PROFILE_DIR  = path.join(PROJECT_ROOT, 'scripts', '.giga-chrome-profile');
 const ACCOUNT_URL  = 'https://www.gigab2b.com/index.php?route=account/account';
 
