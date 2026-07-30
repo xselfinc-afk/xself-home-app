@@ -41,6 +41,7 @@
     "test:inventory-result": "tsx src/__tests__/inventoryResult.test.ts",
     "test:inventory-state": "tsx src/__tests__/inventoryStateMachine.test.ts",
     "test:inventory-safety": "tsx src/__tests__/inventorySafetyLimits.test.ts",
+    "test:xhr-classify": "tsx src/__tests__/xhrFetcherClassify.test.ts",
     "inventory:decisions:dry": "tsx scripts/inventoryDecisionDryRun.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",
     "test:native-insertion": "tsx src/__tests__/discoverAdInsertion.test.ts",

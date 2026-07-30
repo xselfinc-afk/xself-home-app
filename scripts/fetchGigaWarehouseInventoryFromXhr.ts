@@ -38,6 +38,10 @@
 import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  classifyInventoryResult, xhrSignalsFromEnvelope, isConfirmed,
+  type InventoryResult, type RawInventorySignals,
+} from '../src/services/inventoryResult';
 
 const SESSION_FILE = process.env.GIGA_SESSION_FILE
   ?? path.join(process.cwd(), 'scripts', '.giga-session-pickup.json'); // per-warehouse stock requires the PICKUP account (Buyer 76938981); override with GIGA_SESSION_FILE
@@ -149,16 +153,21 @@ export interface NormalizedRow {
 
 // ── Endpoint calls ──────────────────────────────────────────────────────────
 
-async function callJson<T>(url: string, productIdForReferer: string, session: SessionContext): Promise<{ status: number; json: T | null; text: string }> {
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: xhrHeaders(productIdForReferer, session),
-    redirect: 'follow',
-  });
-  const text = await res.text();
-  let json: T | null = null;
-  try { json = JSON.parse(text) as T; } catch { /* leave null */ }
-  return { status: res.status, json, text };
+async function callJson<T>(url: string, productIdForReferer: string, session: SessionContext): Promise<{ status: number; json: T | null; text: string; networkError: boolean }> {
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: xhrHeaders(productIdForReferer, session),
+      redirect: 'follow',
+    });
+    const text = await res.text();
+    let json: T | null = null;
+    try { json = JSON.parse(text) as T; } catch { /* leave null */ }
+    return { status: res.status, json, text, networkError: false };
+  } catch {
+    // Timeout / DNS / connection reset — a network failure, NOT zero stock.
+    return { status: 0, json: null, text: '', networkError: true };
+  }
 }
 
 async function fetchBaseInfos(productId: string, session: SessionContext): Promise<BaseInfosResponse | null> {
@@ -167,10 +176,39 @@ async function fetchBaseInfos(productId: string, session: SessionContext): Promi
   return json;
 }
 
-async function fetchPriceWarehouse(productId: string, session: SessionContext): Promise<PriceWarehouseResponse | null> {
+async function fetchPriceWarehouse(productId: string, session: SessionContext): Promise<{ status: number; json: PriceWarehouseResponse | null; text: string; networkError: boolean }> {
   const url = `https://www.gigab2b.com/index.php?route=/product/info/price/warehouse&product_id=${productId}`;
-  const { json } = await callJson<PriceWarehouseResponse>(url, productId, session);
-  return json;
+  return callJson<PriceWarehouseResponse>(url, productId, session);
+}
+
+/**
+ * PURE: map a raw warehouse-XHR response to the canonical Phase-1 InventoryResult.
+ *   network error            → network_failed
+ *   HTTP 401/403 / auth code → authentication_required
+ *   CAPTCHA / WAF challenge   → captcha_required
+ *   unparseable body         → parse_failed
+ *   empty distributions      → inventory_unknown   (NEVER zero)
+ *   non-empty all-zero dists → confirmed_out_of_stock (affirmative per-warehouse zero)
+ *   any positive dist        → confirmed_in_stock_(ca|out_of_state)
+ * Exported for unit tests (no I/O). Row absence is never expressed as stock 0.
+ */
+export function classifyWarehouseResponse(input: {
+  networkError: boolean; status: number; json: PriceWarehouseResponse | null; text: string;
+  supplierProductId: string; sku?: string | null; sessionId?: string | null; checkedAt?: string;
+}): InventoryResult {
+  const captcha = /captcha|slider|安全验证|安全检查|verify to continue|aliyun|\bwaf\b|challenge/i.test(input.text ?? '');
+  const signals: RawInventorySignals = {
+    ...xhrSignalsFromEnvelope({
+      networkError: input.networkError, httpStatus: input.status,
+      json: input.json as unknown as { code?: number | string | null; msg?: string | null; data?: { stock_distributions?: Array<Record<string, unknown>> | null } | null } | null,
+      warehouseStateOf: warehouseState,
+    }),
+    ...(captcha ? { isCaptcha: true } : {}),
+  };
+  return classifyInventoryResult(signals, {
+    source: 'giga_pickup', accountType: 'pickup', supplierProductId: input.supplierProductId,
+    sku: input.sku ?? null, checkedAt: input.checkedAt ?? new Date().toISOString(), sessionId: input.sessionId ?? null,
+  });
 }
 
 /**
@@ -240,7 +278,7 @@ export async function fetchWarehouseRows(
   productId: string,
   knownSku?: string | null,
   _cookieHeader?: string,
-): Promise<{ rows: NormalizedRow[]; supplierId: string | null; total: number }> {
+): Promise<{ rows: NormalizedRow[]; supplierId: string | null; total: number; result: InventoryResult }> {
   const s = session();
 
   let supplierId = knownSku ?? null;
@@ -250,12 +288,24 @@ export async function fetchWarehouseRows(
   }
 
   const wh = await fetchPriceWarehouse(productId, s);
-  const dists = wh?.data?.stock_distributions ?? [];
-
   const now = new Date().toISOString();
+
+  // Canonical classification (empty≠zero; auth/captcha/parse/network → explicit failure).
+  const result = classifyWarehouseResponse({
+    networkError: wh.networkError, status: wh.status, json: wh.json, text: wh.text,
+    supplierProductId: supplierId ?? productId, sku: supplierId,
+    sessionId: SESSION_FILE.includes('pickup') ? 'pickup' : 'default', checkedAt: now,
+  });
+
+  const dists = wh.json?.data?.stock_distributions ?? [];
   const total = dists.reduce((s, d) => s + (Number(d.qty) || 0), 0);
 
-  const rows: NormalizedRow[] = supplierId
+  // Build inventory_cache rows ONLY for a CONFIRMED reading (in-stock or affirmative
+  // per-warehouse zero). Any failure/unknown/empty/auth/captcha/parse/network yields rows:[]
+  // so a downstream writer can never persist a false zero — row absence must never mean
+  // stock 0. This does NOT change any write/publication logic; it only refuses to emit rows
+  // for non-confirmed readings (previously an auth/empty response could still map to []).
+  const rows: NormalizedRow[] = (supplierId && isConfirmed(result.status) && dists.length > 0)
     ? dists.map(d => ({
         product_id:          supplierId!,
         supplier_product_id: supplierId!,
@@ -274,7 +324,7 @@ export async function fetchWarehouseRows(
       }))
     : [];
 
-  return { rows, supplierId, total };
+  return { rows, supplierId, total, result };
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────

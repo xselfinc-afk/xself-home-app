@@ -231,5 +231,10 @@ export function xhrSignalsFromEnvelope(input: {
       supportsShipping: null, supportsPickup: null,
     };
   });
-  return { httpStatus: status, bodyParseable: true, warehouseSelectorPresent: true, parsedWarehouses };
+  return {
+    httpStatus: status, bodyParseable: true, warehouseSelectorPresent: true, parsedWarehouses,
+    // A NON-EMPTY distribution that is entirely zero is an affirmative per-warehouse supplier
+    // zero → confirmed_out_of_stock. An EMPTY array was handled above as unknown (never zero).
+    affirmativeZeroSignal: parsedWarehouses.length > 0 && !parsedWarehouses.some(w => typeof w.quantity === 'number' && w.quantity > 0),
+  };
 }
