@@ -13,6 +13,7 @@
 import { resolveSource, sourceConfig } from './lib/supplierSession/sources';
 import { requiresHumanAction } from './lib/supplierSession/health';
 import { buildReport, writeReport, assertNoSecrets } from './lib/supplierSession/report';
+import { writeHealthState } from './lib/supplierSession/scanGate';
 import * as manager from './supplierBrowser';
 
 const EXIT_OK = 0, EXIT_HUMAN = 10, EXIT_FAIL = 1;
@@ -60,6 +61,7 @@ async function main(): Promise<number> {
   });
   assertNoSecrets(report, []); // by-construction redacted; guard anyway
   const p = writeReport(cfg.reportDir, report);
+  writeHealthState(cfg.healthPath, source, op.health); // scanner gate consumes this
 
   log(`source=${source} health=${op.health} identityVerified=${op.identityVerified} snapshotRefreshed=${op.snapshotRefreshed} backedUp=${op.previousBackedUp} probe=${op.probeClassification ?? '-'} humanAction=${op.humanActionRequired}`);
   log(`report → ${p}`);

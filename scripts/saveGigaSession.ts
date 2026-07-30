@@ -1,4 +1,12 @@
 /**
+ * ⚠️ DEPRECATED — EMERGENCY FALLBACK ONLY (do not use as the primary path).
+ * The durable supplier-browser system replaces manual cookie copying. Primary path:
+ *   npm run supplier:profile:init   -- --source=pickup|dropship   (one-time headed login)
+ *   npm run supplier:session:refresh-- --source=pickup|dropship   (self-healing snapshot)
+ * A dedicated persistent profile (~/Library/Application Support/XSelfSupplierBrowser/<source>)
+ * is now the login authority; the snapshot is a derived, probe-verified artifact. This script
+ * remains only for break-glass recovery when the dedicated profile is unavailable.
+ *
  * Manual GIGA session importer — converts cookies you already have in your
  * normal Chrome into the Playwright storageState file the scraper expects.
  *
@@ -49,6 +57,10 @@ const SESSION_FILE = process.env.GIGA_SESSION_FILE
 const COOKIES_FILE = process.env.GIGA_COOKIES_FILE ?? '';
 
 const DEFAULT_DOMAIN = process.env.GIGA_DOMAIN ?? '.gigab2b.com';
+
+if (require.main === module) {
+  console.warn('[saveGigaSession] ⚠️ DEPRECATED emergency fallback. Primary durable path: `npm run supplier:profile:init -- --source=pickup|dropship` then `npm run supplier:session:refresh`. Manual cookie copy is no longer the source of truth.');
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

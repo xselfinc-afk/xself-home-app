@@ -50,6 +50,8 @@
     "supplier:session:refresh": "tsx scripts/supplierSession.ts session:refresh",
     "test:supplier-core": "tsx src/__tests__/supplierSessionCore.test.ts",
     "test:supplier-snapshot": "tsx src/__tests__/supplierSnapshot.test.ts",
+    "test:supplier-report": "tsx src/__tests__/supplierReport.test.ts",
+    "test:supplier-scangate": "tsx src/__tests__/supplierScanGate.test.ts",
     "test:native-insertion": "tsx src/__tests__/discoverAdInsertion.test.ts",
     "verify:review-coverage": "tsx scripts/checkReviewCoverage.ts",
     "giga:seed-reviews:sellable": "tsx scripts/seedReviewsForSellable.ts",
