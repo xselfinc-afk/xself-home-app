@@ -10,12 +10,20 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { chromium, type BrowserContext } from 'playwright';
+import { chromium, type BrowserContext, type Page } from 'playwright';
 import { sourceConfig, type SupplierSource, type SourceConfig } from './lib/supplierSession/sources';
 import { classifyPageHealth, type HealthState, type HealthSignals, requiresHumanAction } from './lib/supplierSession/health';
-import { verifyIdentity, type AccountEvidence } from './lib/supplierSession/identity';
+import { type AccountEvidence } from './lib/supplierSession/identity';
+import { verifyIdentity } from './lib/supplierSession/identity';
 import { promoteSnapshot, redactStorageState, type StorageState, type PromoteResult } from './lib/supplierSession/snapshot';
 import { acquireLock, releaseLock } from './lib/supplierSession/lock';
+import { writeHealthState } from './lib/supplierSession/scanGate';
+import { runLoginAndPromote, type LoginPromoteResult } from './lib/supplierSession/loginPromote';
+import { pollForAuthentication, LOGIN_POLL_INTERVAL_MS, type CheckerPage, type CheckerObservation } from './lib/supplierSession/authPoll';
+
+/** Known supplier Buyer IDs (public account numbers, never secrets; used only for identity match). */
+const EXPECTED_BUYER_ID: Record<SupplierSource, string> = { pickup: '76938981', dropship: '82482447' };
+const OTHER_BUYER_ID: Record<SupplierSource, string> = { pickup: '82482447', dropship: '76938981' };
 
 export interface SessionOpResult {
   source: SupplierSource;
@@ -187,4 +195,95 @@ export async function initProfileHeaded(source: SupplierSource): Promise<{ sourc
   // Intentionally leave the browser OPEN for the user to log in once; lock released on exit
   // is handled by the CLI wrapper which keeps the process alive.
   return { source, profileDir: path.basename(cfg.profileDir), initialized, opened: true };
+}
+
+/**
+ * Open a dedicated BACKGROUND checker page in the same context. This page — and ONLY this
+ * page — is navigated to the harmless authenticated landing URL to detect context-wide
+ * (OCSESSID) authentication. Creating a tab steals foreground focus in headed Chromium, so
+ * immediately after creating the checker we bring the human's `loginPage` back to the front.
+ * The login tab is never navigated, reloaded, closed, or focus-stolen by the checker.
+ */
+function makeCheckerFactory(context: BrowserContext, loginPage: Page): () => Promise<CheckerPage> {
+  return async (): Promise<CheckerPage> => {
+    const checker = await context.newPage();
+    await loginPage.bringToFront().catch(() => {}); // undo the focus theft from opening the checker tab
+    return {
+      gotoAndRead: async (url: string): Promise<CheckerObservation> => {
+        let httpStatus: number | null = null, networkError = false;
+        try { const resp = await checker.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }); httpStatus = resp?.status() ?? null; }
+        catch { networkError = true; }
+        const curUrl = checker.url();
+        const text = networkError ? '' : (await checker.evaluate(() => (document.body?.innerText ?? '').slice(0, 6000)).catch(() => '')) as string;
+        return { networkError, httpStatus, url: curUrl, text };
+      },
+      close: async () => { await checker.close().catch(() => {}); },
+    };
+  };
+}
+
+/**
+ * SINGLE-SESSION login → detect → verify identity → extract → probe → promote → close, all in
+ * ONE live Playwright context (fixes the OCSESSID session-cookie loss from the init→refresh
+ * restart). Never restarts the browser between login and extraction; leaves the window open
+ * while waiting for the human; closes only after the final result. No secrets logged.
+ */
+export async function loginAndPromote(source: SupplierSource, opts: { probeSku: string; timeoutMs?: number }): Promise<LoginPromoteResult & { source: SupplierSource; redactedSnapshot?: ReturnType<typeof redactStorageState> }> {
+  const cfg = sourceConfig(source);
+  ensureProfileDir(cfg);
+  let context: BrowserContext | null = null;
+  let page: any = null;
+
+  const result = await runLoginAndPromote({
+    expectedRole: cfg.role,
+    expectedBuyerId: EXPECTED_BUYER_ID[source],
+    probeSku: opts.probeSku,
+    timeoutMs: opts.timeoutMs ?? 10 * 60 * 1000,
+    acquireLock: () => acquireLock(cfg.lockPath, source).ok,
+    releaseLock: () => releaseLock(cfg.lockPath, source),
+    // Reuse the persistent context's initial page as the VISIBLE login tab (no extra blank tab).
+    openContext: async () => { context = await launch(cfg); page = context.pages()[0] ?? await context.newPage(); await page.goto(cfg.landingUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {}); },
+    // Detect auth on a SEPARATE background checker page; the visible login tab is never navigated,
+    // reloaded, closed, or left without focus (bringToFront restores it after every poll).
+    waitForAuth: (timeoutMs) => pollForAuthentication({
+      landingUrl: cfg.landingUrl,
+      expectedBuyerId: EXPECTED_BUYER_ID[source],
+      otherBuyerId: OTHER_BUYER_ID[source],
+      role: cfg.role,
+      timeoutMs,
+      pollMs: LOGIN_POLL_INTERVAL_MS,
+      now: () => Date.now(),
+      sleep: (ms) => new Promise<void>(res => setTimeout(res, ms)),
+      openChecker: makeCheckerFactory(context!, page!),
+      visibleUrl: async () => { try { return page ? page.url() : ''; } catch { return ''; } },
+      keepVisibleInFront: async () => { try { if (page) await page.bringToFront(); } catch { /* best effort */ } },
+      onInstrument: (e) => console.log(`[supplier] poll#${e.attempt} visibleBefore=${e.visibleUrlBefore} visibleAfter=${e.visibleUrlAfter} checker=${e.checkerUrl} authed=${e.authed}`),
+    }),
+    extractSnapshot: async () => await context!.storageState() as unknown as StorageState, // in-memory → captures SESSION cookies
+    probe: async (snapshot, sku) => probeViaFetcher(cfg, snapshot, sku),
+    promote: (snapshot) => promoteSnapshot({ snapshotPath: cfg.snapshotPath, backupPath: cfg.backupPath }, snapshot, { probeOk: true }),
+    persistHealth: (h) => writeHealthState(cfg.healthPath, source, h),
+    closeContext: async () => { if (context) await context.close().catch(() => {}); },
+  });
+  return { ...result, source };
+}
+
+/** Write the live snapshot to a temp file and run it through the EXISTING XHR fetcher; require CONFIRMED. */
+async function probeViaFetcher(cfg: SourceConfig, snapshot: StorageState, sku: string): Promise<{ probeOk: boolean; classification: string }> {
+  const temp = `${cfg.snapshotPath}.login-probe-${process.pid}.json`;
+  const prev = process.env.GIGA_SESSION_FILE;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(snapshot), { mode: 0o600 });
+    process.env.GIGA_SESSION_FILE = temp;
+    const mod = await import('./fetchGigaWarehouseInventoryFromXhr');
+    const { productId, sku: resolved } = await mod.resolveProductId(sku);
+    const r = await mod.fetchWarehouseRows(productId, resolved ?? sku);
+    const ok = r.result.status === 'confirmed_in_stock_ca' || r.result.status === 'confirmed_in_stock_out_of_state' || r.result.status === 'confirmed_out_of_stock';
+    return { probeOk: ok, classification: r.result.status };
+  } catch (e) {
+    return { probeOk: false, classification: `probe_error:${(e as Error)?.message ?? 'unknown'}` };
+  } finally {
+    if (prev === undefined) delete process.env.GIGA_SESSION_FILE; else process.env.GIGA_SESSION_FILE = prev;
+    try { fs.unlinkSync(temp); } catch { /* */ }
+  }
 }
