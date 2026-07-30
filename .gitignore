@@ -36,6 +36,7 @@ tmp/
 
 # Local planner report artifacts (regenerated; not source)
 reports/giga-auto-publish/
+reports/inventory-decisions/
 
 # Local iOS release state (build id recorded for the submit stage; not source)
 reports/release/
