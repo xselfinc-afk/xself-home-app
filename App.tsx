@@ -77,6 +77,7 @@ import SearchPillBar from './src/components/SearchPillBar';
 import NativeProductAdCard from './src/components/NativeProductAdCard';
 import { buildDiscoverFeed, groupIntoRows, type DiscoverRow } from './src/services/discoverAdInsertion';
 import { loadAdConfig } from './src/services/adsConfigService';
+import * as interstitialAdManager from './src/services/interstitialAdManager';
 import * as SplashScreen from 'expo-splash-screen';
 import { StripeProvider } from '@stripe/stripe-react-native';
 
@@ -2846,7 +2847,17 @@ function RootNavigation() {
   const entered = !!user || isGuest;
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer
+      ref={navigationRef}
+      onStateChange={() => {
+        // Single narrow hook for the browse-break interstitial: feed the DEEPEST active
+        // route to the manager, which counts ProductDetail views and shows at most one ad
+        // on a ProductDetail -> eligible-browse return. Inert unless remote config enables
+        // it; swallows all errors; never blocks navigation.
+        const r = navigationRef.getCurrentRoute();
+        interstitialAdManager.handleRouteChange(r?.name, r?.key);
+      }}
+    >
       {entered ? (
         <Stack.Navigator id="RootStack" initialRouteName="Main" screenOptions={{ headerShown: false, gestureEnabled: true } as any}>
           <Stack.Screen name="Main" component={TabNavigator} />
@@ -2901,6 +2912,15 @@ export default function App() {
       .catch((err: unknown) => {
         console.warn('[Ads] SDK initialize failed:', err instanceof Error ? err.message : err);
       });
+  }, []);
+
+  // Interstitial (browse-break) V1 — load the shared remote ad config once, hand it to the
+  // manager, and warm a preload. Default OFF (ads_interstitial_enabled=false) so this stays
+  // fully inert until the server row is set. Never blocks boot; failures are swallowed.
+  useEffect(() => {
+    loadAdConfig()
+      .then(cfg => { interstitialAdManager.configure(cfg); interstitialAdManager.load(); })
+      .catch(() => { /* non-fatal — manager stays inert */ });
   }, []);
 
   // (Removed) The custom JS splash gate/animation. The native iOS Launch Screen is now
