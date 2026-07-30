@@ -30,6 +30,10 @@
  *   INTER_REQ_DELAY             — ms between products (default 600)
  *   DRY_RUN=1                   — skip Supabase writes
  *   VERIFY_AFTER=0              — skip post-sync freshness check
+ *   INVENTORY_CACHE_ONLY=1      — SAFETY MODE: upsert inventory_cache ONLY and SKIP
+ *                                 refresh_product_inventory_status — i.e. NO mutation of
+ *                                 standardized_products.published / inventory_status / sellability.
+ *                                 Opt-in, exact '1'. Absent/any-other value = unchanged behavior.
  */
 
 import 'dotenv/config';
@@ -50,10 +54,16 @@ const INTER_REQ_DELAY = Number(process.env.INTER_REQ_DELAY ?? 600);
 const DRY_RUN = process.env.DRY_RUN === '1';
 const VERIFY_AFTER = process.env.VERIFY_AFTER !== '0';
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('[syncXhr] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required');
-  process.exit(1);
+/**
+ * Cache-only SAFETY mode (exact '1', opt-in). When on, the sync upserts inventory_cache but
+ * NEVER calls refresh_product_inventory_status — the ONLY path that mutates
+ * standardized_products.published / inventory_status. Any other value (absent, '0', 'true', …)
+ * leaves behavior exactly unchanged.
+ */
+export function isCacheOnlyMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.INVENTORY_CACHE_ONLY === '1';
 }
+const CACHE_ONLY = isCacheOnlyMode();
 
 async function loadTargetSkus(supabase: SupabaseClient): Promise<string[]> {
   if (process.env.PRODUCT_IDS) {
@@ -107,6 +117,38 @@ async function refreshStatus(supabase: SupabaseClient, supplierId: string): Prom
   if (error) console.warn(`   ⚠ refresh_product_inventory_status(${supplierId}) failed: ${error.message}`);
 }
 
+export interface WriteDeps {
+  upsertRows: (rows: NormalizedRow[]) => Promise<{ written: number; error: string | null }>;
+  refreshStatus: (supplierId: string) => Promise<void>;
+}
+
+/**
+ * Per-SKU write decision + application (pure control flow; effects injected, so unit-testable).
+ * Rules — the ONLY place cache-only mode changes behavior:
+ *   • rows.length === 0  → FAIL-CLOSED: write nothing (the fetcher returns []
+ *     for any auth/captcha/parse/network/unknown/resolve outcome), never a false zero,
+ *     leaving existing inventory_cache rows untouched.
+ *   • dryRun             → count only, no writes.
+ *   • upsert error       → surface it; do NOT refresh.
+ *   • cacheOnly === true  → upsert inventory_cache ONLY; SKIP refresh_product_inventory_status
+ *     (so standardized_products.published / inventory_status are never mutated).
+ *   • cacheOnly === false → unchanged: upsert then refresh (existing default behavior).
+ */
+export async function applyProductWrites(
+  deps: WriteDeps,
+  rows: NormalizedRow[],
+  supplierId: string,
+  opts: { dryRun: boolean; cacheOnly: boolean },
+): Promise<{ written: number; refreshed: boolean; error: string | null }> {
+  if (rows.length === 0) return { written: 0, refreshed: false, error: null }; // fail-closed
+  if (opts.dryRun) return { written: rows.length, refreshed: false, error: null };
+  const { written, error } = await deps.upsertRows(rows);
+  if (error) return { written: 0, refreshed: false, error };
+  if (opts.cacheOnly) return { written, refreshed: false, error: null };       // skip publication/status refresh
+  await deps.refreshStatus(supplierId);
+  return { written, refreshed: true, error: null };
+}
+
 async function verifyFreshness(supabase: SupabaseClient): Promise<boolean> {
   const { data: newest } = await supabase
     .from('inventory_cache')
@@ -131,6 +173,10 @@ async function verifyFreshness(supabase: SupabaseClient): Promise<boolean> {
 }
 
 async function run() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error('[syncXhr] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required');
+    process.exit(1);
+  }
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -145,8 +191,10 @@ async function run() {
   console.log(` Total available: ${allSkus.length}`);
   console.log(` Processing     : ${skus.length}`);
   console.log(` Dry run        : ${DRY_RUN}`);
+  console.log(` Cache-only     : ${CACHE_ONLY}`);
   console.log(` Inter-req delay: ${INTER_REQ_DELAY}ms`);
   console.log('═══════════════════════════════════════════════════════════\n');
+  if (CACHE_ONLY) console.log('[syncXhr] inventory-cache-only mode: downstream product-status refresh skipped (no standardized_products / published / inventory_status mutation)\n');
 
   let attempted = 0;
   let succeeded = 0;
@@ -181,19 +229,17 @@ async function run() {
         console.log(`     ${r.warehouse_code.padEnd(8)} qty=${String(r.quantity).padStart(4)}  state=${r.warehouse_state ?? '?'}`);
       }
 
-      if (!DRY_RUN) {
-        const { written, error } = await upsertRows(supabase, rows);
-        if (error) {
-          console.error(`     ✗ upsert failed: ${error}`);
-          failures.push({ sku, reason: `upsert: ${error}` });
-          failed++;
-          continue;
-        }
-        rowsWritten += written;
-        await refreshStatus(supabase, supplierId);
-      } else {
-        rowsWritten += rows.length;
+      const write = await applyProductWrites(
+        { upsertRows: (r) => upsertRows(supabase, r), refreshStatus: (id) => refreshStatus(supabase, id) },
+        rows, supplierId, { dryRun: DRY_RUN, cacheOnly: CACHE_ONLY },
+      );
+      if (write.error) {
+        console.error(`     ✗ upsert failed: ${write.error}`);
+        failures.push({ sku, reason: `upsert: ${write.error}` });
+        failed++;
+        continue;
       }
+      rowsWritten += write.written;
 
       succeeded++;
     } catch (err) {
@@ -248,7 +294,9 @@ async function run() {
   }
 }
 
-run().catch(err => {
-  console.error('[syncXhr] Fatal:', err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch(err => {
+    console.error('[syncXhr] Fatal:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

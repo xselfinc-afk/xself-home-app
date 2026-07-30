@@ -42,6 +42,7 @@
     "test:inventory-state": "tsx src/__tests__/inventoryStateMachine.test.ts",
     "test:inventory-safety": "tsx src/__tests__/inventorySafetyLimits.test.ts",
     "test:xhr-classify": "tsx src/__tests__/xhrFetcherClassify.test.ts",
+    "test:inventory-sync-cacheonly": "tsx src/__tests__/inventorySyncCacheOnly.test.ts",
     "inventory:decisions:dry": "tsx scripts/inventoryDecisionDryRun.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",
     "supplier:profile:init": "tsx scripts/supplierSession.ts profile:init",
