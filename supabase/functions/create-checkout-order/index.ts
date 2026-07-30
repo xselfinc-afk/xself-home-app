@@ -19,6 +19,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
+import { evaluateCheckoutCart } from '../_shared/checkoutInventoryRevalidation.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -385,7 +386,7 @@ serve(async (req: Request) => {
 
     const { data: freshRows, error: invError } = await supabase
       .from('inventory_cache')
-      .select('product_id, quantity, warehouse_code')
+      .select('product_id, quantity, warehouse_code, last_synced_at')
       .in('product_id', productIds)
       .in('source_type', ['website_scrape', 'official_api'])
       .eq('sync_status', 'ok');
@@ -398,11 +399,15 @@ serve(async (req: Request) => {
     // productId → { totalQty, firstWarehouseCode }
     const stockMap = new Map<string, number>();
     const warehouseMap = new Map<string, string>(); // productId → first warehouse seen
+    const rowsByProduct = new Map<string, { quantity: number | null; lastSyncedAt: string | null }[]>();
     for (const row of freshRows ?? []) {
       const pid = row.product_id as string;
       const qty = Math.max(0, Number(row.quantity ?? 0));
       stockMap.set(pid, (stockMap.get(pid) ?? 0) + qty);
       if (!warehouseMap.has(pid)) warehouseMap.set(pid, row.warehouse_code as string);
+      const arr = rowsByProduct.get(pid) ?? [];
+      arr.push({ quantity: row.quantity as number | null, lastSyncedAt: row.last_synced_at as string | null });
+      rowsByProduct.set(pid, arr);
     }
 
     const inventoryFailures: { productId: string; sku: string; reason: string }[] = [];
@@ -411,6 +416,32 @@ serve(async (req: Request) => {
         inventoryFailures.push({ productId: item.productId, sku: item.sku, reason: 'inventory_unavailable' });
       } else if ((stockMap.get(item.productId) ?? 0) < item.qty) {
         inventoryFailures.push({ productId: item.productId, sku: item.sku, reason: 'insufficient_qty' });
+      }
+    }
+
+    // Flag-gated stale/unknown revalidation (Scope G). DEFAULT OFF via remote config
+    // `inventory_checkout_revalidation_enabled`; while off this block is a strict no-op and
+    // the existing out-of-stock/insufficient behavior above is unchanged. When on, a line
+    // whose trusted cache rows are all older than the freshness threshold (or absent) is NOT
+    // accepted as confirmed stock (structured reason). Server-authoritative — never trusts
+    // client inventory state; touches only inventory, not fulfillment/Stripe/Affirm/pickup.
+    let checkoutRevalidationEnabled = false;
+    try {
+      const { data: flagRows } = await supabase
+        .from('home_content_config').select('value')
+        .eq('screen', 'inventory_automation').eq('key', 'inventory_checkout_revalidation_enabled')
+        .eq('is_active', true).limit(1);
+      checkoutRevalidationEnabled = flagRows?.[0]?.value === 'true' || flagRows?.[0]?.value === '1';
+    } catch { checkoutRevalidationEnabled = false; }
+
+    if (checkoutRevalidationEnabled) {
+      const reval = evaluateCheckoutCart(
+        items.map(i => ({ productId: i.productId, sku: i.sku, qty: i.qty, rows: rowsByProduct.get(i.productId) ?? [] })),
+        { enabled: true, staleThresholdMs: STALE_THRESHOLD_HOURS * 3600_000, nowMs: Date.now() },
+      );
+      for (const f of reval.failures) {
+        if (inventoryFailures.some(x => x.productId === f.productId)) continue; // already blocked above
+        inventoryFailures.push({ productId: f.productId, sku: f.sku, reason: f.reason });
       }
     }
 
