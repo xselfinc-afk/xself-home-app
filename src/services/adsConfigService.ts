@@ -36,6 +36,18 @@ export type AdConfig = {
   searchMax: number;
   /** Product Detail: single inline Native ad per-placement switch. Requires adsEnabled too. Default false. */
   detailEnabled: boolean;
+  /** Interstitial (browse-break) per-format switch. Requires adsEnabled too. Default false. */
+  interstitialEnabled: boolean;
+  /** Interstitial: request Google TEST interstitials even in release. Default true. */
+  interstitialTestMode: boolean;
+  /** Interstitial: no ad during the first N seconds of a session. Default 180. */
+  interstitialMinSessionSec: number;
+  /** Interstitial: minimum seconds between impressions. Default 600. */
+  interstitialMinIntervalSec: number;
+  /** Interstitial: max impressions per app session. Default 1. */
+  interstitialMaxPerSession: number;
+  /** Interstitial: minimum Product Detail views before eligibility. Default 3. */
+  interstitialMinDetailViews: number;
 };
 
 export const AD_CONFIG_DEFAULTS: AdConfig = {
@@ -52,6 +64,12 @@ export const AD_CONFIG_DEFAULTS: AdConfig = {
   searchInterval: 24,
   searchMax: 1,
   detailEnabled: false,
+  interstitialEnabled: false,      // ships OFF — activated only by an explicit server row
+  interstitialTestMode: true,      // fail-safe to Google TEST interstitials unless explicitly turned off
+  interstitialMinSessionSec: 180,  // no ad in the first 3 minutes of a session
+  interstitialMinIntervalSec: 600, // >= 10 minutes between impressions
+  interstitialMaxPerSession: 1,    // at most one per session
+  interstitialMinDetailViews: 3,   // only after substantial browsing
 };
 
 const KEY_MAP: Record<string, keyof AdConfig> = {
@@ -68,6 +86,12 @@ const KEY_MAP: Record<string, keyof AdConfig> = {
   ads_search_interval: 'searchInterval',
   ads_search_max: 'searchMax',
   ads_detail_enabled: 'detailEnabled',
+  ads_interstitial_enabled: 'interstitialEnabled',
+  ads_interstitial_test_mode: 'interstitialTestMode',
+  ads_interstitial_min_session_sec: 'interstitialMinSessionSec',
+  ads_interstitial_min_interval_sec: 'interstitialMinIntervalSec',
+  ads_interstitial_max_per_session: 'interstitialMaxPerSession',
+  ads_interstitial_min_detail_views: 'interstitialMinDetailViews',
 };
 
 /** Parse a raw config row value onto the typed config. Exported for tests. */
@@ -76,7 +100,8 @@ export function applyAdConfigRow(cfg: AdConfig, key: string, value: string | nul
   if (!field || value == null || value === '') return cfg;
   if (
     field === 'adsEnabled' || field === 'appOpenEnabled' || field === 'nativeEnabled' ||
-    field === 'nativeTestMode' || field === 'searchEnabled' || field === 'detailEnabled'
+    field === 'nativeTestMode' || field === 'searchEnabled' || field === 'detailEnabled' ||
+    field === 'interstitialEnabled' || field === 'interstitialTestMode'
   ) {
     return { ...cfg, [field]: value === 'true' || value === '1' };
   }
