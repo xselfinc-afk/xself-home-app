@@ -149,6 +149,29 @@ export async function applyProductWrites(
   return { written, refreshed: true, error: null };
 }
 
+const RESOLVE_MISS_RE = /could not resolve sku/i;
+
+export type SyncErrorKind = 'session_auth' | 'resolve_failed' | 'other';
+/**
+ * Classify a THROWN sync error without ever matching numeric/text fragments embedded in a SKU
+ * id. A resolve-miss ("Could not resolve SKU \"<id>\" ...") is ALWAYS a per-SKU resolve_failed —
+ * checked FIRST, so a SKU id containing 401/403/login/session/cookie can never look like auth
+ * (the original defect). Genuine auth uses word-boundaried HTTP codes + explicit phrases only.
+ */
+export function classifySyncError(msg: string): SyncErrorKind {
+  if (RESOLVE_MISS_RE.test(msg)) return 'resolve_failed';                        // per-SKU miss, never a session abort
+  const AUTH_PHRASE = /login to see price|\bsession (?:expired|invalid|timed? ?out)\b|\bcookie (?:expired|invalid)\b|\bsign[-\s]?in\b|\blog[-\s]?in\b|\bnot\s*login\b|\bunauthor/i;
+  const HTTP_AUTH = /\b(?:401|403)\b/;                                           // word-bounded: does NOT match 403 inside "W1162P190403"
+  const CANON_AUTH = /\bauthentication_required\b|\bcaptcha_required\b|\bmfa_required\b/i;
+  if (AUTH_PHRASE.test(msg) || HTTP_AUTH.test(msg) || CANON_AUTH.test(msg)) return 'session_auth';
+  return 'other';
+}
+
+/** Canonical inventory statuses that indicate a session/auth failure → abort the batch safely. */
+export function isAuthAbortStatus(status: string): boolean {
+  return status === 'authentication_required' || status === 'captcha_required' || status === 'mfa_required';
+}
+
 async function verifyFreshness(supabase: SupabaseClient): Promise<boolean> {
   const { data: newest } = await supabase
     .from('inventory_cache')
@@ -211,14 +234,22 @@ async function run() {
     try {
       const { productId, sku: resolvedSku } = await resolveProductId(sku);
       const supplierId = resolvedSku ?? sku; // fallback to the supplier_product_id we started with
-      const { rows, total } = await fetchWarehouseRows(productId, supplierId);
+      const { rows, total, result } = await fetchWarehouseRows(productId, supplierId);
 
       if (rows.length === 0) {
-        // Could be a) session expired, b) product genuinely has zero stock, or
-        // c) product not yet indexed. We don't write — let the verifier catch
-        // sync failures via the global freshness gate.
-        console.warn(`${prefix} ⚠ no warehouse rows  (product_id=${productId})`);
-        failures.push({ sku, reason: 'no_rows' });
+        // Prefer the canonical classifier's STRUCTURED status over any text heuristic.
+        if (isAuthAbortStatus(result.status)) {
+          // Real auth/CAPTCHA/MFA — the session is dead; every subsequent SKU would fail the same.
+          sessionExpired = true;
+          console.error(`${prefix} ✗ session/auth (${result.status}) — aborting batch`);
+          failures.push({ sku, reason: result.status });
+          failed++;
+          break;
+        }
+        // Non-confirmed & non-auth (inventory_unknown / network / parse / supplier_unavailable):
+        // per-SKU failure — write NOTHING, preserve existing rows, never a false zero. Continue.
+        console.warn(`${prefix} ⚠ no warehouse rows (${result.status})  (product_id=${productId})`);
+        failures.push({ sku, reason: result.status || 'no_rows' });
         failed++;
         if (INTER_REQ_DELAY > 0 && i < skus.length - 1) await new Promise(r => setTimeout(r, INTER_REQ_DELAY));
         continue;
@@ -244,16 +275,19 @@ async function run() {
       succeeded++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // resolveProductId or fetch failure — usually session expired or rate limit
-      if (/session|cookie|401|403|login/i.test(msg)) {
+      const kind = classifySyncError(msg);
+      if (kind === 'session_auth') {
+        // GENUINE auth/session signal (word-boundaried HTTP code / explicit phrase / canonical
+        // status) — NOT a SKU-id substring. Abort: subsequent SKUs would fail the same way.
         sessionExpired = true;
-        console.error(`${prefix} ✗ session error: ${msg}`);
+        console.error(`${prefix} ✗ session/auth error: ${msg}`);
         failures.push({ sku, reason: 'session_expired' });
         failed++;
-        break; // abort the batch — every subsequent call would fail the same way
+        break;
       }
-      console.error(`${prefix} ✗ ${msg}`);
-      failures.push({ sku, reason: msg.slice(0, 100) });
+      // Per-SKU failure (resolve_failed / other) — fail-closed, no write, preserve rows, continue.
+      console.error(`${prefix} ✗ ${kind === 'resolve_failed' ? 'resolve_failed' : 'error'}: ${msg}`);
+      failures.push({ sku, reason: kind === 'resolve_failed' ? 'resolve_failed' : msg.slice(0, 100) });
       failed++;
     }
 
