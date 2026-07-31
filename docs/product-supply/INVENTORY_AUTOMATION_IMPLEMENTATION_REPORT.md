@@ -301,3 +301,113 @@ idempotent (`CREATE TABLE IF NOT EXISTS`), additive only, and touches no existin
 - **No scheduler activated.**
 - **Nothing pushed.**
 - `/Users/heliu/XOne` and `/Users/heliu/xself-seller-automation` were never accessed.
+
+---
+
+# Addendum — Scheduler (Shadow Mode) · 2026-07-31
+
+## Scheduler mechanism
+
+**Reused the existing repository pattern**, not a new architecture: macOS **launchd** + a shell
+runner + an installer script with `install/status/run-now/disable/enable/uninstall/logs`, logging to
+`~/Library/Logs/`. This mirrors `scripts/installLocalInventorySync.sh` /
+`scripts/runGigaInventorySync.sh` exactly.
+
+A **distinct label** — `com.xselfhome.inventory-workflow-shadow` — keeps it separate from the
+existing `com.xselfhome.giga-inventory-sync` (04:00). The installer refuses to stack duplicates and
+never touches the existing job.
+
+## Exact recurring command
+
+```
+/bin/bash /Users/heliu/xself-home-app/scripts/runInventoryWorkflowShadow.sh
+```
+
+Ordered steps: atomic lock → source=pickup → **Pickup session-health gate** → inventory refresh with
+`INVENTORY_CACHE_ONLY=1` → persisted workflow transitions → recommendations → operational summary →
+lock release (via `trap` on EXIT/INT/TERM).
+
+Bounds: `SHADOW_LIMIT=120`, `SHADOW_INV_LIMIT=60`, `SHADOW_TIMEOUT_SEC=3600` watchdog, optional
+quarantine at `scripts/inventory-quarantine.txt`.
+
+## Cadence
+
+Daily, **05:30 local** — deliberately after the existing 04:00 job so the two never overlap and the
+evidence read is already fresh. `RunAtLoad=false`, so installing does not fire a run.
+
+## Activation status
+
+> **NOT ACTIVATED.** No plist installed, no job loaded.
+
+Phase 7 was conditional on Phases 5 and 6 passing. They did not, for one environmental reason:
+
+**The Pickup supplier session is unhealthy** — `health=authentication_required`,
+`humanAction=true`, exit code 10. The same cause explains the existing 04:00 job's last exit
+status of 1.
+
+The health gate behaved exactly as designed: the dry run aborted in 6 seconds, wrote an exception
+report, preserved workflow state, and inferred nothing:
+
+```json
+{ "failed_step": "session_health", "reason": "session_unhealthy_exit_10", "exit_code": 10,
+  "workflow_state_preserved": true, "out_of_stock_inferred_from_failure": false,
+  "customer_visible_action_executed": false }
+```
+
+Activating a daily job now would fail at the gate every morning **and leave a login browser window
+open each time**, so it stays off until the session is restored.
+
+## Steps validated independently of the blocked supplier refresh
+
+The workflow and recommendation steps were run directly with the exact scheduler arguments:
+
+```
+scanned=120  inserted=119  updated=0  transitions=101  duplicates=1  conflicts=0
+exceptions=18  stale_or_unknown=18
+buckets: {"no_action":101, "pending_confirmation":1, "blocked_unknown":18}
+evidence: {"confirmed_in_stock_ca":76, "confirmed_in_stock_out_of_state":25,
+           "confirmed_out_of_stock":1, "stale":18}
+```
+
+Fail-closed behaviour confirmed on live data: 18 stale observations became `blocked_unknown` with
+counters **held**, and the single confirmed zero became `pending_confirmation` — **not**
+delist-eligible. Recommendations: `eligible_for_delist=0`, `eligible_for_relist=0`,
+approval-required entries `0`.
+
+Write scope: `published` 353 → **353**, `sellable` 353 → **353**, `inventory_cache` 1225 → **1225**
+(no refresh ran). Workflow tables 5 → 124 states and 5 → 106 transitions — all allowed.
+
+## Operational commands
+
+```bash
+bash scripts/installInventoryWorkflowShadow.sh install     # create + load (HOUR/MINUTE to override)
+bash scripts/installInventoryWorkflowShadow.sh status      # check status
+bash scripts/installInventoryWorkflowShadow.sh logs        # view logs
+bash scripts/installInventoryWorkflowShadow.sh run-now     # run manually, foreground
+bash scripts/installInventoryWorkflowShadow.sh disable     # unload, keep plist
+bash scripts/installInventoryWorkflowShadow.sh enable      # reload
+bash scripts/installInventoryWorkflowShadow.sh uninstall   # unload + delete plist
+```
+
+## Failure and disable procedure
+
+Any step failure stops the remaining steps, writes `reports/inventory-decisions/shadow-exception.json`,
+returns nonzero, and releases the lock. Workflow state is preserved and a failure is never read as
+out-of-stock. To stop the schedule immediately: `… disable` (or `uninstall` to remove it entirely).
+
+## Execution remains shadow-only
+
+The scheduler cannot reach `scripts/inventoryActionApply.ts`, cannot call
+`refresh_product_inventory_status`, and pins every inventory refresh to `INVENTORY_CACHE_ONLY=1` —
+all three enforced by static assertions in `src/__tests__/inventoryShadowScheduler.test.ts`.
+
+## Remaining gate before Founder-approved action execution
+
+1. **Restore the Pickup session** (`npm run supplier:session:login -- --source=pickup --probe-sku=<SKU>`).
+2. Re-run Phases 5 and 6 to completion, then activate the schedule.
+3. Let counters accumulate across separate daily observations — `eligible_for_delist` needs two
+   consecutive confirmed zeros.
+4. Fix `sweep_stale_inventory` (unscheduled; 24h comment vs 7-day predicate) — 18 stale observations
+   already appeared in this run.
+5. Founder reviews recommendations, then runs `inventoryActionApply.ts` manually with
+   `--only=` and `--approve --approved-by=<name>`.
