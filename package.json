@@ -56,6 +56,7 @@
     "test:supplier-report": "tsx src/__tests__/supplierReport.test.ts",
     "test:supplier-scangate": "tsx src/__tests__/supplierScanGate.test.ts",
     "test:supplier-keychain": "tsx src/__tests__/supplierKeychain.test.ts",
+    "test:supplier-dropship": "tsx src/__tests__/supplierDropshipSource.test.ts",
     "test:supplier-loginpromote": "tsx src/__tests__/supplierLoginPromote.test.ts",
     "test:supplier-authpoll": "tsx src/__tests__/supplierAuthPoll.test.ts",
     "test:supplier-cli": "tsx src/__tests__/supplierSessionCli.test.ts",

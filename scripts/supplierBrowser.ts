@@ -15,7 +15,7 @@ import { sourceConfig, type SupplierSource, type SourceConfig } from './lib/supp
 import { classifyPageHealth, type HealthState, type HealthSignals, requiresHumanAction } from './lib/supplierSession/health';
 import { type AccountEvidence } from './lib/supplierSession/identity';
 import { verifyIdentity } from './lib/supplierSession/identity';
-import { promoteSnapshot, redactStorageState, type StorageState, type PromoteResult } from './lib/supplierSession/snapshot';
+import { promoteSnapshot, redactStorageState, hasRequiredCookies, type StorageState, type PromoteResult } from './lib/supplierSession/snapshot';
 import { acquireLock, releaseLock } from './lib/supplierSession/lock';
 import { writeHealthState } from './lib/supplierSession/scanGate';
 import { runLoginAndPromote, type LoginPromoteResult } from './lib/supplierSession/loginPromote';
@@ -228,7 +228,7 @@ function makeCheckerFactory(context: BrowserContext, loginPage: Page): () => Pro
  * restart). Never restarts the browser between login and extraction; leaves the window open
  * while waiting for the human; closes only after the final result. No secrets logged.
  */
-export async function loginAndPromote(source: SupplierSource, opts: { probeSku: string; timeoutMs?: number }): Promise<LoginPromoteResult & { source: SupplierSource; redactedSnapshot?: ReturnType<typeof redactStorageState> }> {
+export async function loginAndPromote(source: SupplierSource, opts: { probeSku?: string; timeoutMs?: number }): Promise<LoginPromoteResult & { source: SupplierSource; redactedSnapshot?: ReturnType<typeof redactStorageState> }> {
   const cfg = sourceConfig(source);
   ensureProfileDir(cfg);
   let context: BrowserContext | null = null;
@@ -237,7 +237,7 @@ export async function loginAndPromote(source: SupplierSource, opts: { probeSku: 
   const result = await runLoginAndPromote({
     expectedRole: cfg.role,
     expectedBuyerId: EXPECTED_BUYER_ID[source],
-    probeSku: opts.probeSku,
+    probeSku: opts.probeSku ?? '',
     timeoutMs: opts.timeoutMs ?? 10 * 60 * 1000,
     acquireLock: () => acquireLock(cfg.lockPath, source).ok,
     releaseLock: () => releaseLock(cfg.lockPath, source),
@@ -260,12 +260,25 @@ export async function loginAndPromote(source: SupplierSource, opts: { probeSku: 
       onInstrument: (e) => console.log(`[supplier] poll#${e.attempt} visibleBefore=${e.visibleUrlBefore} visibleAfter=${e.visibleUrlAfter} checker=${e.checkerUrl} authed=${e.authed}`),
     }),
     extractSnapshot: async () => await context!.storageState() as unknown as StorageState, // in-memory → captures SESSION cookies
-    probe: async (snapshot, sku) => probeViaFetcher(cfg, snapshot, sku),
+    // Source-aware bounded probe: pickup confirms via the warehouse XHR; dropship (no pickup
+    // warehouse XHR) confirms via authenticated identity + required session cookies.
+    probe: async (snapshot, sku) => source === 'pickup' ? probeViaFetcher(cfg, snapshot, sku) : probeDropshipSession(snapshot),
     promote: (snapshot) => promoteSnapshot({ snapshotPath: cfg.snapshotPath, backupPath: cfg.backupPath }, snapshot, { probeOk: true }),
     persistHealth: (h) => writeHealthState(cfg.healthPath, source, h),
     closeContext: async () => { if (context) await context.close().catch(() => {}); },
   });
   return { ...result, source };
+}
+
+/**
+ * Dropship bounded confirmation. The dropship account has NO pickup warehouse XHR, so the
+ * bounded probe (mirroring refreshSession's dropship path) is: the session reached an
+ * authenticated dropship account (verified upstream by identity) AND the freshly-extracted
+ * snapshot carries the required gigab2b session cookies. Genuine — not a fabricated probe.
+ */
+export function probeDropshipSession(snapshot: StorageState): { probeOk: boolean; classification: string } {
+  const ok = hasRequiredCookies(snapshot);
+  return { probeOk: ok, classification: ok ? 'identity_confirmed' : 'missing_required_cookies' };
 }
 
 /** Write the live snapshot to a temp file and run it through the EXISTING XHR fetcher; require CONFIRMED. */

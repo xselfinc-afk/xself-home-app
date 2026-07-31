@@ -81,10 +81,13 @@ async function main(): Promise<number> {
   let op: SessionOpResult | (LoginPromoteResult & { source: typeof source }) | null = null;
   if (kind === 'session:login') {
     const probeSku = argVal('probe-sku');
-    if (!probeSku) { log('session:login requires --probe-sku=<SKU> (a bounded warehouse probe must confirm before promotion)'); return EXIT_FAIL; }
+    // Pickup requires a warehouse-XHR probe SKU; dropship has no pickup warehouse XHR and
+    // confirms via authenticated identity + required session cookies (no probe SKU needed).
+    if (source === 'pickup' && !probeSku) { log('session:login --source=pickup requires --probe-sku=<SKU> (a bounded warehouse probe must confirm before promotion)'); return EXIT_FAIL; }
     const timeoutMin = parseTimeoutMin(argVal('timeout-min'));
     log(`single-session login (loginAndPromote path) for '${source}' (profile: ${cfg.profileDir}).`);
     log(`A dedicated headed browser opens. Log in ONCE in the VISIBLE tab. A background checker tab (never your login tab, ≥5s apart) polls for up to ${timeoutMin} min; do NOT copy cookies.`);
+    log(source === 'pickup' ? 'Bounded confirmation: live warehouse XHR probe.' : 'Bounded confirmation: authenticated dropship identity + required session cookies (dropship has no pickup warehouse XHR).');
     log('The SAME live context is reused through identity → probe → promote (no browser restart).');
     op = await manager.loginAndPromote(source, { probeSku, timeoutMs: timeoutMin * 60_000 });
   } else if (kind === 'session:refresh') {
@@ -113,7 +116,7 @@ async function main(): Promise<number> {
   writeHealthState(cfg.healthPath, source, op.health); // scanner gate consumes this
 
   log(`source=${source} health=${op.health} identityVerified=${op.identityVerified} snapshotRefreshed=${op.snapshotRefreshed} backedUp=${op.previousBackedUp} probe=${op.probeClassification ?? '-'} humanAction=${op.humanActionRequired}`);
-  if ('buyerIdConfirmed' in op) log(`buyerIdConfirmed=${op.buyerIdConfirmed} (expected Buyer 76938981 for pickup; confirmed only when the id is visible on the account page)`);
+  if ('buyerIdConfirmed' in op) log(`buyerIdConfirmed=${op.buyerIdConfirmed} (expected ${source} account id; confirmed only when that id is visible on the account page; the OTHER account's id would flag account_mismatch)`);
   log(`report → ${p}`);
   if (op.humanActionRequired || requiresHumanAction(op.health)) { log('HUMAN ACTION REQUIRED (login/CAPTCHA/MFA) — the dedicated browser is left open at the required screen.'); return EXIT_HUMAN; }
   return op.health === 'healthy' ? EXIT_OK : EXIT_FAIL;
