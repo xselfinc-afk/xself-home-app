@@ -44,6 +44,8 @@
     "test:xhr-classify": "tsx src/__tests__/xhrFetcherClassify.test.ts",
     "test:inventory-sync-cacheonly": "tsx src/__tests__/inventorySyncCacheOnly.test.ts",
     "test:inventory-sync-session": "tsx src/__tests__/inventorySyncSessionDetection.test.ts",
+    "test:stage1-candidate": "tsx src/__tests__/stage1CandidateScore.test.ts",
+    "stage1:candidates:report": "tsx scripts/stage1CandidateReport.ts",
     "inventory:decisions:dry": "tsx scripts/inventoryDecisionDryRun.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",
     "supplier:profile:init": "tsx scripts/supplierSession.ts profile:init",
