@@ -4,7 +4,7 @@
 **Date:** 2026-07-31
 **Status:** Proposed implementation architecture. Nothing implemented. No schema, no migration, no data written.
 
-**Product model authority:** The three-axis model and the eight Saved Asset state names were
+**Product model authority:** The three-axis model and the nine Saved Asset state names were
 approved by the Product Architect. This document does not redesign, rename, or merge them. It
 proposes *how to implement* that model against the repository as it actually exists.
 
@@ -38,11 +38,16 @@ Three constraints dominate the design:
 1. **`refresh_product_inventory_status()` writes `published` unconditionally** on every call. Any
    second writer will be silently overwritten. Axis 1 must never write `published` — this is
    Architectural Rule 2, and the RPC's implementation is why it matters.
-2. **`REMOVABLE` and `REMOVED` are architecturally valid but operationally gated.** Both are full
-   members of the approved lifecycle. Transition *into* `REMOVABLE`, and execution of
-   `REMOVABLE → REMOVED`, remain **default-off** until every required dependency check, approval
-   record, and supplier-write verification capability exists (Phase 1 and Phase 2 established that
-   no remove-from-Saved capability exists today). This is a gate, not a permanent absence.
+2. **`REMOVABLE`, `AWAITING_REMOVAL_VERIFICATION` and `REMOVED` are architecturally valid but
+   operationally gated.** All three are full members of the approved lifecycle. Transition *into*
+   `REMOVABLE`, the Founder acknowledgement `REMOVABLE → AWAITING_REMOVAL_VERIFICATION`, and the
+   verified `AWAITING_REMOVAL_VERIFICATION → REMOVED` all remain **default-off** until every required
+   dependency check, approval record, and supplier-verification capability exists (Phase 1 and
+   Phase 2 established that no remove-from-Saved capability exists today). This is a gate, not a
+   permanent absence.
+   **There is no direct `REMOVABLE → REMOVED` edge.** Removal is performed by the Founder *outside*
+   these systems, so "acknowledged" and "verified released" are distinct facts and must be distinct
+   states (see `SAVED_ASSET_XONE_CONTRACT.md`).
 3. **Saved membership gates all supplier API access** (Phase 1, proven). Releasing a slot forfeits
    the ability to read that product's detail, price, and inventory. Removal is therefore not merely
    irreversible bookkeeping — it destroys the evidence needed to reconsider the decision.
@@ -98,7 +103,7 @@ only when one path is taken instead of another.
 | --- | --- | --- | --- |
 | **Question answered** | Why should this slot stay occupied? | How far through processing is it? | What is stock doing over time? |
 | **Storage** | **New** — proposed `saved_assets` | **Existing** — derive, do not copy | **New** — proposed `inventory_workflow` |
-| **Values** | 8 approved states | Derived booleans/facts | 6 existing states |
+| **Values** | 9 approved states | Derived booleans/facts | 6 existing states |
 | **Primary writer** | Founder decision + evidence jobs | Existing pipeline subsystems | Scheduled inventory job |
 | **Cadence** | Rare, deliberate | Per pipeline run | Per inventory observation |
 | **May write `published`?** | **Never** | Only via the RPC | **Never** directly |
@@ -214,29 +219,46 @@ currently live.
 
 ### REMOVABLE
 
-- **Purpose:** All dependency, publication, inventory, and approval checks have passed.
+- **Purpose:** All dependency, publication, inventory, and approval checks have passed. **The asset is eligible for Founder manual removal at the supplier** — this is the state the Operator Console surfaces as an actionable task.
 - **Entry:** From `RETIRE_CANDIDATE` **only**, and only when every precondition in §6 is satisfied and Founder authorization is recorded.
-- **Exit:** Removal executed and verified, or a precondition regresses.
-- **Allowed next:** `REMOVED`, and back to `RETIRE_CANDIDATE`/`HOLD`/`ACTIVE_ASSET` if a precondition regresses before execution.
+- **Exit:** The Founder acknowledges they performed the removal, or a precondition regresses.
+- **Allowed next:** **`AWAITING_REMOVAL_VERIFICATION`** (via the narrow Founder-action interface **only**), and back to `RETIRE_CANDIDATE`/`HOLD`/`ACTIVE_ASSET` if a precondition regresses. **`REMOVED` is NOT reachable from here.**
 - **Occupies slot:** Yes — the slot is still occupied. `REMOVABLE` is permission, not release.
 - **Deadline:** **Required** (Rule 7) — stale authorization must expire rather than remain executable indefinitely.
 - **Founder approval:** **Required and recorded** (`approved_by`, `approved_at`).
 - **May coexist with `published=true`:** **No — hard invariant.** A product with `published = true` **must not enter `REMOVABLE`** under any circumstance. A published product may enter `REVIEW_REQUIRED` or `RETIRE_CANDIDATE` for planning purposes, but publication must be safely disabled through the publication authority, and every precondition in §6 and §6a satisfied, before `REMOVABLE` is permitted.
 - **Required fields:** all approval fields, plus the recorded precondition evidence snapshot.
-- **Operational gating:** architecturally valid, but **default-off**. Transition into `REMOVABLE` is disabled until the dependency checks, approval records, and supplier-write verification capability exist (Phase F).
+- **Operational gating:** architecturally valid, but **default-off**. Transition into `REMOVABLE` is disabled until the dependency checks, approval records, and supplier-verification capability exist (Phase F).
+
+### AWAITING_REMOVAL_VERIFICATION
+
+- **Purpose:** The Founder has stated they removed the item at the supplier, but **no supplier evidence has confirmed it yet**. Founder interaction is an *intent record*, **not proof of supplier removal**.
+- **Entry:** From `REMOVABLE` **only**, and **only** through the narrow Founder-action interface (`mark_manual_removal_done(saved_asset_id, expected_version)`). No automated process may enter this state.
+- **Exit:** A successful supplier Favorite-list observation resolves it, or the Founder revokes the acknowledgement.
+- **Allowed next:** **`REMOVED`** (only on `sync_status = 'ok'` **and** `is_saved = false`); back to `REMOVABLE` if the Founder revokes; `ACTIVE_ASSET` if the product is republished and the task is cancelled.
+- **Occupies slot:** **Yes** — the slot is presumed still occupied until removal is proven. This is the safe assumption.
+- **Deadline:** **Required** — an acknowledgement that is never verified must resurface for review rather than linger silently.
+- **Founder approval:** Already recorded at `REMOVABLE`; the acknowledgement itself is recorded via `founder_status = 'marked_done'` and `founder_marked_done_at`.
+- **May coexist with `published=true`:** **No** — publication must already have been disabled before `REMOVABLE`.
+- **Required fields:** `founder_status`, `founder_marked_done_at`, `verification_status`, `verification_attempts`, `last_verification_at`, `last_verification_failure_reason`.
+- **Verification outcomes:**
+  - `sync_status='ok'` **and** `is_saved=false` → **`REMOVED`**.
+  - `sync_status='ok'` **and** `is_saved=true` → **remain here**, record a failed verification, increment `verification_attempts`.
+  - Authentication, CAPTCHA, network, supplier, parsing or permission failure → `is_saved` stays **unknown/NULL**, **state preserved**, **removal never inferred**.
+- **Operational gating:** **default-off** until Phase F.
 
 ### REMOVED
 
 - **Purpose:** The supplier has confirmed the item is no longer in Saved Items — the slot is actually released.
-- **Entry:** Only after **verified** removal at the supplier (Rule 10). Approval alone is insufficient.
+- **Entry:** From `AWAITING_REMOVAL_VERIFICATION` **only**, and **only** on a successful supplier Favorite-list observation with `sync_status = 'ok'` **and** `is_saved = false` (Rule 10). Founder acknowledgement alone is insufficient. **Written by XSelf Home only — never by XOne, never by seller-automation.**
 - **Exit:** Terminal for this asset record. Re-saving the product later should create a new record, preserving history.
 - **Allowed next:** None (terminal).
 - **Occupies slot:** **No** — this is the only state that does not.
 - **Deadline:** Not applicable.
 - **Founder approval:** Already recorded at `REMOVABLE`.
 - **May coexist with `published=true`:** **No.**
-- **Required fields:** `removed_at`, `last_saved_verified_at` (post-removal verification), retained approval fields.
-- **Operational gating:** execution of `REMOVABLE → REMOVED` is **default-off**. **No scheduled or autonomous process may execute a supplier Saved Items removal during the initial implementation stages** — execution is manual and Founder-authorized only.
+- **Required fields:** `removed_at`, `last_saved_verified_at` (the verifying observation), retained approval fields.
+- **Operational gating:** the whole `REMOVABLE → AWAITING_REMOVAL_VERIFICATION → REMOVED` path is **default-off**. **No scheduled or autonomous process may execute or verify a supplier Saved Items removal during the initial implementation stages** — the removal itself is manual and Founder-performed.
 
 > **Operational gate (not a permanent limitation):** `REMOVED` is a fully valid lifecycle state. It
 > is not currently *executable* because no verified remove-from-Saved capability exists (Phase 1,
@@ -276,16 +298,25 @@ recorded in history.
 | `RETIRE_CANDIDATE` | `ACTIVE_ASSET` | Value reconfirmed | No | Yes |
 | `RETIRE_CANDIDATE` | `HOLD` | New blocker or Founder defers | No | No (reason must be authored) |
 | `RETIRE_CANDIDATE` | `REMOVABLE` | **All §6 + §6a preconditions pass** + authorization | **Yes** | **No — default-off** |
-| `REMOVABLE` | `REMOVED` | Removal executed **and verified** at supplier | **Yes** | **No — default-off; never scheduled or autonomous** |
-| `REMOVABLE` | `RETIRE_CANDIDATE` / `HOLD` / `ACTIVE_ASSET` | Precondition regressed before execution | No | Yes |
+| **`REMOVABLE`** | **`AWAITING_REMOVAL_VERIFICATION`** | Founder acknowledges the manual removal, via the narrow action interface **only** | Already recorded | **No — Operator Console action only** |
+| **`AWAITING_REMOVAL_VERIFICATION`** | **`REMOVED`** | Supplier observation with `sync_status='ok'` **and** `is_saved=false` | Already recorded | **No — default-off; XSelf Home writes it** |
+| `AWAITING_REMOVAL_VERIFICATION` | `AWAITING_REMOVAL_VERIFICATION` (self) | `is_saved=true` → record failed verification, increment attempts | No | Yes |
+| `AWAITING_REMOVAL_VERIFICATION` | `REMOVABLE` | Founder revokes the acknowledgement | No | No |
+| `REMOVABLE` / `AWAITING_REMOVAL_VERIFICATION` | `ACTIVE_ASSET` | Product republished / value reconfirmed → task cancelled | No | Yes |
+| `REMOVABLE` | `RETIRE_CANDIDATE` / `HOLD` | Precondition regressed before acknowledgement | No | Yes |
 
 ### Prohibited transitions
 
 | Prohibited | Why |
 | --- | --- |
 | **Any product with `published = true` → `REMOVABLE`** | **Hard invariant (§6a).** Publication must be safely disabled through the publication authority first |
-| Any → `REMOVED` except from `REMOVABLE` | Rule 10 — removal must pass dependency checks and be verified |
+| **`REMOVABLE` → `REMOVED` (direct)** | **Removed from this model.** Founder acknowledgement is not proof of supplier removal; it must pass through `AWAITING_REMOVAL_VERIFICATION` |
+| Any → `REMOVED` except from `AWAITING_REMOVAL_VERIFICATION` **with `sync_status='ok'` and `is_saved=false`** | Rule 10 — only affirmative supplier evidence releases a slot |
 | Any → `REMOVABLE` except from `RETIRE_CANDIDATE` | Rule 9 — `REMOVABLE` is the authorization gate, not a shortcut |
+| Any → `AWAITING_REMOVAL_VERIFICATION` except from `REMOVABLE` via the narrow Founder-action interface | Only the Operator Console may record the acknowledgement |
+| **XOne (Operator Console) writing `REMOVED`, `REMOVABLE`, `published`, `inventory_status`, or supplier membership** | Its sole permitted write is `REMOVABLE → AWAITING_REMOVAL_VERIFICATION` |
+| **seller-automation deciding `REMOVABLE`** or writing any `asset_state` | It ingests supplier facts only; it holds no Saved Asset business state |
+| **Inferring `REMOVED` from missing, stale, NULL, or failed evidence** | Absence of evidence is never evidence of removal |
 | `SAVED_CANDIDATE` / `EVALUATING` → `RETIRE_CANDIDATE` | Must pass through `REVIEW_REQUIRED` or `HOLD`; never retire without an explicit review step |
 | `SAVED_CANDIDATE` / `EVALUATING` / `ACTIVE_ASSET` → `REMOVABLE` | Skips both review and retire evaluation |
 | **`HOLD` → `RETIRE_CANDIDATE` triggered by deadline expiry** | **Expiry routes to `REVIEW_REQUIRED` only.** A review deadline is never a removal deadline |
@@ -294,7 +325,7 @@ recorded in history.
 | Any transition writing `published` | Rule 2 — Axis 1 never writes publication |
 | Any transition writing `inventory_status` | Rule 4 — Axis 3 and the RPC own inventory state |
 | Any automated transition into `RETIRE_CANDIDATE` | Founder approval required from every source state |
-| Any automated transition into `REMOVABLE` or `REMOVED` | Irreversible; Founder approval must be explicit |
+| Any automated transition into `REMOVABLE`, `AWAITING_REMOVAL_VERIFICATION`, or `REMOVED` | Irreversible; Founder approval and supplier evidence must be explicit |
 | **Any scheduled or autonomous supplier Saved Items removal** | Prohibited outright during the initial implementation stages |
 | Any transition authorized solely by `junk_category = true` | Rule 8 — regex-based flag with proven false positives |
 
@@ -388,7 +419,7 @@ occupy a slot in both accounts, at independent cost.
 | --- | --- | --- | --- |
 | `supplier_product_id` | text | SKU identity | Matches the key used across `supplier_products`, `standardized_products`, `inventory_cache` |
 | `supplier_account` | text | Which account holds the slot | `pickup` / `dropship`. Closes precondition 6 |
-| `asset_state` | text | Axis 1 state | Constrained to the 8 approved names |
+| `asset_state` | text | Axis 1 state | Constrained to the **9** approved names (`CHECK`, not `ENUM`) |
 | `state_reason_code` | text | Machine-readable reason | Enables aggregation and queue-building |
 | `state_reason_text` | text | Human explanation | **Mandatory for `HOLD` and `RETIRE_CANDIDATE`** |
 | `entered_state_at` | timestamptz | When the current state began | Drives deadline computation |
@@ -400,6 +431,11 @@ occupy a slot in both accounts, at independent cost.
 | `slot_cost` | integer | Slots consumed by this row | See note below |
 | `product_family_key` | text | Family identity | Mirrors `standardized_products.product_family_key`; enables family-level reasoning without a new table |
 | `last_saved_verified_at` | timestamptz | When membership was last confirmed | Critical — membership drifts silently (689 → 688 observed) |
+| `founder_status` | text | `pending` \| `marked_done` \| `deferred` | **Operator Console writes this via the narrow action only** |
+| `founder_marked_done_at` | timestamptz | When the Founder acknowledged the manual removal | Intent record — **not** proof of supplier removal |
+| `verification_status` | text | `not_started` \| `awaiting_verification` \| `verified_removed` \| `still_saved` \| `blocked_by_auth` | **XSelf Home only**, derived from supplier facts |
+| `verification_attempts` | integer | Failed-verification count | XSelf Home only |
+| `last_verification_at` / `last_verification_failure_reason` | timestamptz / text | Most recent verification outcome | XSelf Home only |
 | `removed_at` | timestamptz | When removal was verified | Null until `REMOVED` |
 | `version` | integer | Optimistic concurrency | Prevents lost updates between founder action and scheduled jobs |
 | `created_at` / `updated_at` | timestamptz | Standard audit | |
@@ -521,7 +557,7 @@ to live data by this document. Counts are from `Stage2_PHASE3_SAVED_RESOURCE_ANA
 1. **Published ⇒ never an initial removal-adjacent state.** No live product may be backfilled to
    `RETIRE_CANDIDATE`, `REMOVABLE`, or `REMOVED`, regardless of any other flag.
 2. **`junk_category` maps at most to `REVIEW_REQUIRED`** (Rule 8), never to `RETIRE_CANDIDATE`.
-3. **No initial state may be `REMOVABLE` or `REMOVED`.** Both require authorization that has never
+3. **No initial state may be `REMOVABLE`, `AWAITING_REMOVAL_VERIFICATION`, or `REMOVED`.** Both require authorization that has never
    been given, and `REMOVED` additionally requires verified supplier release.
 4. **Stale-evidence mapping needs care.** The staleness sweep is not running (344 rows are `in_stock`
    with sync data older than 7 days) and two thresholds disagree (the function comment says 24 hours;
@@ -614,19 +650,23 @@ the property that provably fails today.
 so without any irreversible capability existing.
 
 **Phase E — Founder-approved manual transitions.** Allow recorded, authorized state changes with
-history. Still no supplier writes; `REMOVABLE` reachable, `REMOVED` still not. *Testable:* transition
-validation rejects prohibited transitions; history rows are written.
+history. Still no supplier writes; `REMOVABLE` reachable, `AWAITING_REMOVAL_VERIFICATION` and
+`REMOVED` still not. *Testable:* transition validation rejects prohibited transitions — including any
+direct `REMOVABLE → REMOVED` attempt; history rows are written.
 
-**Phase F — Controlled Saved removal.** Only after a removal capability exists and is verified.
-Requires: **per-item Founder approval**, all §6 and §6a preconditions checkable, evidence snapshot
-captured pre-execution, post-removal verification, and a strict blast-radius limit (a small number of
-items per batch, as Stage 1 did with 5 SKUs). **No scheduled or autonomous process may execute a
-removal — execution is manual and Founder-authorized only, for the entirety of the initial
-implementation stages.** *Testable:* dry-run parity before any live removal.
+**Phase F — Founder-performed removal with supplier verification.** Only after the Operator Console
+action interface and the supplier fact layer exist. Requires: **per-item Founder approval**, all §6
+and §6a preconditions checkable, evidence snapshot captured **before** the acknowledgement, the
+narrow `REMOVABLE → AWAITING_REMOVAL_VERIFICATION` action, a supplier Favorite-list observation to
+resolve it, and a strict blast-radius limit (a small number of items per batch, as Stage 1 did with
+5 SKUs). **The removal itself is performed manually by the Founder at the supplier; no scheduled or
+autonomous process may perform or infer it, for the entirety of the initial implementation stages.**
+*Testable:* an `is_saved=true` or failed observation must leave the asset in
+`AWAITING_REMOVAL_VERIFICATION`, never `REMOVED`.
 
-Until Phase F is explicitly enabled, transition into `REMOVABLE` and execution of
-`REMOVABLE → REMOVED` are **default-off**. Phases A–E populate and observe the lifecycle without any
-capacity to release a slot.
+Until Phase F is explicitly enabled, the whole
+`REMOVABLE → AWAITING_REMOVAL_VERIFICATION → REMOVED` path is **default-off**. Phases A–E populate and
+observe the lifecycle without any capacity to release a slot.
 
 **Phase G — Controlled Saved addition and Discovery integration.** Depends on an addition capability
 that does not exist today. Closes the loop from discovery to acquisition.
@@ -645,14 +685,19 @@ to release slots should not exist before the ability to see what is occupying th
 3. `refresh_product_inventory_status()` remains the single publication authority. No second uncontrolled writer to `published` is introduced.
 4. Axis 3 state is never embedded in Axis 1.
 5. Axis 2 facts are derived, never copied into `saved_assets`.
-6. `REMOVED` is entered only after **verified** supplier release.
+6. `REMOVED` is entered **only** from `AWAITING_REMOVAL_VERIFICATION`, and **only** on a supplier observation with `sync_status='ok'` **and** `is_saved=false`. There is **no direct `REMOVABLE → REMOVED` edge**.
+6b. Founder acknowledgement is **not** proof of supplier removal; it reaches only `AWAITING_REMOVAL_VERIFICATION`.
+6c. A failed auth/CAPTCHA/network/parse/permission observation leaves `is_saved` unknown/NULL, **preserves state**, and **never infers removal**.
 7. `REMOVABLE` is entered only from `RETIRE_CANDIDATE`, only with recorded Founder authorization.
+7b. `AWAITING_REMOVAL_VERIFICATION` is entered **only** from `REMOVABLE`, **only** via the narrow Founder-action interface.
+7c. **XOne never writes `REMOVED`**; **seller-automation never decides `REMOVABLE`**; **XSelf Home remains the sole Saved Asset state authority**.
+7d. A dual-account SKU has an **independent state per `(supplier_product_id, supplier_account)`**; removing one account never affects the other.
 8. `junk_category` never authorizes removal.
 9. Every transition is recorded in append-only history.
 10. **No `HOLD` exists without `review_due_at`**, plus `state_reason_code`, `state_reason_text`, initiating authority, and `entered_state_at`.
 11. **`HOLD` expiry routes to `REVIEW_REQUIRED` — never to `RETIRE_CANDIDATE`.**
 12. Only `ACTIVE_ASSET` and justified `HOLD` may occupy a slot indefinitely.
-13. No automated transition may enter `RETIRE_CANDIDATE`, `REMOVABLE`, or `REMOVED`.
+13. No automated transition may enter `RETIRE_CANDIDATE`, `REMOVABLE`, `AWAITING_REMOVAL_VERIFICATION`, or `REMOVED`.
 14. **No scheduled or autonomous process executes a supplier Saved Items removal during the initial implementation stages.**
 15. Deadline expiry never routes toward removal.
 
@@ -680,9 +725,10 @@ to release slots should not exist before the ability to see what is occupying th
 
 Only items genuinely requiring business judgement.
 
-**Now decided by Founder Review and removed from this list:** the state count (eight, preserved);
+**Now decided by Founder Review and removed from this list:** the state count (**nine**, per `SAVED_ASSET_XONE_CONTRACT.md`);
 which transitions require Founder approval (§5); initial HOLD review windows (§11: 7 / 14 / 30 days);
-whether `REMOVABLE → REMOVED` requires Founder approval (yes); and the treatment of published
+whether the removal path requires Founder approval (yes — and it now runs
+`REMOVABLE → AWAITING_REMOVAL_VERIFICATION → REMOVED`, with no direct edge); and the treatment of published
 products (§6a hard invariant).
 
 1. **Non-HOLD review windows (§11).** `SAVED_CANDIDATE`, `EVALUATING`, `ACTIVE_ASSET` revalidation,
