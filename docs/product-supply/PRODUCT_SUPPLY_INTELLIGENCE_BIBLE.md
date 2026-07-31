@@ -173,9 +173,185 @@ regardless of how much was built.
 ## Part II — Business
 
 ### 6. Business Model
+
+This system serves a retail business that sources products from external suppliers and sells them
+through customer channels that XSelf controls. The supplier is the origin of goods; the
+XSelf-controlled channel is where demand is met and revenue is earned. The system's role is to
+connect the two well: to move the right supplier products into the customer channel and to keep
+that assortment healthy as conditions change.
+
+Concretely, the system helps the business discover commercially useful products, secure supplier
+access through Favorites where that access is required, import product data, verify actual
+fulfillment availability, prioritize products that can be sold reliably, publish products to
+customer-facing channels, monitor supply continuously, and remove or restore products as
+circumstances change. These activities form one continuous responsibility rather than a set of
+independent tasks.
+
+A central truth of the model must be stated plainly: the supply system does not create value
+merely by processing more products. Volume of activity is not the objective. Value is created by
+selecting the right products and maintaining them well over time. A larger catalog that is poorly
+chosen or poorly maintained is a cost, not an achievement.
+
+The business model is best understood as the conversion of limited operational resources into
+sales. Every one of the inputs the business relies on is finite: Favorite slots are limited;
+founder attention is limited; time is limited; working capital is limited; delivery coverage is
+limited; and opportunities to acquire customers are limited. None of these can be treated as
+abundant, and each is spent whenever the business acts.
+
+Because those resources are scarce, the defining task of the system is allocation. It must direct
+limited resources toward the products that return the most value for the resource they consume.
+Favorite slots in particular are scarce commercial resources; occupying one is a commitment that
+displaces another product that could have held it, so each slot must be earned by commercial
+usefulness rather than granted by default.
+
+The model also imposes a requirement on the architecture: it must remain category-independent. The
+business begins in furniture, but it may expand into broader home, household, lifestyle, and
+general retail categories. The business logic in this document — sourcing through suppliers,
+securing scarce access, verifying availability, and allocating resources to the best products —
+holds across categories. Category-specific knowledge is treated as configuration on top of this
+model, so that expansion does not require the model to be rebuilt.
+
 ### 7. Revenue Strategy
+
+The operating strategy is revenue-first. The primary objective is to increase both the number and
+the quality of sellable products available to customers, while keeping the operational burden of
+doing so under deliberate control. Growth that the business cannot sustain operationally is not
+acceptable growth; the two must advance together.
+
+Newly listed and newly restocked products should receive preferential attention. Early
+availability can create a sales advantage, because being able to offer a product sooner than
+alternatives captures demand that later availability would miss. Speed of response to new supply
+is therefore a genuine commercial lever.
+
+Newness, however, must never be sufficient on its own. A new product that cannot be fulfilled, or
+that carries no margin, or that duplicates existing coverage, does not advance revenue simply by
+being new. The strategy prioritizes products that combine several qualities at once: newness;
+verified availability; California inventory where possible; shipping capability; acceptable margin;
+complete product information; customer relevance; low duplication; and operational feasibility. A
+product's claim on resources grows stronger as more of these qualities are present together.
+
+The strategy can be expressed as a disciplined sequence of behaviors: discover early; evaluate
+quickly; favorite selectively; import promptly; verify before publishing; publish useful products
+faster; monitor continuously; and retire weak products deliberately. Each behavior is chosen for
+its commercial effect. Discovering and evaluating early captures timing advantage; favoriting
+selectively protects the scarce slot budget; verifying before publishing protects customer trust;
+and retiring deliberately returns resources to be reused.
+
+Revenue growth is expected to come from four sources in particular: better assortment quality,
+faster time-to-market, higher confidence in availability, and improved use of scarce Favorite
+capacity. These are qualities of how the business selects and manages products, not simply of how
+many products it lists.
+
+It follows that "more products" is explicitly not the goal, and framing it that way would mislead
+every decision downstream. The goal is more commercially useful products, made available earlier,
+with less inventory risk. Each of those three qualifiers matters: usefulness rather than count,
+speed rather than delay, and controlled risk rather than exposure. Revenue strategy is the pursuit
+of all three at once.
+
 ### 8. Business Value Engine
+
+The Business Value Engine is the mechanism that evaluates the ongoing commercial value of a product
+after it has been discovered and after it has been published. Its concern is not whether a product
+was once promising, but whether it continues to justify the resources it currently consumes.
+
+This engine is deliberately distinct from the engine that evaluates newly discovered products. The
+new-product evaluation answers a forward-looking question of opportunity: "Should this newly
+discovered product receive attention and possibly a Favorite slot?" The Business Value Engine
+answers a different, retrospective-and-ongoing question: "Does this product still deserve its
+current operational resources over time?" The first estimates potential; the second measures
+realized and continuing value. Keeping these two questions separate is essential, because a strong
+initial opportunity score is a prediction, not a result.
+
+The engine produces a conceptual Business Value Score. Where the data exists, that score considers
+a broad set of evidence: commercial outcomes such as realized sales, gross profit, and margin
+percentage; customer engagement across the funnel, including product views, click-through rate,
+add-to-cart activity, checkout activity, conversion rate, and repeat demand; supply reliability,
+including inventory reliability, California inventory, and shipping capability; temporal factors
+such as product freshness, age since discovery, and age since publication; cost and risk factors
+including Favorite-slot cost, operational burden, and return or cancellation risk; and assortment
+context such as duplicate or substitute coverage and category saturation. The score is a synthesis
+of these signals, not the product of any single one.
+
+A rule of interpretation governs the entire engine: missing data must not be treated as poor
+performance. Absence of evidence is not evidence of low value. The engine must therefore
+distinguish carefully among four situations that can look similar on the surface — insufficient
+evidence, weak performance, operational failure, and true low business value — because each calls
+for a different response. Confusing a measurement gap or an operational fault with genuine
+commercial weakness would cause the business to discard products that are actually valuable.
+
+The engine expresses its conclusion as one of five conceptual outcomes: Protect, Maintain, Review,
+Replace, or Retire. Protect signifies value strong enough to be defended from displacement;
+Maintain signifies acceptable ongoing value; Review signifies uncertainty that warrants closer
+attention; Replace signifies that a better use of the resource is available; and Retire signifies
+that the product no longer justifies the resources it holds. These outcomes describe judgments of
+value; they are not, by themselves, instructions to act.
+
+This engine is what holds every product accountable over its life. A newly discovered product may
+begin with a high opportunity score, but that score is only a promise; over time the product must
+justify its continued Favorite-slot use through actual business value, or it should yield the slot
+to a product that will. In this way the scarce slot budget is continuously reallocated toward
+demonstrated performance.
+
+The engine may evaluate products in many lifecycle situations — published, delisted, and
+waitlisted products can all be assessed for their value — but the action taken from an evaluation
+depends on the product's lifecycle state and on the system's safety rules. A value judgment and a
+permitted action are separate things, and the engine's role is to supply the former, not to
+override the latter.
+
+Exact weights and thresholds are intentionally left undefined here. They must remain configurable
+and evidence-driven, so that the engine can be calibrated as real outcomes accumulate rather than
+fixed prematurely on assumptions.
+
 ### 9. ROI Decision Framework
+
+The ROI Decision Framework governs what the business chooses to build and operate. Its purpose is
+to ensure that effort is spent where it produces business value, and that the sequence of work is
+driven by return rather than by technical appeal.
+
+Every proposed capability must be evaluated against a consistent set of considerations: its
+expected revenue impact; its expected profit impact; the manual time it would save; the decision
+quality it would improve; the risk it would reduce; the effort required to implement it; its
+ongoing maintenance cost; the operational complexity it would introduce; and the time it would
+take to produce measurable value. A proposal is judged by weighing these together, not by any one
+of them in isolation.
+
+The governing principle is one of proportion and timing: the business should not spend weeks
+building a sophisticated background system when a smaller capability can increase sales sooner. A
+modest capability that returns value quickly is generally preferable to an elaborate one whose
+return is distant and uncertain. Sophistication is justified only when the simpler path has been
+exhausted or is genuinely inadequate.
+
+The framework sets a clear priority order for where effort should go. First, increase revenue.
+Second, reduce recurring manual work. Third, reduce operational and inventory risk. Fourth,
+improve optimization and intelligence. Work that serves an earlier priority generally precedes
+work that serves a later one, and this ordering is what keeps the program aligned with the
+business rather than with its own machinery. Automation and intelligence are means to these ends,
+not ends in themselves.
+
+A direct consequence of this order is restraint about advanced methods. Advanced AI, forecasting,
+and autonomous decision-making should be delayed until sufficient business data exists to support
+them and until simpler methods no longer provide adequate value. Building sophisticated
+capabilities before there is evidence to justify or to train them consumes resources without a
+reliable return, and it commits the business to complexity it does not yet need.
+
+To make these judgments practical, every proposal is placed into one of four classifications.
+**Build Now** applies to capabilities with high expected business value, a short time to
+measurable impact, and manageable risk. **Build Small First** applies to potentially valuable
+capabilities that should begin as a narrow, observable version before any larger commitment.
+**Delay** applies to genuinely useful capabilities whose value depends on more data, larger scale,
+or higher business volume than currently exists. **Reject** applies to proposals with no credible
+connection to revenue, profit, time savings, decision quality, or risk reduction.
+
+The framework also imposes an accountability requirement: every implementation phase must include
+a measurable success condition, defined before the work begins, so that its value can be judged
+after it is done. Acceptable success conditions include, for example, more qualified products
+imported per week; a shorter time from supplier discovery to publication; more new products
+published; fewer customer-facing out-of-stock incidents; fewer manual inventory checks; higher
+quality in how Favorite-slot capacity is used; or increased sales or gross profit.
+
+Exact numerical targets are not prescribed in this chapter. The requirement here is that a phase
+declare how its success will be measured; the specific target values belong to the planning of
+each phase and to the evidence available at that time.
 
 ## Part III — AI Supply Brain
 
