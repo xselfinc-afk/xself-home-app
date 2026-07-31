@@ -20,14 +20,18 @@
  *   DRY_RUN=1 npx tsx scripts/inventoryWorkflowRun.ts --sellable --limit=50
  *
  * Flags:
- *   --only=A,B      hard SKU allowlist (required unless --sellable)
- *   --sellable      scan currently-sellable products instead of an allowlist
- *   --limit=N       cap the scan (default 100)
- *   --stale-hours=N freshness threshold (default 24, matching the RPC)
- *   DRY_RUN=1       compute + print, write NOTHING
+ *   --only=A,B          hard SKU allowlist (required unless --sellable)
+ *   --sellable          scan currently-sellable products instead of an allowlist
+ *   --limit=N           cap the scan (default 100)
+ *   --stale-hours=N     freshness threshold (default 24, matching the RPC)
+ *   --exclude-file=P    newline-separated SKUs to skip (persistent known exceptions / quarantine)
+ *   --summary-json=P    write a machine-readable run summary for the scheduler
+ *   DRY_RUN=1           compute + print, write NOTHING
  */
 import { config as loadEnv } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import crypto from 'node:crypto';
 import {
   planWorkflowUpdate,
@@ -110,6 +114,21 @@ async function main(): Promise<void> {
       .limit(limit));
     targets = (r.data ?? []) as typeof targets;
   }
+  // Persistent known exceptions / quarantine: excluded from the scan entirely so they are not
+  // retried every day. They are reported, never silently dropped.
+  const excludeFile = arg('exclude-file');
+  let excluded: string[] = [];
+  if (excludeFile && fs.existsSync(excludeFile)) {
+    const set = new Set(
+      fs.readFileSync(excludeFile, 'utf8').split('\n')
+        .map(l => l.split('#')[0].trim()).filter(Boolean),
+    );
+    const before = targets.length;
+    excluded = targets.filter(t => set.has(t.supplier_product_id)).map(t => t.supplier_product_id);
+    targets = targets.filter(t => !set.has(t.supplier_product_id));
+    if (excluded.length) console.log(`[invWorkflow] quarantine: excluded ${before - targets.length} SKU(s) → ${excluded.join(', ')}`);
+  }
+
   if (targets.length === 0) { console.log('[invWorkflow] no targets — nothing to do.'); return; }
   const ids = targets.map(t => t.supplier_product_id);
 
@@ -135,7 +154,9 @@ async function main(): Promise<void> {
 
   // ── 4. plan + persist ─────────────────────────────────────────────────────
   const summary: Record<string, number> = {};
+  const evidenceTally: Record<string, number> = {};
   let wrote = 0, appended = 0, skippedDuplicate = 0, conflicts = 0, exceptions = 0;
+  let inserted = 0, updated = 0, staleOrUnknown = 0;
 
   for (const t of targets) {
     const pid = t.supplier_product_id;
@@ -152,6 +173,8 @@ async function main(): Promise<void> {
     });
     const bucket = recommendationBucket(plan);
     summary[bucket] = (summary[bucket] ?? 0) + 1;
+    evidenceTally[result.status] = (evidenceTally[result.status] ?? 0) + 1;
+    if (plan.observationClass !== 'advance') staleOrUnknown++;
     if (plan.transition.isException) exceptions++;
 
     const arrow = plan.stateChanged ? `${plan.prior.state} → ${plan.next.state}` : `${plan.next.state} (unchanged)`;
@@ -182,7 +205,7 @@ async function main(): Promise<void> {
         console.error(`[invWorkflow] FATAL insert ${pid}: ${ins.error.code} ${ins.error.message}`);
         process.exit(1);
       }
-      wrote++;
+      wrote++; inserted++;
     } else {
       // Optimistic concurrency: only update if the version we read is still current.
       const upd = must(`update ${pid}`, await sb
@@ -196,7 +219,7 @@ async function main(): Promise<void> {
         console.error(`[invWorkflow] ✗ CONCURRENCY CONFLICT on ${pid} (version ${persistedRow.version} moved) — skipped, no write`);
         continue;
       }
-      wrote++;
+      wrote++; updated++;
     }
 
     if (plan.stateChanged) {
@@ -228,10 +251,29 @@ async function main(): Promise<void> {
   }
 
   console.log('\n─── summary ───');
-  console.log(`  scanned=${targets.length}  rowsWritten=${wrote}  historyAppended=${appended}  duplicateSkipped=${skippedDuplicate}  conflicts=${conflicts}  exceptions=${exceptions}`);
+  console.log(`  scanned=${targets.length}  rowsWritten=${wrote} (inserted=${inserted} updated=${updated})  historyAppended=${appended}  duplicateSkipped=${skippedDuplicate}  conflicts=${conflicts}  exceptions=${exceptions}  staleOrUnknown=${staleOrUnknown}`);
   console.log(`  buckets: ${JSON.stringify(summary)}`);
+  console.log(`  evidence: ${JSON.stringify(evidenceTally)}`);
   if (DRY_RUN) console.log('  DRY RUN — no database writes were performed.');
   console.log('  publication untouched: this runner never writes published/inventory_status.');
+
+  const summaryPath = arg('summary-json');
+  if (summaryPath) {
+    fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+    fs.writeFileSync(summaryPath, JSON.stringify({
+      run_id: runId, runner: RUNNER, dry_run: DRY_RUN,
+      started_at: new Date(nowMs).toISOString(), finished_at: new Date().toISOString(),
+      scope: allowlist ? 'allowlist' : 'sellable', stale_hours: staleHours,
+      attempted: targets.length, excluded_quarantine: excluded,
+      rows_inserted: inserted, rows_updated: updated, history_appended: appended,
+      duplicates_skipped: skippedDuplicate, concurrency_conflicts: conflicts,
+      exceptions, stale_or_unknown: staleOrUnknown,
+      buckets: summary, evidence_by_status: evidenceTally,
+      customer_visible_action_executed: false,
+      publication_rpc_called: false,
+    }, null, 2));
+    console.log(`  summary → ${summaryPath}`);
+  }
 }
 
 main().catch(err => {
