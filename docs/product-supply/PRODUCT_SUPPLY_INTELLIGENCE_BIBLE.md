@@ -1335,8 +1335,232 @@ question, and stop it.
 ## Part VI — Implementation
 
 ### 28. Development Strategy
+
+The development strategy governs how the complete architecture of this Bible becomes working
+software. Its governing principle is simple and non-negotiable: design the architecture completely,
+but implement capabilities selectively according to business value. The Bible defines the long-term
+destination; it does not require that every subsystem be built immediately, or in the order the
+document happens to present them.
+
+That principle rests on a permanent implementation priority, applied to every proposal in turn:
+first, increase revenue; second, reduce recurring manual work; third, reduce customer, inventory,
+and operational risk; fourth, improve allocation efficiency and profit; and fifth — last — add
+advanced intelligence, but only when sufficient data and scale justify it. Work that serves an
+earlier priority generally precedes work that serves a later one.
+
+A direct consequence is a caution against premature infrastructure. The business must not spend
+excessive time building background systems while sales opportunities go unserved. A smaller
+capability that can place commercially useful new products in front of customers sooner should
+normally take priority over a sophisticated capability whose value is delayed or uncertain. Elegance
+that does not sell waits behind usefulness that does.
+
+Existing First is an implementation requirement, not merely a preference. Before proposing or
+building anything new, the team must inspect and reuse, where suitable, the existing supplier
+sessions, scripts, APIs, import capabilities, normalization pipelines, data models, inventory
+classifiers, safety guards, batch runners, publication mechanisms, XOne control capabilities, and
+reports and audit evidence. A new implementation is justified only when the existing capabilities
+cannot safely satisfy the requirement; reuse is the default, and building anew is the exception that
+must be argued for.
+
+Work proceeds in thin vertical slices. Each increment should produce a complete, measurable business
+capability across the minimum necessary path — for example, from discovery, to candidate evaluation,
+to Favorite authorization, to the Favorite action, to API import, to inventory verification, to human
+review, to publication — rather than several disconnected backend subsystems that cannot yet support
+selling. A thin end-to-end slice that reaches a customer is worth more than a broad foundation that
+does not.
+
+Autonomy is granted progressively and independently per action class. Every action class advances on
+its own through Observe, Recommend, Dry Run, Human-Approved Execution, Gated Automation, and Higher
+Autonomy, and the classes do not advance together. A safe automatic inventory read does not prove
+that automatic Favorite removal or delisting is safe; each capability earns its autonomy on its own
+evidence, at its own pace.
+
+Each phase is bounded by an explicit specification. It must state the business problem; the expected
+value; the existing capabilities reused; the smallest viable scope; the explicit exclusions; the data
+or supplier writes allowed; the default-off flags; the safety limits; the tests; the rollback or
+recovery plan; the measurable success condition; and the stop condition. A phase without these is not
+ready to begin, because it cannot be judged, contained, or safely reversed.
+
+Production is approached with discipline. Before any scale-up, the team validates on a very small
+sample, inspects the evidence, confirms identity and account isolation, verifies that only the
+intended stores changed, confirms there were no hidden publication side effects, then increases batch
+size gradually and stops on unexpected drift or a concentration of failures. The proven progression
+of small controlled batches — growing only as safety is demonstrated — is preferred over immediate
+full-catalog execution.
+
+Repository and branch ownership are kept clean. Supplier automation implementation belongs in the
+repository that owns the supplier engine; XOne remains the control and approval interface; and
+marketplace export automation remains separate unless an explicit architecture decision changes that
+ownership. Concurrent tools must not modify the same repository or files without a deliberate
+coordination plan, so that parallel work does not corrupt shared state.
+
+Documentation keeps pace with decisions. A material business or architecture decision updates the
+Product Bible or an Architecture Decision Record before implementation begins. Routine implementation
+details do not require rewriting the Bible, but they must never violate it; when an implementation
+need appears to require breaking a law of the Bible, the Bible is amended deliberately, not bypassed
+quietly.
+
+Finally, completion is defined by outcome, not by output. A capability is not complete merely because
+code, tests, or a commit exists. It is complete only when the intended workflow operates, the safety
+invariants hold, measurable business or operational value has been observed, the founder can
+understand and control it, and its ongoing maintenance cost is acceptable. Anything short of that is
+work in progress, however finished the code may look.
+
 ### 29. Roadmap
+
+The roadmap sequences the work, and it is deliberately revenue-first. It is dependency-aware — some
+capabilities genuinely require others to exist first — but where dependencies allow a choice,
+business value, not architectural completeness, determines the order. The stages below are a value
+ordering, not a mandate to build everything.
+
+**Stage 0 — Reference Architecture and Safety Foundation.** This stage is largely already in place.
+It comprises the Product Bible itself, supplier-account isolation, healthy Pickup and Dropship
+sessions, fail-closed inventory classification, the separation of inventory observation from
+publication, the cache-only safety path, bounded batch execution, audit-ready evidence, and
+default-off automation controls. Stage 0 establishes the laws and the safe infrastructure that all
+later revenue work depends on. It does not imply that every proposed data store or dashboard must be
+built before Stage 1 can begin; it provides the ground to stand on, not the whole building.
+
+**Stage 1 — Revenue: New Product Fast Path.** The primary objective is to get commercially useful new
+and newly restocked products into XSelf faster. The team builds only the smallest end-to-end
+capability required to discover new or newly restocked products, eliminate obvious duplicates,
+evaluate initial opportunity with transparent rules, check Favorite capacity, recommend or authorize
+high-value Favorites, automatically Favorite within strict quotas when approved, import through the
+existing supplier API capability, verify inventory, prioritize California availability, produce a
+human review queue, and publish approved products. Stage 1 favors founder review over complex
+automation. Its success test is not architectural coverage but whether more qualified new products
+reach customers faster and contribute to sales. It explicitly defers, unless genuinely required,
+advanced machine learning, elaborate forecasting, fully autonomous eviction, fully autonomous
+publication, a large XOne redesign, broad analytics infrastructure, and sophisticated optimization
+models.
+
+**Stage 2 — Automation: Reduce Manual Work.** Once the Stage 1 workflow is proven, the objective
+becomes reducing the founder's recurring effort within it. Candidates include scheduled discovery,
+automated candidate deduplication, automatic rule-based scoring, Favorite capacity reconciliation,
+quota-limited Favorite addition, import orchestration, inventory-verification scheduling, exception
+grouping, concise daily recommendations, and reusable approval batches. Automation targets the most
+repetitive, frequent, and low-risk manual work first; it does not automate rare or poorly understood
+decisions merely because it is possible to do so. Success is measured in time saved without any
+reduction in sales quality or increase in risk.
+
+**Stage 3 — Supply Reliability: Safe Monitoring and Recovery.** The objective is to reduce
+customer-facing out-of-stock incidents and to restore products promptly when stock returns.
+Candidates include priority-based inventory monitoring, a multi-confirmation pending-out-of-stock
+state, human-reviewed delist recommendations, restock detection, relist recommendations,
+stale-evidence alerts, high-value product protection, exception quarantine, and publication
+blast-radius controls. Automatic delisting and relisting remain gated until evidence demonstrates
+high accuracy; the customer-facing storefront is not handed to automation on the strength of a
+promise.
+
+**Stage 4 — Favorite Capacity Optimization.** The objective is to increase the commercial value
+produced by the limited Favorite budget. Candidates include a full Favorite census, measured capacity
+with a safety buffer, the slot ledger, protection classes, ongoing value evaluation, release
+recommendations, minimum tenure and cooldown, replacement-margin decisions, capacity forecasting, and
+controlled Favorite removal. Crucially, Stage 4 must not block Stage 1 revenue work: a simple capacity
+count and a conservative buffer may be entirely sufficient at first, and full optimization becomes
+valuable only as capacity pressure actually grows.
+
+**Stage 5 — Commercial Optimization.** The objective is to improve revenue, gross profit, and
+assortment quality using observed outcomes. Candidates include sales and margin feedback, product and
+category cohorts, new-product performance analysis, revenue and gross profit per Favorite slot,
+time-to-market analysis, ongoing-value recalibration, category-expansion recommendations,
+scoring-policy experiments, and founder-override analysis. The discipline here is to implement only
+the analytics required to make a specific business decision, and to avoid building a broad analytics
+platform without a clear operating use.
+
+**Stage 6 — AI Learning and Selective Autonomy.** The objective is to improve decisions using
+sufficient historical evidence and to reduce founder attention safely. Candidates include calibrated
+scoring weights, outcome-based ranking, decision-confidence calibration, policy comparison,
+model-version evaluation, selective gated automation, and exception-first supervision in XOne.
+Advanced AI is justified only when sufficient clean outcome data exists, when rule-based decisions
+have measurable limits, when the expected improvement exceeds implementation and maintenance cost,
+when decisions remain explainable and reversible, and when the safety rules remain deterministic. This
+stage is last for a reason, not first.
+
+**Final Operating State.** In the long-term operating state, new products are discovered continuously;
+commercially useful new products receive early attention; Favorite capacity is allocated
+deliberately; API import is reliable and idempotent; California inventory is prioritized;
+customer-facing availability is monitored safely; weak products are reviewed and retired deliberately;
+high-value products are protected; the founder receives a concise list of material decisions;
+repetitive low-risk work is automated; strategic and uncertain decisions remain visible and
+controllable; and the system learns from actual sales and operational outcomes.
+
+Reaching that state is not a deadline-driven requirement, and this must be stated plainly. The stages
+are a value-ordered path, not a checklist that must be completed before the system is useful. The
+business may stop at any stage that already produces strong return; each stage is designed to leave
+the business better off on its own terms, and no later stage is a precondition for the value of an
+earlier one.
+
 ### 30. Future Evolution
+
+The system is expected to evolve for years, and this chapter defines how it may change without
+invalidating the Bible. Evolution is legitimate; erosion of the system's fixed laws is not. The
+distinction between what is fixed and what is free is therefore the heart of this chapter.
+
+Certain structures are fixed. The business-first mission; the revenue-first priority; Existing First;
+Favorites as scarce resources; the new-first preference with commercial safeguards; fail-closed truth;
+the California-first supply bias; the separation of observation from action; account isolation; the
+deterministic lifecycle and safety laws; auditable decisions; founder control; and progressive
+autonomy — these may not be weakened merely because a more capable AI model or a new supplier
+interface becomes available. New capability is a reason to do more within the laws, never a license to
+suspend them.
+
+Other structures are deliberately flexible. Score weights, thresholds, recommendation ranking,
+monitoring cadence, category priorities, supplier-capability adapters, model vendors, model types,
+XOne presentation, batch sizes, automation quotas, and analytics methods may all evolve freely, so
+long as the engine contracts and safety boundaries remain stable. The system is designed so that its
+reasoning and its tuning can change without disturbing its guarantees.
+
+The architecture should evolve toward supporting additional suppliers without embedding any one
+supplier's assumptions into the whole platform. Each supplier exposes source-specific capabilities
+through common contracts — discovery, authentication, a Favorite or eligibility prerequisite, import,
+inventory, fulfillment, price or cost, media, and order or delivery information. Not every supplier
+will use Favorites; where that prerequisite does not exist, the Favorite Slot Manager simply does not
+apply, while the wider lifecycle remains reusable. Supplier differences live in adapters, not in the
+core.
+
+The system may likewise grow to serve multiple customer-facing channels. Publication eligibility and
+product truth remain centralized, while channel-specific listing, content, pricing, and policy
+requirements are handled by channel adapters. A product has one identity and one truth regardless of
+how many channels present it; the channels adapt to the product, not the reverse.
+
+Category evolution is expected and must be accommodated without assuming that all products share the
+same dimensions, delivery method, assembly burden, margin structure, return risk, shelf life,
+compliance requirements, or customer-decision cycle. Category-specific rules extend the shared
+contracts rather than forking the platform, so that expanding beyond furniture broadens the system
+instead of splintering it.
+
+Demand intelligence may become richer over time. Future evidence could include search behavior,
+customer requests, marketplace conversations, lost-sale reasons, regional demand, seasonality,
+category gaps, substitute performance, pricing sensitivity, and advertising response. Such signals may
+improve prioritization, but only after their privacy implications, data quality, and business value
+are established; new signals are adopted because they help decisions, not because they are available.
+
+Order and fulfillment integration is a natural later direction. Future versions may connect supply
+decisions with checkout availability, customer location, pickup feasibility, shipping cost, delivery
+time, order commitments, supplier order placement, fulfillment tracking, and cancellation and return
+outcomes. As this integration deepens, customer commitments must become higher-priority protection
+signals than general optimization — a product a customer is counting on outranks an efficiency gain.
+
+Experimentation is permitted and encouraged, within limits. The system may run controlled business
+experiments — different new-product thresholds, category mixes, Favorite-tenure policies, publication
+timing, or pricing strategies — provided each experiment is bounded, measurable, reversible, separated
+from the safety laws, and evaluated by revenue, profit, risk, and workload rather than by novelty. An
+experiment is a question asked carefully, not a change made hopefully.
+
+The evolution of the business itself is anticipated. The long-term objective is not to remove the
+founder from the business but to concentrate the founder's attention on high-value product decisions,
+customer relationships, strategy, category expansion, supplier negotiation, and exceptional risks,
+while AI absorbs repetitive observation, comparison, coordination, and routine execution. And if XSelf
+grows beyond a one-person company, the same system should support role-based approvals and
+responsibilities without changing its core truth or lifecycle model; the founder may delegate
+operations while retaining governance visibility and final control over strategic policy.
+
+A closing discipline governs all future evolution: it must not become an excuse to build speculative
+infrastructure. Every extension must still pass the ROI Decision Framework. The preferred future is
+not the system with the most engines, AI agents, or dashboards; it is the system that creates the most
+sustainable business value with the least necessary complexity. Growth in capability is always
+measured against that standard, never pursued for its own sake.
 
 ## Appendix
 
