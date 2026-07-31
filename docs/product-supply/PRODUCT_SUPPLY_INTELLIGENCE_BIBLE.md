@@ -356,9 +356,234 @@ each phase and to the evidence available at that time.
 ## Part III — AI Supply Brain
 
 ### 10. AI Supply Brain
+
+The AI Supply Brain is the highest-level intelligence and coordination layer of the system. Its
+purpose is to convert business goals, supplier observations, inventory evidence, product
+performance, and operational constraints into prioritized recommendations and coordinated work. It
+is the part of the system that reasons about the business as a whole, deciding what deserves
+attention and in what order, and directing the specialized capabilities beneath it toward those
+priorities.
+
+The Brain is defined as much by what it must not do as by what it does. It must not bypass
+lower-level engines, safety gates, or lifecycle rules, and it does not directly manipulate supplier
+accounts, Favorites, inventory records, or publication state. It has no hands of its own. What it
+has instead is judgment: it interprets business objectives, compares competing product
+opportunities, sets operational priorities, requests work from specialized engines, combines their
+outputs, explains the decisions it recommends, learns from business outcomes, and escalates
+uncertainty and exceptions rather than resolving them silently.
+
+This point must be stated without ambiguity: the AI Supply Brain is not an unrestricted autonomous
+agent. It operates inside firm boundaries — the Product Bible, deterministic state machines,
+control-plane permissions, action quotas, supplier-session boundaries, audit requirements, and
+human approval rules. These boundaries are not obstacles to be worked around; they are the
+conditions under which the Brain is permitted to reason and recommend at all.
+
+The system therefore maintains a strict separation between intelligence and execution. The Brain
+recommends and coordinates. Specialized engines evaluate their own domains. The lifecycle
+authority validates whether a proposed transition is legal for a product's current state. The
+control-plane authority authorizes whether an action may be taken at all. Action-performing
+capabilities execute only operations that have been permitted. Each of these is a distinct
+responsibility held by a distinct part of the system, and none of them is collapsed into the
+Brain.
+
+This separation exists for a specific safety reason. Reasoning can be wrong. A model can
+misjudge, misweigh, or misunderstand. By ensuring that the Brain can only recommend and coordinate
+— never directly act — the architecture guarantees that a reasoning error cannot become an
+uncontrolled supplier, inventory, or publication action. The error surfaces as a flawed
+recommendation that the lower layers can reject, rather than as a mistake already committed against
+the business.
+
+The Brain is required to optimize across the whole business rather than to maximize any single
+isolated metric. Narrow optimization is a known failure mode, and the Brain must avoid its
+characteristic mistakes: it must not maximize product count while exhausting Favorite capacity;
+must not maximize newness while ignoring inventory reliability; must not maximize sales while
+destroying margin; must not maximize automation while increasing operational risk; and must not
+protect old products merely because they carry a long history of data. Each of these would improve
+one number while harming the business.
+
+Its central optimization objective is correspondingly broad: to increase sustainable revenue and
+profit while reducing manual effort, inventory risk, wasted Favorite capacity, and time-to-market.
+"Sustainable" is the operative word; the Brain seeks gains the business can carry, not spikes that
+leave it worse off. This objective is what reconciles the competing pulls of the specialized
+engines into a single coherent direction.
+
+Finally, the Brain must remain category-independent and model-independent. It reasons in terms of
+business value and constraints, not in terms of any one product category, so that the same
+intelligence serves the business as it expands. And because its authority is confined to
+recommendation and coordination, the specific reasoning mechanism inside it can be replaced by a
+future model without changing engine contracts, lifecycle rules, or safety boundaries. The Brain
+is a role in the architecture, not a particular model.
+
 ### 11. Decision Engine
+
+The Decision Engine is the structured decision-making capability inside the AI Supply Brain. Its
+function is to convert evidence into ranked decisions in a disciplined, inspectable form. Where the
+Brain reasons broadly, the Decision Engine is where that reasoning is made concrete and
+accountable.
+
+To that end, the Decision Engine works in terms of explicit decision objects rather than vague
+prose. A decision is a defined thing that can be examined, compared, approved, or rejected. Each
+decision conceptually carries its type; the product or account it affects; the recommendation
+itself; a priority; a confidence level; the expected business value, cost, and risk; the evidence
+used and the evidence found missing; the alternatives that were considered; the approval level
+required; an expiration or review time; and a plain explanation. Recording these elements is what
+allows a decision to be audited and to be trusted.
+
+Decisions fall into a defined set of classes so that the system's intentions are legible. The
+major classes include: discover more; score a candidate; favorite; waitlist; import; verify
+inventory; publish; maintain; increase monitoring; delist; relist; replace; retire; release a
+Favorite slot; and escalate for human review. Naming the classes keeps the space of possible
+recommendations finite and reviewable rather than open-ended.
+
+Decisions must be both evidence-based and state-aware. Evidence establishes what is true; state
+establishes what is permissible. A decision that is entirely valid for a newly discovered candidate
+may be invalid for a published product, a protected Favorite, an item a customer has committed to,
+or a quarantined exception. The Decision Engine is responsible for respecting the product's
+situation, not merely the raw signal.
+
+The engine follows a strict decision hierarchy, and the order is not negotiable. First come safety
+and truth constraints. Second come customer commitments and operational obligations. Third comes
+revenue and profit opportunity. Fourth comes Favorite-slot efficiency and operational cost. Fifth
+comes optimization and experimentation. No lower-priority objective may override a higher-priority
+safety or customer obligation. This is how the system keeps revenue as its primary goal while still
+subordinating it, always, to safety and to commitments already made to customers.
+
+Confidence is handled explicitly rather than hidden inside a single number. High confidence may
+support a recommendation or, where explicitly authorized, a gated automatic action. Medium
+confidence should normally produce a review or a request for additional verification rather than an
+action. Low confidence should produce observation, waitlisting, or escalation. And unknown evidence
+must remain unknown: it may never be quietly converted into a false negative or a fabricated fact.
+This preserves the system's core commitment that absence of evidence is not evidence of a negative
+outcome.
+
+The engine also has a defined discipline for conflict. When engines disagree, the Decision Engine
+must preserve the disagreement rather than average it away; it must identify the conflicting
+evidence and then choose one of a small set of responses — request more evidence, prefer the safer
+and more reversible choice, defer to a deterministic business rule, or escalate to a human
+operator. A reasoning model must never be allowed to silently resolve a material evidence conflict
+without recording that the conflict existed and how it was handled.
+
+Finally, decisions expire. A recommendation that was sound when made can become stale as the world
+moves: inventory evidence ages, supplier state changes, Favorite capacity changes, product
+performance changes, pricing changes, a customer commitment appears, or a newer competing product
+is discovered. Because of this, the system must revalidate a stale decision before it is executed.
+A decision is a judgment about a moment, and it must be checked against the present before it is
+allowed to act.
+
 ### 12. Learning Engine
+
+The Learning Engine is the closed-loop capability that improves future product and supply decisions
+using observed business outcomes. Its role is to make the system better over time by connecting the
+decisions it made to the results those decisions produced, so that policy is shaped by evidence
+rather than by assumption.
+
+Its most important design rule is restraint at the start: the Learning Engine must not begin with
+complex machine learning. It is expected to evolve in stages. In the first stage it relies on
+transparent, rule-based learning and on human feedback. In the second stage it applies statistical
+calibration once enough historical outcomes exist to support it. Only in a third stage, and only
+when data quality, sample size, and business value clearly justify it, does it adopt predictive or
+ranking models. Each stage is entered because the previous one has become insufficient, never
+because sophistication is attractive in itself.
+
+Learning is organized around a complete feedback loop that runs the length of the product's life:
+from supplier discovery, to candidate scoring, to Favorite allocation, to API import, to inventory
+verification, to publication, to customer exposure, to views and engagement, to cart and checkout
+behavior, to sales and gross profit, to returns, cancellations, and operational burden, into a
+Business Value evaluation, and finally into the calibration of policies and scores — which in turn
+improves the next round of discovery and allocation decisions. The purpose of tracing the whole
+loop is to let outcomes at the far end inform judgments at the near end.
+
+A wide range of outcome data may feed this learning where it exists: whether a favorited product
+was successfully imported; the time from discovery to publication; the time from publication to
+first sale; views, clicks, add-to-cart actions, checkout starts, and purchases; gross revenue and
+gross profit; cancellation and return rates; delivery or fulfillment difficulty; inventory
+reliability and the duration of stock availability; Favorite-slot tenure; whether a product was
+eventually replaced or retired; and the operator's approvals, rejections, overrides, and
+corrections. These are the traces from which the system may learn what actually worked.
+
+The engine must hold firmly to a principle of inference: correlation is not automatically
+causation. It must not assume that a product caused increased sales merely because it happened to
+be published during a strong sales period. It is required to calibrate cautiously and to preserve
+explainability, so that any adjustment it makes to policy can be understood and questioned rather
+than accepted on faith.
+
+Founder feedback occupies a special place in this loop. Human decisions, corrections, and business
+context are first-class learning signals, not afterthoughts, because they carry judgment the data
+alone does not express. At the same time, a single manual override must not permanently rewrite
+global policy; one correction is evidence, not law. Feedback should therefore be recorded together
+with its context, its scope, and a sense of its confidence, so that it informs future decisions in
+proportion to what it actually establishes.
+
+Learning is held accountable through model governance. Every scoring policy or model carries a
+version; every decision records the version that produced it; a new model is evaluated against the
+current policy before it is activated; historical decisions remain reproducible; a worse-performing
+model can be rolled back; model changes do not bypass action gates; and, above all, learning never
+changes the deterministic safety laws. Improvement is allowed to change judgment, never to weaken
+the guarantees that keep the business safe.
+
+The engine must also behave sensibly before it has much to learn from. In this cold-start
+condition, when insufficient sales data exists, the system relies on transparent business rules,
+supplier evidence, inventory quality, California availability, newness, product completeness,
+category priorities, and founder judgment. And it must be honest about its own limits: the system
+is required to admit when it lacks enough data to learn reliably, rather than to project confidence
+it has not earned.
+
 ### 13. Recommendation Engine
+
+The Recommendation Engine is the operator-facing output layer of the AI Supply Brain. It turns
+observations, scores, lifecycle state, and business objectives into a small, ranked set of useful
+actions. It is the surface through which the intelligence of the system reaches the person
+responsible for the business.
+
+Its purpose must not be misunderstood. It does not exist to produce a large report; it exists to
+tell the founder what matters now. A recommendation set that is exhaustive but undifferentiated has
+failed at its only job, which is to focus limited attention on the highest-value actions available
+today.
+
+The engine organizes its output into a defined set of recommendation groups so that attention can
+be directed cleanly: new products to Favorite now; new products to review; products ready for API
+import; products ready for publication; products needing inventory verification; products at risk
+of a customer-facing stock failure; restocked products ready for relisting review; Favorite slots
+that may be released; older products losing business value; high-value products requiring
+protection; persistent exceptions requiring manual attention; and supplier-session or capacity
+risks. These groups map the whole span of the operation into a handful of clear buckets.
+
+Every recommendation is required to explain itself. It must state what action is proposed; why it
+matters; the expected business impact; the evidence supporting it; the uncertainty or missing
+evidence around it; the approval it requires; its deadline or urgency; and what happens if no
+action is taken. The final element is essential: knowing the cost of inaction is often what makes a
+recommendation actionable.
+
+Recommendations are ranked by a defined ordering, so that the most consequential rise to the top.
+They are ordered primarily by immediate revenue or customer impact; then by risk of lost sales;
+then by time sensitivity; then by expected profit; then by Favorite-slot opportunity cost; then by
+the manual effort required; and finally by confidence. This ordering encodes the business's
+priorities directly into what the operator sees first.
+
+The engine is judged by its restraint as much as its coverage. A high-volume, low-value
+recommendation list is explicitly a failure. The engine should suppress duplicates, combine related
+recommendations into single coherent items, and limit its daily output to a workload that a person
+can actually act on. Quantity is not the measure; usefulness is.
+
+From these capabilities the system produces a concise daily brief — a short operating output that
+answers the questions that define a day's work: what new products appeared; which should be
+Favorited now; which can be published fastest; which published products are at risk; which products
+came back in stock; which Favorite slots are being wasted; which exceptions are blocking sales; and
+what the highest-value actions for today are. The brief is the everyday expression of the whole
+system's intelligence.
+
+Recommendations have a lifecycle of their own. A recommendation may be new, acknowledged, approved,
+rejected, deferred, executed, expired, or superseded. The reasons for rejection and deferment are
+themselves valuable, and they should be captured as learning signals that inform future
+recommendations. A recommendation that is turned down teaches the system something about the
+operator's judgment and the business's context.
+
+Above all, recommendations are not actions. They remain strictly separate from execution until the
+control-plane authority and the relevant action gate authorize them; presenting a recommendation
+never performs it. In the system's early maturity, recommendations are reviewed by the founder. As
+individual action classes prove both safe and valuable over time, selected recommendations may
+progress to gated automation — but that progression is earned per action class, and it never
+removes the separation between proposing an action and being permitted to take it.
 
 ## Part IV — Supply System
 
