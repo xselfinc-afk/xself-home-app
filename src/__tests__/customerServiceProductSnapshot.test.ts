@@ -57,6 +57,17 @@ const unknown = buildCustomerServiceProductSnapshot(row({ inventory_last_synced_
 });
 assert.equal(unknown.inventory_availability, 'unknown');
 
+const unknownWithZeroQuantity = buildCustomerServiceProductSnapshot(row({
+  inventory_status: 'unknown',
+  total_available_qty: 0,
+  inventory_last_synced_at: null,
+}), {
+  now,
+  sourceEnvironment: 'supabase:test',
+  inSellableView: false,
+});
+assert.equal(unknownWithZeroQuantity.inventory_availability, 'unknown');
+
 const unpublished = buildCustomerServiceProductSnapshot(row({ published: false }), {
   now,
   sourceEnvironment: 'supabase:test',

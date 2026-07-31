@@ -228,16 +228,17 @@ function classifyAvailability(input: {
   inventoryFreshness: CustomerServiceProductSnapshot['inventory_freshness'];
   inSellableView: boolean;
 }): CustomerServiceProductAvailability {
-  if (input.inventoryStatus === 'out_of_stock' || (input.quantity != null && input.quantity <= 0)) {
+  if (input.inventoryStatus === 'out_of_stock') {
     return 'out_of_stock';
   }
-  if (input.inventoryFreshness === 'stale') return 'stale';
-  if (input.inventoryFreshness === 'expired') return 'expired';
   if (
     input.inventoryFreshness === 'missing'
     || input.inventoryStatus === 'unknown'
     || input.quantity == null
   ) return 'unknown';
+  if (input.quantity <= 0) return 'out_of_stock';
+  if (input.inventoryFreshness === 'stale') return 'stale';
+  if (input.inventoryFreshness === 'expired') return 'expired';
   if (!input.published) return 'unpublished';
   if (
     input.inSellableView
