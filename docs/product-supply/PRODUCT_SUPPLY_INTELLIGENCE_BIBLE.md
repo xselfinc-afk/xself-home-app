@@ -1564,8 +1564,403 @@ measured against that standard, never pursued for its own sake.
 
 ## Appendix
 
+> The appendices summarize and visualize the completed Bible (chapters 1–30). They introduce no new
+> architecture; every state, engine, term, and law below is drawn from the chapters. Durations are
+> qualitative and indicative only — all thresholds, cadences, and quotas remain configurable and
+> evidence-driven, as stated in the chapters.
+
 ### A. Product Lifecycle
+
+This appendix is the reference for the product lifecycle defined in chapter 22. It lists every state,
+grouped by the phases already established, with its purpose, entry and exit conditions, the engine
+responsible for producing the evidence or action behind the state (the Lifecycle Engine owns and
+validates the transition itself), an indicative duration, and its possible next states. No state is
+invented here.
+
+**Phase 1 — Discovery and Scoring**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| Candidate Discovered | Record a newly seen supplier product/change as a candidate | Discovery finds a non-duplicate supplier product | Scoring completes | Discovery Engine | Brief | Candidate Scored |
+| Candidate Scored | Attach an initial opportunity assessment | Opportunity evaluation runs | An output verdict is chosen | New Product Engine | Brief | Favorite Pending, Waitlisted, Ignored |
+| Ignored | Park a candidate not worth attention now | Score = Ignore | Materially new evidence appears | New Product Engine | Indefinite (re-evaluable) | Candidate Scored |
+| Waitlisted | Hold a worthy candidate with no available slot | Candidate ∧ no free/justified slot | Slot becomes available/justified | New Product Engine / Favorite Slot Manager | Variable | Favorite Pending, Ignored |
+
+**Phase 2 — Favorite Acquisition**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| Favorite Pending | Reserve a slot before the favorite action | Slot Manager authorizes ∧ gate permits | Supplier confirms or action fails | Favorite Slot Manager | Short (reservation TTL) | Favorited, Favorite Failed |
+| Favorited | Slot consumed; product in supplier Favorites | Supplier confirms membership | Import proceeds | Favorite Slot Manager | Variable (tenure) | API Imported |
+| Favorite Failed | Favorite action did not confirm | Action error / no confirmation | Reservation released; routed to exception | Favorite Slot Manager | Transient | Waitlisted, Ignored (via Exception) |
+
+**Phase 3 — Import and Verification**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| API Imported | Full supplier data brought into XSelf | Favorite confirmed ∧ healthy session | Import succeeds | Import Engine | Brief | Deduplicated |
+| Deduplicated | Confirm unique or merge to existing identity | Import completed | Dedup resolved | Import Engine | Brief | Inventory Verified |
+| Inventory Verified | First fail-closed availability confirmation | Bounded inventory observation confirmed | Pre-publish gates evaluated | Inventory Engine | Brief | Ready for Review |
+
+**Phase 4 — Review and Publication**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| Ready for Review | Product meets computed publication eligibility | Eligibility conditions hold | Approval decision | Publication Engine | Variable | Approved |
+| Approved | Cleared for publication | Human or authorized auto-approver clears | Publish authorized | Publication Engine / Control Plane | Brief | Published |
+| Published | Product visible to customers | Publish action authorized + executed | Delist / retire path | Publication Engine | Ongoing (steady state) | Inventory Monitoring |
+
+**Phase 5 — Monitoring and Recovery**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| Inventory Monitoring | Continuous priority-driven observation | Product is published/approved | A monitoring signal changes state | Inventory Engine | Ongoing | Pending Out of Stock |
+| Pending Out of Stock | One confirmed zero seen; not yet actionable | A single affirmative zero | More confirmations, or recovery | Inventory Engine | Short | Delisted, Inventory Monitoring |
+| Delisted | Removed from customer view (still Favorited) | Configured affirmative out-of-stock confirmations | Restock or retirement | Publication Engine | Variable | Restock Detected, Retired |
+| Restock Detected | Confirmed in-stock after delist | Affirmative in-stock signal | Stability window | Inventory Engine | Short | Relist Pending |
+| Relist Pending | Await stable restock before relisting | Restock detected | Stability + eligibility met | Publication Engine | Short | Republished |
+| Republished | Returned to customer view | Relist authorized + executed | Re-enters steady monitoring | Publication Engine | Ongoing | Inventory Monitoring |
+
+**Phase 6 — Retirement and Favorite Release**
+
+| State | Purpose | Entry condition | Exit condition | Responsible engine | Typical duration | Possible next states |
+|---|---|---|---|---|---|---|
+| Retired | No longer justifies active operation | Retirement reason met (evidence-based) | Slot release nomination | Lifecycle Engine (on Business Value evidence) | Variable | Favorite Release Candidate |
+| Favorite Release Candidate | Slot nominated for eviction | Not protected ∧ below eviction line / retired | Removal confirmed | Favorite Slot Manager | Short | Favorite Removed |
+| Favorite Removed | Slot returned to the budget | Unfavorite action confirmed | Finalize record | Favorite Slot Manager | Brief | Archived |
+| Archived | Terminal record retained for history | Lifecycle finalized | Product reappears at supplier | Lifecycle Engine | Indefinite (terminal) | Candidate Discovered (recognized re-entry) |
+
+**Lifecycle diagram**
+
+```mermaid
+stateDiagram-v2
+    [*] --> CandidateDiscovered
+    CandidateDiscovered --> CandidateScored
+    CandidateScored --> Ignored
+    CandidateScored --> Waitlisted
+    CandidateScored --> FavoritePending
+    Ignored --> CandidateScored: new evidence
+    Waitlisted --> FavoritePending: slot available
+    FavoritePending --> Favorited
+    FavoritePending --> FavoriteFailed
+    FavoriteFailed --> Waitlisted
+    Favorited --> APIImported
+    APIImported --> Deduplicated
+    Deduplicated --> InventoryVerified
+    InventoryVerified --> ReadyForReview
+    ReadyForReview --> Approved
+    Approved --> Published
+    Published --> InventoryMonitoring
+    InventoryMonitoring --> PendingOutOfStock
+    PendingOutOfStock --> InventoryMonitoring: in-stock again
+    PendingOutOfStock --> Delisted: confirmed zeros
+    Delisted --> RestockDetected
+    Delisted --> Retired
+    RestockDetected --> RelistPending
+    RelistPending --> Republished
+    Republished --> InventoryMonitoring
+    InventoryMonitoring --> Retired: retirement reason
+    Retired --> FavoriteReleaseCandidate
+    FavoriteReleaseCandidate --> FavoriteRemoved
+    FavoriteRemoved --> Archived
+    Archived --> CandidateDiscovered: supplier reappears
+    Archived --> [*]
+```
+
 ### B. State Machine
+
+This appendix expresses the transition rules of chapter 22 as a reference table: for each state, the
+transitions the Lifecycle Engine permits, the transitions it forbids, the evidence a transition
+requires, the approval it requires, and the engine that supplies the evidence or action. Universal
+laws apply to every row: one entity has one authoritative state; failures never advance state; retries
+are idempotent; prerequisite states may not be skipped; a transition performs no unrelated action;
+irreversible effects require explicit authorization; and every transition is audited.
+
+| State | Allowed transitions | Forbidden transitions | Required evidence | Required approval | Responsible engine |
+|---|---|---|---|---|---|
+| Candidate Discovered | → Candidate Scored | → Favorited / Published (skipping) | Non-duplicate discovery record | None (read-only) | Discovery Engine |
+| Candidate Scored | → Favorite Pending / Waitlisted / Ignored | → Favorited (skipping favorite action) | Opportunity score + explanation | None to score | New Product Engine |
+| Waitlisted | → Favorite Pending / Ignored | → Favorited without a slot | Free or justified slot | Slot Manager authorization | Favorite Slot Manager |
+| Favorite Pending | → Favorited / Favorite Failed | → API Imported before confirmation | Supplier favorite confirmation | Control Plane + quota (favorite class) | Favorite Slot Manager |
+| Favorited | → API Imported | → Published without import/verify | Confirmed favorite membership | Control Plane (import class) | Import Engine |
+| API Imported | → Deduplicated | → Published without dedup/verify | Captured supplier response + link | None to import once favorited | Import Engine |
+| Deduplicated | → Inventory Verified | → Published without verification | Dedup resolution | None | Import Engine |
+| Inventory Verified | → Ready for Review | → Published without eligibility/approval | Fail-closed confirmed classification | None to observe | Inventory Engine |
+| Ready for Review | → Approved | → Published without approval | Eligibility conjunction satisfied | Approval (human or authorized auto) | Publication Engine |
+| Approved | → Published | Delist without publish | Approval record | Control Plane + quota (publish class) | Publication Engine / Control Plane |
+| Published | → Inventory Monitoring | Delist on unknown/failure/single zero | Executed publish + before/after evidence | (publish already authorized) | Publication Engine |
+| Inventory Monitoring | → Pending Out of Stock; → Retired | → Delisted directly on one zero | Priority-driven observations | None to observe | Inventory Engine |
+| Pending Out of Stock | → Delisted; → Inventory Monitoring | → Delisted on a single/transient zero | Multiple affirmative zeros, time-separated | Control Plane + quota (delist class) | Inventory Engine → Publication Engine |
+| Delisted | → Restock Detected; → Retired | → Favorite Removed (as a side effect) | Affirmative in-stock or retirement reason | Separate gate for any favorite change | Publication Engine |
+| Restock Detected | → Relist Pending | → Republished on one unstable positive | Confirmed in-stock signal | None to detect | Inventory Engine |
+| Relist Pending | → Republished | → Republished without stable eligibility | Stable restock + current eligibility | Control Plane + quota (relist class) | Publication Engine |
+| Republished | → Inventory Monitoring | — | Executed relist + before/after evidence | (relist already authorized) | Publication Engine |
+| Retired | → Favorite Release Candidate | → Destructive deletion | Evidence-based retirement reason | Human/authorized retirement decision | Lifecycle Engine |
+| Favorite Release Candidate | → Favorite Removed | Evict a protected product | Not protected ∧ release eligibility | Control Plane + Slot Manager (release) | Favorite Slot Manager |
+| Favorite Removed | → Archived | Re-favorite without new authorization | Confirmed unfavorite | (release already authorized) | Favorite Slot Manager |
+| Archived | → Candidate Discovered (recognized) | Overwrite history | Prior lifecycle record | None | Lifecycle Engine |
+
+**Forbidden-transition summary (the "does not imply" chain, chapter 22):** discovery ↛ favoriting;
+favoriting ↛ successful import; import ↛ inventory verification; verification ↛ publication; one zero
+↛ delisting; one positive ↛ relisting; delisting ↛ favorite removal; retirement ↛ destructive
+deletion. Additionally, no supplier-access failure (authentication, CAPTCHA, MFA, parse, network,
+timeout, stale, unknown) may transition a product toward out-of-stock, delisting, retirement, or
+favorite release.
+
+**State diagram with safety gates**
+
+```mermaid
+stateDiagram-v2
+    Favorited --> APIImported: session healthy + favorite confirmed
+    APIImported --> InventoryVerified: dedup + fail-closed confirmation
+    InventoryVerified --> Published: eligibility + approval + gate
+    Published --> PendingOutOfStock: 1 affirmative zero
+    PendingOutOfStock --> Delisted: N confirmed zeros + gate (multi-confirmation)
+    PendingOutOfStock --> Published: in-stock again
+    Delisted --> Republished: stable restock + eligibility + gate
+    Delisted --> Retired: evidence-based retirement reason
+    Retired --> FavoriteRemoved: release eligibility + protection check + gate
+    note right of Delisted: Delisting never removes the Favorite;\nfavorite release is a separate gated decision.
+    note right of PendingOutOfStock: Failure/unknown is never a zero;\nit does not advance toward delisting.
+```
+
 ### C. Data Flow
+
+This appendix traces the flow of information from supplier to customer, showing the major engines,
+which engine owns which data, where evidence becomes recommendation, and where recommendation becomes
+action — all as defined in Parts III–V. The single unbreakable rule of the flow is that observation
+and action are separated: evidence flows freely, but every action passes through the Control Plane and
+the relevant gate.
+
+- **Ownership (who writes what):** the Supplier Session Manager owns session/health/identity;
+  Discovery owns discovery records; the New Product Engine owns opportunity scores; the Favorite Slot
+  Manager owns the slot ledger and capacity; the Import Engine owns imported supplier/standardized
+  data; the Inventory Engine owns inventory observations (cache-only); the California Priority Engine
+  owns P1–P4 classification; the Publication Engine owns customer-visible publication state; the
+  Lifecycle Engine owns state and transitions; the Business Value Engine owns ongoing value; Analytics
+  owns measurement; the Audit Engine owns immutable provenance; the Exception Engine owns failure
+  records.
+- **Evidence → recommendation:** the AI Supply Brain and its Decision Engine combine engine evidence
+  into ranked decision objects; the Recommendation Engine presents them to the founder.
+- **Recommendation → action:** an approved recommendation becomes an action only when the Control
+  Plane and the relevant action gate authorize it; the action engines (Favorite, Import, Publication)
+  then execute within quotas, and the result is audited.
+
+```mermaid
+flowchart TD
+    SUP[Supplier: Pickup and Dropship catalogs] --> SSM[Supplier Session Manager<br/>owns: session, health, identity]
+    SSM --> DISC[Discovery Engine<br/>owns: discovery records]
+    DISC --> NPE[New Product Engine<br/>owns: opportunity scores]
+    NPE --> FSM[Favorite Slot Manager<br/>owns: slot ledger, capacity]
+    FSM -->|reserve to confirm| FAV[[Favorite action - gated]]
+    FAV --> IMP[Import Engine<br/>owns: imported + standardized data]
+    IMP --> INV[Inventory Engine<br/>owns: inventory_cache observations]
+    INV --> CAP[California Priority Engine<br/>owns: P1 to P4]
+    subgraph EV[Evidence layer - observation only]
+        SSM
+        DISC
+        NPE
+        FSM
+        IMP
+        INV
+        CAP
+        BVE[Business Value Engine<br/>owns: ongoing value]
+    end
+    EV --> BRAIN[AI Supply Brain and Decision Engine<br/>combine evidence to ranked decisions]
+    BRAIN --> REC[Recommendation Engine<br/>concise ranked actions]
+    REC --> XONE[XOne Dashboard<br/>founder approves / adjusts autonomy]
+    XONE --> CP{Control Plane + action gate<br/>authorize? quota? lifecycle-valid?}
+    CP -->|authorized| PUB[[Publication action - gated]]
+    PUB --> LIFE[Lifecycle Engine<br/>owns: state and transitions]
+    LIFE --> CUST[Customer: XSelf Home storefront]
+    INV -.no implicit publication.-> PUB
+    LIFE --> AUD[Audit Engine - immutable provenance]
+    CP --> AUD
+    PUB --> AUD
+    ANY[Any engine failure] --> EXC[Exception Engine<br/>preserve prior good state]
+    EXC --> XONE
+    CUST --> ANA[Analytics Engine - measures outcomes]
+    ANA --> BVE
+    ANA --> LEARN[Learning Engine - calibrates policies]
+    LEARN --> NPE
+```
+
+*(The dotted edge marks the permanent law: an inventory observation never implicitly triggers a
+publication change; it must pass through the Control Plane like any other action.)*
+
 ### D. Terminology
+
+Concise definitions of the important terms used in this Bible. Each term is defined as used in
+chapters 1–30; no new concepts are introduced.
+
+- **AI Supply Brain** — the highest-level intelligence/coordination layer; interprets goals and
+  combines engine evidence into priorities. Recommends and coordinates; never directly acts (ch. 10).
+- **Decision Engine** — structured decision-making inside the Brain; converts evidence into ranked,
+  explicit decision objects with a fixed hierarchy (ch. 11).
+- **Learning Engine** — the closed loop that improves future policies from validated outcomes; staged,
+  never overriding deterministic safety laws (ch. 12).
+- **Recommendation Engine** — operator-facing layer producing a small, ranked set of actions and the
+  daily brief; recommendations are not actions (ch. 13).
+- **Supplier Session Manager** — the exclusive, source-isolated gateway to the supplier; owns
+  authenticated sessions, health, identity, locks, and snapshots (ch. 14).
+- **Discovery / Discovery Engine** — read-only finding of new/changed supplier products; creates
+  candidates and evidence only (ch. 15).
+- **New Product Engine** — initial opportunity evaluation of discovered products (Favorite Immediately
+  / Candidate / Waitlist / Ignore / Request More Evidence) (ch. 16).
+- **Favorite** — a supplier product added to the supplier's Favorites collection; the prerequisite for
+  API import (chs. 6, 17).
+- **Favorite Slot** — one unit of the scarce Favorite budget for an account; occupying one displaces
+  another product (ch. 17).
+- **Favorite Slot Manager** — sole authority for allocating, reserving, protecting, reconciling, and
+  releasing Favorite slots; keeps the slot ledger (ch. 17).
+- **Import / Import Engine** — controlled bringing of full supplier data into XSelf after favorite
+  confirmation; idempotent; reuses existing pipelines (ch. 18).
+- **Inventory Observation / Inventory Engine** — fail-closed collection and classification of
+  availability evidence; writes cache only; never publishes (ch. 19).
+- **California Priority Engine** — classifier producing supply preference P1–P4 with a California-first
+  bias (ch. 20).
+- **P1 / P2 / P3 / P4** — Verified California inventory / Verified non-California shippable inventory /
+  Unknown or stale (uncertainty, not unavailability) / Affirmatively confirmed unavailable (ch. 20).
+- **Publication / Publication Engine** — the gated customer-facing action system for publish, delist,
+  and relist; separates eligibility (computed) from execution (gated) (ch. 21).
+- **Lifecycle / Lifecycle Engine** — the deterministic kernel that owns valid product states and
+  validates transitions (ch. 22).
+- **Waitlist / Waitlisted** — a worthy candidate parked because no slot is available or justified
+  (chs. 16, 22).
+- **Pending Out of Stock** — one confirmed zero seen; not yet a delisting action (chs. 19, 22).
+- **Delisted** — removed from customer view after multi-confirmation; may remain Favorited (chs. 21,
+  22).
+- **Retired** — evidence-based removal from active operation; not destructive deletion (ch. 22).
+- **Archive / Archived** — terminal record retaining identity and history; enables recognized re-entry
+  (ch. 22).
+- **Exception / Exception Engine** — detection, classification, preservation, and routing of failures;
+  a failure is never a business conclusion (ch. 23).
+- **Audit / Audit Engine** — immutable provenance of decisions and actions; distinct from operational
+  logging (ch. 24).
+- **Analytics Engine** — measurement layer that explains what occurred; distinct from Learning
+  (ch. 25).
+- **KPI System** — the small governing metric hierarchy (Business Outcomes → Supply → Operational →
+  Technical) with anti-KPIs (ch. 26).
+- **XOne Dashboard** — the founder-facing control and decision interface; not the execution engine
+  (ch. 27).
+- **Control Plane** — the authority that authorizes gated actions via autonomy levels, quotas, and
+  kill switches (chs. 10, 11, 15, 21, 27).
+- **Business First** — the philosophy that every decision is judged first by business value (ch. 4).
+- **Revenue First** — the operating priority that revenue precedes automation and optimization
+  (chs. 4, 7, 9, 28).
+- **Existing First** — reuse existing capabilities before building new ones (chs. 4, 28).
+- **New-First** — newer/restocked products get preferential, faster evaluation, but never a pass on
+  the commercial safeguards (chs. 7, 16).
+- **Business Value / Business Value Engine** — the ongoing commercial value of a product after
+  onboarding; outputs Protect / Maintain / Review / Replace / Retire (ch. 8).
+- **New Product Score vs Business Value Score** — initial opportunity vs. ongoing realized value; kept
+  distinct (chs. 8, 16).
+- **Fail-closed / Unknown-is-not-zero** — absence of evidence (unknown, auth/CAPTCHA/parse/network
+  failure, missing/stale rows) is never treated as zero inventory (chs. 1, 19).
+
 ### E. Constitution
+
+The Constitution restates the permanent laws that every future engineer, operator, and AI system must
+uphold. These are the fixed structures of chapter 30 and the invariants running through the whole
+Bible. They may be amended only by deliberate revision of this Bible (with a CHANGELOG entry and an
+ADR); they may never be quietly bypassed. Each law is stated, justified, and given an expected
+behavior.
+
+**1. Business First.**
+- *Statement:* Every decision is judged first by its value to the business.
+- *Reason:* The system exists to grow the business, not to be sophisticated.
+- *Expected behavior:* If a capability serves no business outcome, it is not built or run.
+
+**2. Revenue Before Automation.**
+- *Statement:* Revenue and the core metrics come before automation for its own sake.
+- *Reason:* Automation is a means; sales are the end.
+- *Expected behavior:* Prefer a smaller capability that sells sooner over an elaborate one whose value
+  is distant.
+
+**3. Existing First.**
+- *Statement:* Reuse existing capabilities before creating new ones.
+- *Reason:* Reuse reduces risk, preserves consistency, and avoids duplicate maintenance.
+- *Expected behavior:* A new implementation is justified only when existing capabilities cannot safely
+  satisfy the requirement.
+
+**4. Favorites Are Scarce Resources.**
+- *Statement:* Favorite slots are scarce commercial capital, budgeted per account and never assumed
+  unlimited.
+- *Reason:* Favorites are the prerequisite for import and are hard-limited.
+- *Expected behavior:* Only the Favorite Slot Manager authorizes favorites; capacity is measured and
+  reconciled, never permanently hardcoded; every slot must be earned.
+
+**5. New-First With Safeguards.**
+- *Statement:* Newer and newly restocked products receive faster evaluation, but never a pass on the
+  commercial safeguards.
+- *Reason:* Early market entry creates advantage; newness alone does not make a product sellable.
+- *Expected behavior:* Newness accelerates consideration; it never overrides availability, margin,
+  duplication, completeness, fulfillment, compliance, capacity protection, or customer obligations.
+
+**6. Unknown Is Not Zero.**
+- *Statement:* Absence of evidence is never evidence of unavailability.
+- *Reason:* Treating failure or silence as zero would discard real inventory and harm customers.
+- *Expected behavior:* Unknown, auth/CAPTCHA/MFA, parse, network, timeout, missing rows, and stale
+  data are never interpreted as zero stock; prior known-good evidence is preserved.
+
+**7. Observation Is Not Action.**
+- *Statement:* Observing the supplier is separate from acting on the business.
+- *Reason:* Conflating them lets a measurement error become a customer-facing mistake.
+- *Expected behavior:* Engines that observe may not publish, delist, relist, remove favorites, or
+  retire.
+
+**8. Inventory Is Separate From Publication.**
+- *Statement:* An inventory refresh never implicitly changes what customers see.
+- *Reason:* This is the boundary that protects the storefront from upstream error.
+- *Expected behavior:* Publication changes occur only through explicit, gated publication actions —
+  never as a side effect of a cache refresh.
+
+**9. AI Does Not Bypass Safety.**
+- *Statement:* Intelligence recommends and coordinates; it never bypasses engines, gates, or lifecycle
+  rules.
+- *Reason:* A reasoning error must not become an uncontrolled supplier, inventory, or publication
+  action.
+- *Expected behavior:* The Brain proposes; the Lifecycle Engine validates; the Control Plane
+  authorizes; action engines execute only permitted operations. Learning never weakens deterministic
+  safety laws.
+
+**10. Lifecycle Is Deterministic.**
+- *Statement:* Product state and transitions are deterministic, guarded, and auditable.
+- *Reason:* A probabilistic system needs a deterministic backbone to be safe.
+- *Expected behavior:* One authoritative state per entity; failures never advance state; prerequisites
+  are never skipped; irreversible effects require explicit authorization; delisting never removes a
+  Favorite; retirement never deletes history.
+
+**11. Account Isolation.**
+- *Statement:* Pickup and Dropship are isolated; no crossover.
+- *Reason:* Crossover corrupts identity, evidence, and the scarce budgets.
+- *Expected behavior:* Each operation uses only its own profile, snapshot, identity, and locks; no
+  silent fallback between accounts.
+
+**12. Actions Are Gated and Auditable.**
+- *Statement:* Every material action is authorized, quota-limited, reversible where practical, and
+  audited.
+- *Reason:* Accountability and blast-radius control protect the business from scale errors.
+- *Expected behavior:* Favorite, import, publish, delist, relist, and favorite-removal actions pass
+  the Control Plane and record immutable provenance; automatic delisting/relisting/favorite-removal
+  remain late and gated.
+
+**13. Customer Commitments Override Optimization.**
+- *Statement:* A product a customer is counting on outranks a general optimization gain.
+- *Reason:* Customer trust and commitments are higher-value than efficiency.
+- *Expected behavior:* Customer-committed products are protected from eviction and from optimization
+  that would break the commitment.
+
+**14. Founder Always Has Final Control.**
+- *Statement:* The founder always retains visibility, audit access, override, kill switches, and the
+  ability to reduce autonomy immediately.
+- *Reason:* Growing autonomy must never remove human authority.
+- *Expected behavior:* Autonomy expands per action class only after proven safe and valuable, and can
+  always be reduced or halted at once.
+
+**15. Progressive, Measured Delivery.**
+- *Statement:* Design broadly, implement selectively; every phase declares a measurable success
+  condition and may stop when ROI is sufficient.
+- *Reason:* Value, not architectural completeness, determines what gets built.
+- *Expected behavior:* Thin end-to-end slices, small controlled batches, default-off flags, and
+  completion defined by measured outcome — not by the existence of code.
