@@ -1038,10 +1038,299 @@ that record the work can always continue safely.
 ## Part V — Operations
 
 ### 23. Exception Engine
+
+The Exception Engine is the system responsible for detecting, classifying, preserving, and routing
+the conditions that prevent normal lifecycle progress. It sits alongside every other engine as the
+place where things that go wrong are handled deliberately rather than absorbed silently.
+
+Its purpose is not merely to log errors. Its purpose is to prevent uncertainty, technical failure,
+or supplier instability from becoming an incorrect business conclusion or an unsafe action. An
+error that is only logged still leaves the system free to misinterpret it; the Exception Engine
+exists to intercept that misinterpretation before it reaches a product decision.
+
+Exceptions are organized into families so that they can be reasoned about consistently. Supplier
+Access covers Authentication Required, CAPTCHA Required, MFA Required, Account Mismatch, Session
+Expired, Supplier Unavailable, and Rate Limited. Network and Transport covers Timeout, Network
+Failure, Incomplete Response, Interrupted Batch, and Retry Exhausted. Parsing and Evidence covers
+Parse Failed, Unsupported Response Shape, Missing Expected Evidence, Conflicting Supplier Evidence,
+Stale Evidence, and Unknown Inventory. Product Identity covers Unresolved Product, Duplicate
+Identity, Conflicting SKU, Supplier Product Replaced, Missing Internal Link, and Cross-account
+Identity Conflict. Favorite and Import covers Favorite Add Failed, Favorite Remove Failed, Favorite
+Capacity Reached, Favorite Ledger Drift, Favorite Confirmation Missing, API Import Failed, Import
+Incomplete, and Import Identity Conflict. Inventory and Publication covers No Authoritative
+Inventory Rows, Conflicting Warehouse Evidence, Publication Eligibility Failed, Publication Action
+Failed, Delist Confirmation Insufficient, Relist Confirmation Insufficient, and Bulk-change Safety
+Halted. Business and Data Quality covers Missing Cost, Invalid Margin, Incomplete Product Content,
+Unusable Media, Insufficient Evidence, and Unmeasurable Business Value.
+
+A single principle governs the interpretation of all of them: exceptions do not automatically imply
+product failure, out-of-stock status, retirement, or Favorite release. An exception is a statement
+about the system's ability to know or act, not a verdict about the product. Confusing the two is
+precisely the failure the engine exists to prevent.
+
+The engine treats exceptions as persistent identities rather than momentary events. It recognizes
+when the same underlying issue recurs instead of creating unrelated duplicates, and it preserves for
+each one: the exception category; the affected account; the affected product; the first-seen and
+last-seen times; the occurrence count; the current status; the severity; the business impact; the
+evidence; the prior known-good state; the retry history; the owner; the recommended next action; and
+the resolution evidence. Each exception carries a status through its life — New, Investigating,
+Waiting for Supplier, Waiting for Evidence, Waiting for Human, Retrying, Quarantined, Resolved,
+Accepted, or Superseded — so that its handling is always legible.
+
+Retry is a discipline, not a reflex. The engine retries only when a failure is plausibly transient
+and the retry carries a bounded cost; persistent deterministic failures are not retried
+indefinitely. It relies on retry limits, cooldown periods, exponential or policy-based backoff,
+account-scoped circuit breakers, product quarantine, and manual escalation. Authentication, CAPTCHA,
+MFA, and account-mismatch conditions in particular must never be "solved" by uncontrolled automation
+or repeated login attempts; those are conditions for a human and the Supplier Session Manager, not
+for a retry loop.
+
+The engine preserves prior good state as a matter of law. When a refresh fails, it keeps the last
+trustworthy inventory, Favorite, import, or publication evidence together with its original
+timestamp. It never overwrites known-good evidence with a failure or with a fabricated zero. A
+failed observation leaves the previous truth standing, clearly marked as of its own age.
+
+Severity is judged by business effect, and business effect is a different dimension from technical
+size. A Critical exception is one such as broad session crossover, unsafe publication behavior, an
+uncontrolled bulk action, or a direct impact on a customer order. A High exception is one such as a
+published high-value product that cannot be verified, unreliable Favorite-capacity accounting, or
+repeated publication failure. A Medium exception is typically a single product's import or inventory
+problem blocking onboarding. A Low exception is a non-urgent incompleteness, such as missing metadata
+on a low-value archived item. Because technical severity and business priority differ, a small
+technical error touching a customer order can outrank a broad but low-impact maintenance issue.
+
+Resolution, finally, requires evidence. An exception is resolved only when affirmative evidence shows
+the blocking condition no longer exists. A successful retry may resolve it; a manual decision may
+accept it or quarantine it. Silence, the passage of time, or disappearance from a single report is
+never resolution. A problem is closed because it was demonstrably handled, not because it stopped
+being visible.
+
 ### 24. Audit Engine
+
+The Audit Engine is the immutable evidence and accountability layer of the Product Supply
+Intelligence System. Its charge is to make every material recommendation, transition, and action
+explainable after the fact, so that the system's behavior can always be reconstructed and reviewed.
+
+Concretely, the audit trail must allow the system to answer a fixed set of questions about anything
+it did: what happened; when it happened; who or what initiated it; which product or account it
+affected; what evidence was used; which policy or model version was applied; what approval was
+required; what changed; why the decision was considered valid; and whether the prior state can be
+reconstructed. If any of these questions cannot be answered, the audit is incomplete.
+
+Audit records are required across the full span of the system: supplier-session identity and health
+transitions; discovery events; product scoring; ongoing value evaluation; recommendations; human
+approvals, rejections, and overrides; Favorite reservation, allocation, protection, and release; API
+imports and refreshes; deduplication decisions; inventory observations; priority classification;
+lifecycle transitions; publication eligibility; publish, delist, and relist actions; exception
+creation and resolution; policy, threshold, and model changes; kill-switch and autonomy-level
+changes; and bulk-operation starts, stops, and safety halts. Anything that materially affects the
+business or the supplier leaves an audit record.
+
+Audit records are not operational logs, and the distinction matters. Operational logs help diagnose
+execution; they may be verbose, temporary, and specific to a particular implementation. Audit records
+establish durable business provenance; they must remain stable, structured, and interpretable across
+implementation changes. A log answers "what did the code do just now"; an audit record answers "what
+did the business decide and why," in a form that will still make sense years later.
+
+Each audit record conceptually contains the event type; the timestamp; the actor type and actor
+identity; the affected entity; the previous, proposed, and resulting states; references to the
+evidence used; a reference to the decision or recommendation; the policy version and, where
+applicable, the model version; the approval level and the autonomy level; the outcome; any exception
+reference; any rollback or reversal reference; and a human-readable explanation. This structure is
+what lets a later reader move from "what changed" all the way to "on what grounds." Sensitive
+supplier credentials, complete cookies, and secrets must never enter audit records; only safe,
+redacted identifiers and evidence references are persisted.
+
+Audit facts are immutable. Existing records are not silently rewritten; corrections are appended as
+new records that reference the original event. This preserves historical truth and keeps
+reconstruction honest — the system can show not only its current understanding but how that
+understanding came to be corrected.
+
+Explainability carries a specific requirement: an AI-generated explanation alone is insufficient. The
+explanation must point to the actual structured evidence and policy that supported the decision, and
+the record must distinguish among an observed fact, a calculated score, a rule-derived conclusion, an
+AI interpretation, a human decision, and an executed action. Keeping these categories separate is
+what prevents a plausible narrative from standing in for real evidence.
+
+For reversible high-impact actions, the audit trail must preserve enough before-state evidence to
+support controlled reversal or recovery, and the rollback itself must also be audited. A reversal is
+as consequential as the action it undoes, and it is held to the same standard of provenance.
+
+Audit history is treated as a long-term business asset. Retention policies may differ across technical
+logs, supplier content, customer commitments, and business decisions, but the material lifecycle and
+action history must remain available for governance and for learning. What the business did, and why,
+is not disposable.
+
 ### 25. Analytics Engine
+
+The Analytics Engine is the measurement layer that converts operational and commercial history into
+reliable business understanding. Its role is to tell the business, truthfully, what has been
+happening. It is distinct from the learning capability: the Analytics Engine measures and explains
+what occurred, while learning uses validated outcomes to improve future policies. Measurement comes
+first, and it stands on its own regardless of whether anything is learned from it.
+
+Analytics is organized into domains that together describe the whole operation. The Supply Funnel
+counts products discovered, scored, recommended, Favorited, imported, inventory-verified, approved,
+published, sold, and retired. Time-to-Market measures the intervals between those stages — discovery
+to score, score to Favorite, Favorite to import, import to verification, verification to approval,
+approval to publication, and publication to first sale. Favorite Economics measures slot utilization
+by account, protected versus releasable slots, slots held by published versus waitlisted or blocked
+products, average slot tenure, time to first business value, products imported per slot, sales and
+gross profit per slot, the capacity forecast, and avoided slot waste.
+
+The remaining domains cover quality and performance. Inventory Quality measures the P1/P2/P3/P4
+distribution, evidence freshness, verification success rate, customer-facing out-of-stock incidents,
+false-out-of-stock prevention, restock detection time, delist and relist accuracy, and exception
+rates by supplier source. Commercial Performance measures views, clicks, add-to-cart, checkout
+starts, purchases, revenue, gross profit, margin, conversion rate, cancellations, returns,
+fulfillment difficulty, category performance, new-product performance, and product-age performance.
+Operational Efficiency measures manual reviews, manual inventory checks, actions recommended,
+approved, rejected, and automated, time saved, exception handling time, failed or repeated work, and
+the founder attention required.
+
+Analytics is expected to compare meaningful cohorts rather than only report totals. Useful groupings
+include new products versus older products; P1 versus P2; California-stocked versus shipped;
+founder-selected versus system-selected; protected Favorites versus ordinary Favorites; category
+cohorts; publication-month cohorts; and scoring-policy versions. Cohorts are how the business learns
+which of its choices actually work.
+
+The engine must avoid misleading aggregation, because a number reported without its context can
+reward exactly the wrong behavior. Revenue reported without margin can reward unprofitable products;
+product count without sales quality can reward catalog inflation; automation rate without error cost
+can reward unsafe automation; Favorite utilization without value per slot can reward permanent
+saturation; and conversion without traffic context can mislead. The engine's duty is to pair every
+headline number with the context that keeps it honest.
+
+Analytics must also respect data sufficiency. Small samples and short operating windows are labeled
+clearly, and the system does not present statistically weak observations as reliable business laws. A
+few data points are a hint, not a conclusion, and the engine says so rather than projecting a
+confidence it has not earned. It must not claim that a body of analytics or learning data already
+exists where it does not.
+
+Ultimately, analytics exists for decision support. It should let the founder determine whether the
+new-first strategy is increasing sales; whether California-first products perform better; whether
+Favorite slots are allocated efficiently; which categories deserve expansion; which products consume
+attention without returning value; which automation reduces work safely; and whether the system as a
+whole is producing measurable return. Analytics is judged not by how much it reports, but by how well
+it answers these questions.
+
 ### 26. KPI System
+
+The KPI System is the small set of metrics used to govern the success of the entire Product Supply
+Intelligence System. Its defining discipline is restraint: KPIs must reflect business results, not
+technical activity for its own sake. A short, meaningful set of indicators is more governable than a
+large one, and it is far harder to game.
+
+The KPIs are arranged in a hierarchy so that outcomes and their explanations are kept distinct. Level
+1, Business Outcomes, holds the revenue and gross profit influenced by system-managed products, sales
+conversion, customer-facing availability quality, and founder time saved. Level 2, Supply
+Effectiveness, holds qualified new products published, time from discovery to publication, P1/P2
+sellable-product coverage, new-product first-sale rate, gross profit and revenue per Favorite slot,
+the Favorite-slot waste rate, and restock-to-relist time. Level 3, Operational Quality, holds
+inventory verification success, exception rate, publication-action accuracy, manual-review workload,
+automation success rate, action reversal rate, stale-evidence rate, and supplier-session
+availability. Level 4, Technical Health, holds batch completion, retry frequency, parser failures,
+processing latency, reconciliation drift, and audit completeness.
+
+The hierarchy encodes a rule of subordination: lower-level metrics exist to explain higher-level
+outcomes, never to replace them. The system must not optimize technical KPIs at the expense of
+revenue, profit, safety, or customer experience. A perfect batch-completion rate is worthless if the
+business is not selling more of the right products; the lower levels are diagnostic, and the upper
+levels are the point.
+
+The KPIs are chosen to answer a small set of primary success questions: is the system increasing the
+availability of commercially useful products; is it getting valuable new products to market faster;
+is it increasing revenue or gross profit; is it using Favorite capacity more effectively; is it
+reducing founder workload; is it reducing customer-facing stock errors; and is it making better
+decisions over time. If the KPIs cannot answer these, they are the wrong KPIs.
+
+The system also watches anti-KPIs — warning metrics that reveal success being faked. These include
+catalog growth without sales; high automation paired with a high reversal rate; full Favorite
+utilization with low value per slot; fast publication with poor inventory quality; high recommendation
+volume with low execution value; model complexity without measurable lift; and large engineering
+effort without time-to-value. Anti-KPIs exist because almost every headline metric can be inflated by
+behavior that harms the business, and naming the inflation makes it visible.
+
+Ownership and cadence follow the hierarchy. Business-outcome KPIs are reviewed regularly by the
+founder. Supply and operational KPIs are monitored by the system and surfaced when they materially
+affect business outcomes. Technical-health metrics become founder-visible only when they require
+action or threaten sales, truth, or safety. This keeps the founder's attention on results and spares
+it from routine machinery.
+
+Exact numerical targets are intentionally not set here. Targets must be established from baseline
+evidence and revised as the business scales; a target invented before there is a baseline is a guess
+dressed as a goal.
+
+Finally, the KPI System imposes a success-condition discipline on every implementation phase. Each
+phase must declare, in advance, its baseline, the KPI it expects to affect, the observation period,
+the success condition, the failure condition, and the rollback or stop condition. A phase is not
+complete merely because code exists; it is complete when the intended business or operational result
+has actually been measured. This is what ties every unit of work back to the outcomes that justify
+it.
+
 ### 27. XOne Dashboard
+
+XOne is the founder-facing control and decision interface for the Product Supply Intelligence System.
+It is where the system's intelligence is made legible and where the founder exercises authority over
+it. XOne is not the supplier execution engine; it displays intelligence, approvals, exceptions, system
+state, and controlled commands, while execution remains in the appropriate backend engines. This
+chapter defines what XOne must present and how it must behave, not how it is built.
+
+Its primary design goal is speed of understanding: the founder should be able to grasp the current
+state of the supply business and identify the highest-value actions within minutes. To that end, the
+dashboard prioritizes decision clarity over data density. A screen dense with numbers that does not
+make the next action obvious has failed at XOne's central purpose.
+
+The dashboard is organized into sections that map to the system's concerns. The Overview leads with
+today's highest-value recommendations and their expected revenue or risk impact, the products moving
+through the supply funnel, Favorite capacity by account, Pickup and Dropship health, any urgent
+customer or publication risks, and key KPI changes. New Products presents newly discovered and
+newly restocked items with their opportunity score, confidence, required account, estimated slot
+cost, inventory potential, a commercial explanation, and a Favorite recommendation. Favorites shows
+Pickup and Dropship capacity; the occupied, reserved, protected, releasable, and free slots; the
+utilization forecast; the products consuming slots and their protection reason and business value;
+release candidates; and drift and reconciliation alerts.
+
+Further sections carry the operating detail. The Import and Publication Queue shows Favorite-confirmed
+products awaiting import, import exceptions, imported products awaiting verification, ready-for-review
+products, and publish/delist/relist recommendations with their required approval, expected impact,
+and action history. Inventory and California Priority shows the P1/P2/P3/P4 distribution, California
+and shippable inventory, freshness, high-value stale products, pending out-of-stock products, restock
+candidates, and customer-facing risk. Lifecycle shows the product state distribution, transition
+history, products blocked in a state, aging by state, retired and archived products, and Favorite
+release readiness. Exceptions shows severity, business impact, source, the affected product or
+account, recurrence, the prior known-good state, the recommended next action, the owner, and status.
+Analytics and KPI shows revenue and gross profit, time-to-market, new-product results, Favorite value,
+operational time saved, customer-facing inventory quality, and system return. Supplier Health shows
+Pickup and Dropship health, the verified account identity, the last successful session refresh and
+supplier operation, any active lock, degraded capability, and required human action.
+
+Through these sections the founder takes explicit, conceptual actions: approve, reject, or defer; pin
+or unpin a Favorite; approve a Favorite release; request re-verification; approve a publication
+action; quarantine an exception; accept a known limitation; adjust an autonomy level; activate a kill
+switch; and inspect evidence and audit history. Every one of these commands must be explicit and
+auditable, and — this is essential — a click in XOne must never bypass the Lifecycle, Control Plane,
+quota, or action-engine rules. XOne is a way to request authorized actions, not a way around the
+authorities that govern them.
+
+Information in XOne is layered so that attention is spent economically. The first layer answers what
+needs attention now; the second answers why it matters; the third exposes the evidence and history
+that support it. The founder should not need to read technical logs to make routine decisions; the
+depth is available on demand, not imposed by default.
+
+XOne actively controls noise, because founder attention is a scarce resource that the whole system
+is meant to conserve. It suppresses duplicate alerts, groups related exceptions, and ranks items by
+business impact, and normal successful background work does not demand attention at all. The interface
+is permitted to interrupt the founder only for a material revenue opportunity, a customer risk, a
+supplier-access failure, capacity pressure, an unsafe bulk change, an unresolved high-value exception,
+or a required approval. Everything else waits to be looked at, rather than reaching out.
+
+Finally, XOne is built to accommodate growing autonomy without surrendering control. As selected
+action classes become proven and authorized, XOne may shift from approving individual actions toward
+supervising policies and handling exceptions. But the founder must always retain visibility, audit
+access, override, the kill switches, and the ability to reduce autonomy immediately. Automation may
+expand what XOne does on the founder's behalf; it may never remove the founder's ability to see,
+question, and stop it.
 
 ## Part VI — Implementation
 
