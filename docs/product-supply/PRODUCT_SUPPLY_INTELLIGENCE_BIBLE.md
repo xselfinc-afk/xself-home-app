@@ -588,14 +588,452 @@ removes the separation between proposing an action and being permitted to take i
 ## Part IV — Supply System
 
 ### 14. Supplier Session Manager
+
+The Supplier Session Manager is the exclusive gateway through which every XSelf component accesses
+supplier systems. It already exists and is healthy for both accounts, and this chapter describes
+the role it plays rather than redesigning it. Every capability that follows in this part — 
+discovery, favoriting, import, inventory, and the supplier-facing side of publication — reaches the
+supplier only through this manager.
+
+Its exclusivity is enforced by strict prohibitions. No component may open its own unmanaged
+browser, reuse the founder's normal browser profile, copy cookies manually, maintain a separate
+session implementation, bypass source identity checks, or bypass session health gates. There is
+one door to the supplier, and everything passes through it.
+
+The manager's responsibilities are correspondingly broad: it maintains isolated Pickup and Dropship
+browser profiles; preserves source-scoped authentication; verifies account identity; prevents any
+crossover between Pickup and Dropship; detects authentication expiry; detects CAPTCHA, MFA, and
+supplier unavailability; provides source-specific locks; promotes known-good session snapshots
+atomically; preserves safe backups; exposes session health; redacts credentials and sensitive
+cookie values; and blocks supplier work whenever session health is unsafe.
+
+A source-isolation law governs all of this. A Pickup operation may use only the Pickup profile,
+snapshot, identity, and locks; a Dropship operation may use only the Dropship profile, snapshot,
+identity, and locks. No component may silently fall back from one account to the other. Pickup is
+the account whose verified identity is 76938981 and whose purpose is California and warehouse
+inventory evidence; Dropship is the account whose verified identity is 82482447 and whose purpose
+is shipping capability and related supplier access. Crossover between these is treated as a fault,
+never as a convenience.
+
+The two accounts differ in capability, and those differences are represented through source
+configuration and capability contracts rather than duplicate implementations. Pickup may provide
+warehouse-level inventory evidence; Dropship may provide shipping, delivery-fee, catalog, Favorite,
+or API-import capabilities. When a capability exists for one account and not the other, that fact
+is declared in configuration, so that a single shared implementation serves both accounts without
+forking.
+
+Session health is expressed conceptually as one of a fixed set of states: Healthy, Authentication
+Required, CAPTCHA Required, MFA Required, Account Mismatch, Supplier Unavailable, Network Failure,
+and Unknown. Only a Healthy session may perform bounded supplier operations. Any degraded state must
+stop the dependent work, and — critically — it must do so without converting the failure into a
+product or inventory conclusion. A session that cannot be reached tells us nothing about whether a
+product is in stock.
+
+That last point generalizes into a principle: supplier sessions are infrastructure, not business
+truth. A healthy session authorizes access, but it does not prove that a product is in stock,
+Favorited, importable, or publishable. Those are separate facts established by separate engines. The
+session is the means of asking the supplier; it is never itself the answer.
+
 ### 15. Discovery Engine
+
+The Discovery Engine is the read-oriented capability responsible for finding supplier products and
+meaningful changes before they enter the XSelf lifecycle. It is the system's eyes on the supplier
+catalog, and its output is evidence and candidates rather than commitments.
+
+Where the supplier exposes reliable signals, discovery is expected to find newly listed products,
+newly arrived products, recently restocked products, newly available variants, products added to
+relevant categories, material product-data changes, and products that the supplier has removed or
+replaced. These are the events that create or change opportunity, and noticing them early is the
+first step in the revenue strategy.
+
+Discovery is neither publication nor automatic approval. It creates candidates and evidence, and
+nothing more. It must not, as a direct act, favorite products, import products, publish products,
+or remove products from Favorites; it must not infer inventory from a missing catalog entry; and it
+must not create duplicate lifecycle entities. Seeing a product is not deciding anything about it.
+
+For every discovered product, the engine preserves a discovery record: the supplier source; the
+supplier product identifier; the supplier product URL or a stable locator where available; the
+first-seen and latest-seen times; the discovery surface on which it appeared; the supplier category;
+the visible title; visible price or cost evidence; available media metadata; new-arrival or restock
+signals; a measure of evidence quality; and whether the product already exists in any XSelf identity
+layer. This record is the raw material every later engine builds on.
+
+Before creating a new candidate, discovery must deduplicate. It compares the supplier product ID,
+the numeric supplier ID where available, the normalized SKU, known aliases, existing standardized
+product links, archived lifecycle history, and product-family or similarity evidence. The same
+supplier product must not become multiple independent candidates simply because it appeared on more
+than one discovery page. Deduplication at the point of discovery prevents the entire downstream
+system from tracking one product as several.
+
+Discovery is bounded, resumable, and rate-aware, and it is prioritized by commercial value.
+New-arrival and restock surfaces are checked more frequently than low-value historical catalog
+pages, because they are where timing advantage is won. The engine does not attempt to crawl the
+entire supplier catalog without business justification; coverage is spent where it is most likely
+to produce sellable opportunity.
+
+Finally, discovery evidence expires. A product seen as "new" or "restocked" is timestamped, and the
+system must not continue to treat an aged product as new indefinitely. Newness is a fact about a
+moment, and its value decays as that moment recedes.
+
 ### 16. New Product Engine
+
+The New Product Engine is the initial opportunity-evaluation system for discovered products. It
+answers a single forward-looking question: should this newly discovered or newly restocked product
+receive scarce operational attention and possibly a Favorite slot? It is distinct from the engine
+that evaluates a product's ongoing value after onboarding and publication; this engine estimates
+potential at the outset, not realized performance over time.
+
+Its evaluation draws on a defined set of dimensions: supplier newness; recent restock; California
+inventory potential or evidence; shipping capability; category demand; price competitiveness;
+expected gross margin; product completeness; image quality; product differentiation; duplicate or
+substitute coverage; operational feasibility; expected sales opportunity; Favorite-slot cost; and
+the confidence and missing evidence surrounding all of these. The estimate is a synthesis of these
+dimensions, weighted toward what the evidence actually supports.
+
+The engine embodies the new-first principle: all else being reasonably equal, newer products and
+newly restocked products should be evaluated and onboarded faster than older catalog products. Early
+market entry creates a time-to-market advantage and gives XSelf the opportunity to sell a product
+before competing sellers fully react. Speed of onboarding is treated here as a genuine commercial
+asset.
+
+But new-first has firm limits, and newness must never override them. It must not override confirmed
+unavailability, unacceptable margin, severe duplication, incomplete or unusable product data,
+fulfillment impossibility, safety or compliance restrictions, Favorite-capacity protection, or
+existing customer obligations. Newness earns a product faster consideration; it never earns it a
+pass on the conditions that make a product worth selling.
+
+The engine's conceptual outputs are Favorite Immediately, Candidate, Waitlist, Ignore, and Request
+More Evidence. Each output carries an opportunity score, an explanation, a confidence level, a
+statement of missing evidence, the expected Favorite-slot cost, the account or accounts required,
+and a recommendation expiry time. The output is therefore never a bare verdict; it is a verdict
+accompanied by the reasoning and the uncertainty behind it.
+
+Exact weights and score thresholds are intentionally left undefined. Initial scoring begins with
+transparent, configurable business rules, which are legible and can be tuned by judgment. More
+advanced statistical or predictive scoring is introduced only after sufficient outcome data exists
+to justify and support it; the engine does not reach for sophistication it cannot yet ground in
+results.
+
+The engine handles both first-time discovery and restock re-entry. A product that was archived or
+previously rejected may be reconsidered if materially new evidence appears — a restock, a price
+change, a completeness improvement — but its prior history remains visible throughout. Reconsidering
+a product is done with full awareness of how it was judged before, not as if it had never been seen.
+
 ### 17. Favorite Slot Manager
+
+The Favorite Slot Manager is the sole authority for allocating, reserving, protecting, reconciling,
+and releasing supplier Favorite slots. No other component may authorize the addition or removal of a
+Favorite. This concentration of authority is deliberate: because Favorites are the chokepoint of the
+entire supply model, control over them must live in exactly one place.
+
+Favorites are not a convenience list. They are scarce commercial infrastructure required for API
+onboarding and, in some cases, for continued supplier access — a product must be in Favorites before
+it can be imported through the supplier API at all. Every slot is therefore a committed resource
+with an opportunity cost, and the Manager exists to spend that resource well.
+
+The Manager treats Pickup and Dropship as independent Favorite budgets unless supplier evidence
+proves a shared capacity. Because the two accounts serve different purposes, a product that needs
+access through both may consume two slots — one in each budget. Slot cost is always accounted per
+account, never as a single pooled number assumed without evidence.
+
+For each account, the Manager tracks capacity conceptually: the measured capacity; the confidence in
+that measurement; occupied slots; reserved slots; protected slots; releasable slots; free slots; a
+safety buffer; the current utilization percentage; and a forecast of time to exhaustion. This
+accounting is what turns a vague "roughly 700+" into an operational budget that can be planned
+against.
+
+The observed 700+ limit must not be permanently hardcoded as truth. Capacity is established through
+supplier-side counts, API or page evidence, and safe operational reconciliation, and it is refined
+as evidence accumulates. The system operates below the proven hard limit using a configurable safety
+buffer, so that it never pushes to the exact edge where supplier-side behavior becomes unreliable.
+
+Every movement of a slot is recorded in a Favorite ledger. Each reservation, allocation,
+confirmation, protection change, release nomination, removal, and reconciliation correction is
+recorded with the account, the product, the previous state, the new state, the reason, the actor,
+the supporting evidence, the timestamp, the related decision, and the approval level. The ledger is
+the immutable account of why every slot is held and why every slot was released, and it makes the
+scarce budget fully auditable.
+
+Slot acquisition is two-phase. First a slot is reserved before the Favorite action is performed;
+then allocation is confirmed only after the supplier verifies that the product is actually in
+Favorites. Reservations expire safely if the Favorite action fails or is never confirmed. This
+protects the budget under concurrency: several pieces of work cannot collectively exceed capacity,
+because each must hold a reservation that is only converted on genuine confirmation.
+
+Some products are protected from eviction. A product may hold a protection class because it is
+published and actively sellable; required for inventory monitoring; recently Favorited and inside a
+minimum tenure; awaiting API import; awaiting publication review; temporarily delisted but eligible
+for restock monitoring; tied to a customer cart, checkout, order, or commitment; manually pinned by
+the founder; strategically important; or of high business value. Protected products must not be
+automatically evicted. Protection is how the Manager keeps the budget from cannibalizing the very
+products that justify it.
+
+A product may become a Favorite Release Candidate when evidence shows it no longer justifies the
+slot. Legitimate reasons include confirmed supplier removal, long-term confirmed unavailability, a
+duplicate replacement, a failed import with no recovery path, very low business value established
+after sufficient evidence, persistent operational burden, category saturation, a superior substitute
+becoming available, prolonged inactivity after delisting, or manual retirement. What is explicitly
+not sufficient is missing evidence, a single failure, a single zero, or a temporary delisting. A
+slot is released on demonstrated grounds, never on the mere absence of good news.
+
+Under capacity pressure, the Manager may consider replacement. It compares a waiting candidate
+against the lowest-value non-protected Favorite, and replacement occurs only when the expected value
+gain exceeds the removal risk, the reacquisition cost, the lost monitoring capability, the
+operational effort, the uncertainty involved, and a configurable replacement margin. To prevent slot
+thrashing — the wasteful churn of adding and removing the same class of product — the Manager applies
+minimum tenure, cooldown periods, and that replacement margin. A slot is not worth taking if it will
+soon be given back.
+
+To honor the new-first strategy, the Manager preserves a configurable portion of capacity as a
+buffer for high-value new arrivals, urgent restocks, founder-selected products, replacement
+products, and exceptional sales opportunities. The size of this reserve is a configurable buffer, not
+a fixed number of slots; the intent is that the budget is never so fully committed to existing
+products that a genuinely valuable new product cannot enter.
+
+Finally, the Manager reconciles. It periodically compares its ledger against the supplier's actual
+Favorites, and any manual addition, manual removal, supplier-side drift, or failed confirmation
+becomes an explicit reconciliation event rather than a silent correction. The Manager trusts its
+ledger but verifies it against reality, and it records every discrepancy so that the true state of
+the scarce budget is always known and explained.
+
 ### 18. Import Engine
+
+The Import Engine is the controlled capability that brings full supplier product data into XSelf
+after Favorite eligibility and supplier Favorite confirmation. It is the bridge between a product
+the business has chosen to pursue and a product the business can actually work with internally.
+
+Its core invariant follows directly from the supply model: a product must not be treated as
+API-importable merely because it was discovered. The Favorite prerequisite must be satisfied and
+confirmed first. Discovery identifies opportunity; favoriting secures access; only then can import
+proceed. Skipping that order is not permitted.
+
+The import sequence is, conceptually: verify a healthy source session; verify the correct supplier
+account; verify Favorite membership; reserve an idempotency key or import identity; call the existing
+supplier import capability; capture the supplier response; preserve the original supplier data; link
+the supplier identity to internal identities; normalize through the existing pipelines; report
+completeness and exceptions; and never publish as an automatic side effect. Each step is a
+precondition or a safeguard for the next.
+
+The engine must reuse existing supplier APIs, scripts, services, normalization pipelines, and data
+models wherever they already satisfy the requirement. It must not create a parallel import pipeline
+without first proving the existing one insufficient. Duplicating the import path would fracture the
+system's understanding of its own products, and it is prohibited unless a genuine gap is
+demonstrated.
+
+Import is idempotent. Repeated import attempts for the same supplier product must not create
+duplicate supplier or standardized products. The engine distinguishes among a first import, a safe
+refresh, a duplicate, a changed supplier record, a conflicting identity, a failed import, and an
+incomplete import, and it responds to each appropriately. Running import twice is safe; it never
+doubles a product.
+
+The engine preserves source truth. Original supplier content and normalized XSelf content remain
+distinguishable at all times. Normalization may improve titles, categories, attributes, and media
+handling, but it must not erase the original supplier evidence needed for audit and correction. The
+system can always answer both "what did the supplier say" and "what did we make of it."
+
+After import, the engine performs a set of checks: that the required identity exists; that product
+data is linked; that images are usable; that price or cost evidence exists; that dimensions and
+specifications are sufficiently complete; that duplicate review is completed; that inventory
+verification is scheduled; that publication state remains unchanged; and that any exceptions are
+recorded. These checks establish readiness for the next stage without asserting readiness to sell.
+
+That distinction is the engine's closing point. A successful import means "XSelf can now process the
+product." It does not mean "the product is ready to sell." Import makes a product workable; the
+decision to expose it to customers belongs to later engines and their gates.
+
 ### 19. Inventory Engine
+
+The Inventory Engine is the observation system responsible for collecting, classifying, and
+refreshing supplier availability evidence. It watches what the supplier can actually fulfill, and it
+does so as an observer — it remains strictly separate from publication actions.
+
+Its foundation is a truth law: only affirmative supplier evidence may establish availability or
+unavailability. A defined list of conditions must never be interpreted as zero inventory: missing
+rows; empty distributions without authoritative meaning; authentication failure; CAPTCHA; account
+mismatch; parse failure; network failure; timeout; an unresolved product; supplier unavailability;
+stale data; and any unknown response. Each of these is an absence of knowledge, and absence of
+knowledge is not a negative fact.
+
+The engine classifies each observation into one of a fixed set of conceptual outcomes: Confirmed In
+Stock — California; Confirmed In Stock — Out of State or Shippable; Confirmed Out of Stock; Inventory
+Unknown; Authentication Required; CAPTCHA Required; Parse Failed; Network Failed; Supplier
+Unavailable; and Stale. This vocabulary keeps the difference between "confirmed unavailable" and
+"could not determine" explicit and permanent.
+
+Every observation preserves its context: the supplier source; the account; the product; the warehouse
+or fulfillment evidence; the observed quantity where authoritative; the classification; a confidence
+level; the evidence timestamp; the source timestamp where available; the parser or classifier
+version; the prior known-good observation; and the failure category where one applies. An observation
+is thus always interpretable after the fact, and a later reader can see exactly what was known and
+how current it was.
+
+Evidence is composed across two accounts without losing their distinction. Pickup is the primary
+source for California and warehouse-level inventory; Dropship is the primary source for shipping
+capability and related fulfillment evidence. The combined supply picture preserves these source
+distinctions rather than merging conflicting signals into a single unexplained result. When the two
+accounts imply different things, the system keeps both and explains them.
+
+The engine observes; it does not act. It may update inventory evidence and cache state, but it must
+not publish, delist, relist, remove Favorites, retire products, overwrite unknown with zero, or call
+any publication mutation as an implicit side effect. This separation between observation and action
+is one of the system's permanent laws, and the Inventory Engine sits firmly on the observation side
+of it.
+
+Monitoring frequency reflects business value. Cadence is set by publication state, sales activity,
+customer exposure, supply priority, evidence age, inventory volatility, exception history, and
+Favorite-slot value. Published and high-value products are generally checked more frequently than
+retired or low-value products, and every refresh is bounded, resumable, idempotent, and auditable —
+the same operational discipline the system applies to all supplier work.
+
+The engine's confidence in a negative fact is built through repetition, not a single reading. A single
+confirmed zero may create a pending out-of-stock condition, but it must not automatically become a
+delisting action. Repeated independent confirmations, appropriate time separation, and the
+publication gates are all required before any customer-facing action. Symmetrically, relisting
+requires stable restock confirmation rather than a single transient positive result. The engine's job
+is to establish availability truth carefully; acting on that truth is a separate, gated decision.
+
 ### 20. California Priority Engine
+
+The California Priority Engine is the business-priority classifier that converts inventory and
+fulfillment evidence into a clear supply preference. Its purpose is to favor products that XSelf can
+fulfill reliably and economically in its primary operating region, so that the assortment leans
+toward supply the business can actually deliver on.
+
+It expresses that preference in four conceptual classes. P1 is verified California inventory. P2 is
+verified non-California inventory with reliable shipping or fulfillment capability. P3 is unknown,
+stale, or otherwise non-authoritative supply status. P4 is affirmatively confirmed unavailable. Two
+of these classes deserve emphasis: P3 is uncertainty, not unavailability, and P4 requires affirmative
+evidence. The engine never lets "we don't know" collapse into "there is none."
+
+Supply priority influences many operations without dictating any of them outright. It may inform
+candidate ranking, Favorite allocation, import urgency, publication eligibility, inventory monitoring
+cadence, recommendation ranking, the ongoing value evaluation, and replacement and retirement review.
+It is a broadly useful signal precisely because it summarizes fulfillment reliability in a single,
+comparable form.
+
+Each class carries an operational disposition. P1 receives the strongest positive supply preference.
+P2 may still be commercially valuable when shipping cost, delivery time, and margin remain acceptable.
+P3 should trigger evidence collection or caution rather than commitment. P4 should block new
+publication, but — consistent with the system's safety laws — it must not automatically trigger
+irreversible lifecycle actions without the required confirmations and gates.
+
+California priority is important but not absolute. A strong P2 product can be more commercially
+valuable than a weak P1 product when demand, margin, product quality, or inventory depth differ
+materially. The intelligence layer is expected to optimize total business value while preserving the
+California-first bias; the bias shapes decisions, but it does not blind the business to a genuinely
+better opportunity that happens to ship from out of state.
+
+Finally, priority classifications decay. A previously verified P1 or P2 classification must lose
+standing as its evidence becomes stale, and the system must not continue presenting old verification
+as current fact. A California confirmation from long ago is history, not a live guarantee, and the
+engine treats it accordingly.
+
 ### 21. Publication Engine
+
+The Publication Engine is the controlled customer-facing action system responsible for determining
+and executing publish, delist, and relist operations. It is where the system's private judgments
+become public reality, and for that reason it is one of the most tightly governed engines in the
+architecture.
+
+It draws a firm line between publication eligibility and publication execution. Eligibility is a
+computed assessment — an opinion about whether a product could reasonably be shown to customers.
+Execution is a gated mutation — the act of actually changing what customers see. The first may be
+computed freely and continuously; the second may happen only through authorization.
+
+A product may become eligible when a set of conditions holds: API import succeeded; identity and
+deduplication are resolved; product content is sufficiently complete; pricing is valid; margin is
+acceptable; inventory evidence is sufficiently fresh; supply priority is P1 or an acceptable P2; no
+critical exception exists; the lifecycle state permits publication; and the required approval has
+been obtained. Eligibility is a conjunction of these, not any one of them alone. New products with
+strong eligibility should move through review quickly, because time-to-market supports the revenue
+strategy — but speed must never bypass truth or safety.
+
+Publication has three actions — Publish, Delist, and Relist — and each must be explicitly requested,
+lifecycle-valid, control-plane authorized, quota-limited, idempotent, audited, reversible where
+practical, and protected by before-and-after evidence. No publication action happens as a side
+effect or without a trace; each is a deliberate, recorded, bounded event.
+
+Delisting is held to a high safety standard because removing a product from sale on false pretenses
+harms the business. A product must not be delisted because of unknown inventory, authentication
+failure, CAPTCHA, parse error, network failure, one missing response, one transient zero, or stale
+evidence alone. Delisting should require the configured number of affirmative out-of-stock
+confirmations, with appropriate timing and safety checks. The bar for removing a product from
+customers is affirmative and repeated, never a single ambiguous signal.
+
+Relisting is governed symmetrically. A delisted product should not be relisted after a single
+unstable positive observation; relisting requires confirmed, sufficiently stable availability
+together with current publication eligibility. Bringing a product back is as consequential as taking
+it down, and it demands the same standard of confirmed evidence.
+
+Publication is further constrained by blast-radius controls: a maximum number of actions per run; a
+maximum percentage of the catalog changed per run; separate limits for publish, delist, and relist;
+anomaly detection; bulk-action approval; a global kill switch; a per-action autonomy level; and an
+automatic halt on unexpected failure rates. These controls ensure that even a correct mechanism
+cannot, through a mistake upstream, change the storefront at a scale no one intended.
+
+One separation is permanent and bears repeating here: inventory refresh must never implicitly invoke
+a publication change. Observing stock and changing what customers see are different acts on different
+sides of the system's most important boundary, and no refresh may cross it. This separation is not a
+current convenience; it is a fixed law.
+
 ### 22. Lifecycle Engine
+
+The Lifecycle Engine is the deterministic orchestration kernel that owns the valid states and
+transitions of a product across the entire supply lifecycle. It is the system's rule-keeper: it
+decides not what should happen, but what is allowed to happen, given where a product currently is.
+
+It is not the same as the intelligence layer, and the distinction is load-bearing. The intelligence
+layer recommends priorities and decisions; the Lifecycle Engine validates whether a transition is
+legally and operationally allowed; the control-plane authority authorizes gated actions; and the
+specialized engines execute their permitted work. Four different responsibilities, four different
+owners — this is what keeps a good recommendation from becoming an illegal or unsafe action.
+
+The lifecycle is organized into phases, each with its conceptual states. Discovery and Scoring holds
+Candidate Discovered, Candidate Scored, Ignored, and Waitlisted. Favorite Acquisition holds Favorite
+Pending, Favorited, and Favorite Failed. Import and Verification holds API Imported, Deduplicated,
+and Inventory Verified. Review and Publication holds Ready for Review, Approved, and Published.
+Monitoring and Recovery holds Inventory Monitoring, Pending Out of Stock, Delisted, Restock Detected,
+Relist Pending, and Republished. Retirement and Favorite Release holds Retired, Favorite Release
+Candidate, Favorite Removed, and Archived. State names may be refined during implementation, but the
+semantic phases and the safety boundaries between them are fixed.
+
+Transitions obey a set of laws. One lifecycle entity has exactly one authoritative current state.
+Every transition has a trigger and guards, and every transition records evidence. Failures do not
+advance state. Retries are idempotent. Actions cannot skip required prerequisite states. State
+transitions do not silently perform unrelated actions. Irreversible effects require explicit
+authorization. And historical transitions remain auditable. Together these laws make the lifecycle a
+deterministic backbone that the probabilistic intelligence layer can lean on safely.
+
+Several key implications are worth stating plainly, because they are the boundaries most easily
+violated by well-meaning automation. Discovery does not imply favoriting. Favoriting does not imply
+a successful import. Import does not imply inventory verification. Inventory verification does not
+imply publication. One zero does not imply delisting. One positive result does not imply relisting.
+Delisting does not imply Favorite removal. And retirement does not imply destructive deletion. Each
+step is earned on its own evidence, never assumed from the step before it.
+
+Favorite retention after delisting deserves particular emphasis. A delisted product may remain
+Favorited while the system monitors for restock or preserves API access; losing the customer-facing
+listing does not mean losing the supplier slot. Favorite release is a separate lifecycle decision
+that requires its own evidence, its own protection checks, and its own action gate. Delisting and
+favorite removal are distinct events with distinct justifications.
+
+Archival preserves memory. An archived product retains its identity, history, prior decisions,
+scores, Favorite tenure, publication history, and retirement reasons. If the supplier product later
+reappears, the system recognizes its previous lifecycle rather than creating an unrelated duplicate.
+Retirement removes a product from active operation without erasing what the business learned about
+it.
+
+Retirement itself is justified by defined reasons: Never Sold after sufficient evidence, Long-Term
+Confirmed Out of Stock, Supplier Removed, Duplicate, Replaced by a Better Product, Low Margin, Low
+Customer Interest, Excess Operational Burden, Category Saturation, a Compliance or Quality Concern,
+or a Manual Founder Decision. One exclusion is absolute: missing data alone must never become a
+low-value or retirement reason. A product is retired for what the evidence shows, not for what the
+evidence fails to show.
+
+Finally, the engine orchestrates in bounded, resumable stages. A crash or interruption resumes from
+the last committed valid state, and no stage depends on hidden in-memory assumptions that cannot be
+reconstructed. The lifecycle is durable by design: at any moment its true state is recorded, and from
+that record the work can always continue safely.
 
 ## Part V — Operations
 
