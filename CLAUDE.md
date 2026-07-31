@@ -2,6 +2,38 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Product Bible Governance
+
+The Product Supply Intelligence Bible is the highest architectural authority for this repository.
+
+- **Current approved version:** `product-bible-v1.0-rc1`
+- **Location:** `docs/product-supply/PRODUCT_SUPPLY_INTELLIGENCE_BIBLE.md`
+
+Before implementing any feature related to:
+
+- supplier systems
+- supplier sessions
+- Favorites
+- imports
+- inventory
+- publication
+- lifecycle
+- AI decision making
+- automation
+
+Claude must:
+
+1. Read the Product Bible.
+2. Follow the Product Bible.
+3. If implementation conflicts with the Product Bible, stop.
+4. Update the Product Bible (or an ADR) before changing architecture.
+
+Business decisions override engineering preferences.
+
+Engineering implementation must never violate the Product Bible.
+
+Prefer **Existing First** — reuse existing sessions, APIs, pipelines, data models and services before introducing new implementations.
+
 ## Project
 
 Xself Home is an Expo / React Native furniture commerce app (iOS, Android, Web) backed by Supabase. Bundle id: `com.xself.home`. The codebase ships a single user-facing app plus a large suite of TypeScript scripts that scrape and normalize supplier inventory (GIGA warehouse) into Supabase.
