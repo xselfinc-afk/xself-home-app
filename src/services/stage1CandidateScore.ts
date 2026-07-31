@@ -28,7 +28,7 @@ export interface CandidateFeatures {
   supplierProductId: string;           // GIGA sku == supplier_product_id
   identityResolved: boolean;           // a non-empty supplier_product_id exists
   duplicate: boolean;                  // already imported/published in XSelf (exact supplier_product_id)
-  isNewlySaved: boolean;               // appeared in the newly-saved delta
+  isNewlySaved: boolean | null;        // true=newly saved, false=not new, null=UNKNOWN date (neutral)
   daysSinceSaved: number | null;       // recency of the save (null = unknown)
   priority: SupplyPriority;            // from inventory classification, else 'unknown'
   hasShipping: Tri;                    // dropship/delivery-fee capability (null = unknown)
@@ -142,7 +142,8 @@ export function scoreCandidate(
 
   // ── Composite score (unknowns contribute 0 — neutral, never negative) ──
   let score = 0;
-  if (f.isNewlySaved) { score += weights.newlySaved; reasons.push('newly_saved'); }
+  if (f.isNewlySaved === true) { score += weights.newlySaved; reasons.push('newly_saved'); }
+  else if (f.isNewlySaved == null) { missingEvidence.push('save_date_unknown'); } // UNKNOWN newness is neutral: no bonus, no penalty
   if (f.daysSinceSaved != null && f.daysSinceSaved <= thresholds.recentDays) { score += weights.recentlySavedBonus; reasons.push('recently_saved'); }
   if (f.priority === 'P1') { score += weights.p1; reasons.push('verified_california'); }
   else if (f.priority === 'P2') { score += weights.p2; reasons.push('verified_shippable'); }
@@ -154,7 +155,7 @@ export function scoreCandidate(
 
   // ── Verdict from score, capped conservatively when strong signal is absent ──
   let verdict: Verdict;
-  const hasStrongSignal = f.priority === 'P1' || f.priority === 'P2' || (f.isNewlySaved && f.differentiated === true);
+  const hasStrongSignal = f.priority === 'P1' || f.priority === 'P2' || (f.isNewlySaved === true && f.differentiated === true);
   if (score >= thresholds.favoriteImmediately && hasStrongSignal) verdict = 'favorite_immediately';
   else if (score >= thresholds.candidate) verdict = 'candidate';
   else if (score >= thresholds.waitlist) verdict = 'waitlist';
@@ -171,4 +172,77 @@ function blocked(
   missingEvidence: string[],
 ): CandidateScore {
   return { supplierProductId: f.supplierProductId, verdict, score: 0, reasons, missingEvidence, blocked: true, blockReasons, slotCost: f.slotCost };
+}
+
+/**
+ * Saved-items import lifecycle status (PURE). Every input product is ALREADY in Saved Items, so the
+ * question is never "favorite it?" but "where is it in the import→publish pipeline?". Combines
+ * snapshot evidence with live read-only Supabase evidence; on a definite disagreement it is
+ * conservative (needs_more_evidence) and never silently picks a side. Unknown inventory is expected
+ * pre-import and is NEVER treated as unavailable/P4.
+ */
+export type ImportStatus = 'already_published' | 'already_imported' | 'blocked' | 'import_ready' | 'needs_more_evidence';
+
+export interface ImportStatusInput {
+  supplierProductId: string;
+  identityResolved: boolean;
+  snapshotClassification?: string | null;   // 'new_candidate' | 'already_imported' | 'already_published' | 'blocked_or_invalid' | ...
+  invalidReasons?: string[];                 // supplied invalid reasons (all preserved & displayed)
+  hasImage?: boolean | null;                 // null = unknown (never assume false)
+  hasPrice?: boolean | null;
+  snapshotImported?: boolean | null;         // in_supplier_products / in_standardized_products (snapshot)
+  snapshotPublished?: boolean | null;        // in_sellable_products (snapshot)
+  liveImported?: boolean | null;             // present in supplier_products/standardized_products (live)
+  livePublished?: boolean | null;            // standardized_products.published (live)
+}
+
+export interface ImportStatusResult {
+  supplierProductId: string;
+  status: ImportStatus;
+  reasons: string[];
+  missingEvidence: string[];
+  invalidReasons: string[];
+  conflict: boolean;
+  nextAction: string;
+}
+
+export function classifyImportStatus(i: ImportStatusInput): ImportStatusResult {
+  const invalidReasons = (i.invalidReasons ?? []).map(String).filter(Boolean);
+  const missingEvidence: string[] = [];
+  const mk = (status: ImportStatus, reasons: string[], nextAction: string, conflict = false): ImportStatusResult =>
+    ({ supplierProductId: i.supplierProductId, status, reasons, missingEvidence, invalidReasons, conflict, nextAction });
+
+  if (!i.identityResolved || !i.supplierProductId) return mk('needs_more_evidence', ['unresolved_identity'], 'resolve supplier identity before any action');
+
+  // Definite disagreement (both sources known and differ) → conservative, never silent.
+  const bothKnown = (a?: boolean | null, b?: boolean | null) => a != null && b != null;
+  const importConflict = bothKnown(i.snapshotImported, i.liveImported) && i.snapshotImported !== i.liveImported;
+  const publishConflict = bothKnown(i.snapshotPublished, i.livePublished) && i.snapshotPublished !== i.livePublished;
+  if (importConflict || publishConflict) {
+    const r = ['snapshot_live_disagreement'];
+    if (importConflict) r.push(`imported snapshot=${i.snapshotImported} live=${i.liveImported}`);
+    if (publishConflict) r.push(`published snapshot=${i.snapshotPublished} live=${i.livePublished}`);
+    return mk('needs_more_evidence', r, 'reconcile snapshot vs live Supabase state before deciding', true);
+  }
+
+  const published = i.snapshotPublished === true || i.livePublished === true;
+  const imported = i.snapshotImported === true || i.liveImported === true;
+  if (published) return mk('already_published', ['in_sellable_products'], 'no import needed — already live; monitor inventory');
+  if (imported) return mk('already_imported', ['in_supplier_products (not sellable)'], 'review for publication (verify inventory + price/margin)');
+
+  const materialBlock = i.snapshotClassification === 'blocked_or_invalid' || invalidReasons.length > 0;
+  if (materialBlock) return mk('blocked', ['blocked_or_invalid'], `resolve blocking issues before import: ${invalidReasons.join('; ') || i.snapshotClassification || 'invalid'}`);
+
+  // Not imported, not published, not blocked → Import Ready iff we have POSITIVE readiness evidence.
+  if (i.hasImage == null) missingEvidence.push('media_unknown');
+  else if (i.hasImage === false) missingEvidence.push('missing_media');
+  if (i.hasPrice == null) missingEvidence.push('price_unknown');
+  else if (i.hasPrice === false) missingEvidence.push('missing_price');
+  // Inventory/margin are expected-unknown pre-import; noted, but they NEVER downgrade readiness.
+  missingEvidence.push('inventory_unverified', 'margin_unknown');
+
+  if (i.hasImage === true && i.hasPrice === true) {
+    return mk('import_ready', ['saved_not_imported', 'has_image', 'has_price'], 'import via existing giga:newly-saved:sync (dry-run first), then verify inventory + margin before publication review');
+  }
+  return mk('needs_more_evidence', ['saved_not_imported'], 'gather missing media/price before import');
 }
