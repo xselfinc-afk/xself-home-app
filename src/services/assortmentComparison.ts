@@ -85,6 +85,8 @@ export interface ComparisonRow {
   taxonomyDepartment: string;
   taxonomyProductType: string;
   matched: string | null;
+  /** How the title uses outdoor language — the input to indoor/outdoor placement. */
+  outdoorSignal: string;
 }
 
 /** Tables this module must never write. Asserted by the test suite against this module's source. */
@@ -116,7 +118,7 @@ const CLASS_TO_DECISION: Record<AssortmentClass, NewDecision> = {
 export function newAssortmentDecision(
   title: string,
   category?: string,
-): { decision: NewDecision; assortmentClass: AssortmentClass; basis: string; department: string; productType: string; matched: string | null } {
+): { decision: NewDecision; assortmentClass: AssortmentClass; basis: string; department: string; productType: string; matched: string | null; outdoorSignal: string } {
   const r = classifyAssortment({ title, category });
   return {
     decision: CLASS_TO_DECISION[r.assortment],
@@ -125,6 +127,7 @@ export function newAssortmentDecision(
     department: r.taxonomyDepartment,
     productType: r.taxonomyProductType,
     matched: r.matched,
+    outdoorSignal: r.outdoorSignal,
   };
 }
 
@@ -157,6 +160,7 @@ export function compareOne(input: ComparisonInput): ComparisonRow {
     taxonomyDepartment: n.department,
     taxonomyProductType: n.productType,
     matched: n.matched,
+    outdoorSignal: n.outdoorSignal,
   };
 }
 

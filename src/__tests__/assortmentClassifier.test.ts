@@ -9,7 +9,8 @@
  * Run: npx tsx src/__tests__/assortmentClassifier.test.ts
  */
 import assert from 'node:assert/strict';
-import { classifyAssortment, isFurnitureClass } from '../utils/assortmentClassifier';
+import { classifyAssortment, isFurnitureClass, outdoorSignalOf } from '../utils/assortmentClassifier';
+import { NON_FURNITURE_SKUS, OUTDOOR_POLICY_SKUS, RESCUED_FURNITURE_SKUS } from './fixtures/outdoorPolicySkus';
 
 let passed = 0;
 function it(name: string, fn: () => void): void { fn(); passed++; console.log(`  ✓ ${name}`); }
@@ -129,6 +130,112 @@ function main(): void {
   });
 
   // ── Fail-open behavior ──────────────────────────────────────────────────────
+
+  // ── Outdoor context (a keyword alone never decides) ─────────────────────────
+
+  it('15a. strong outdoor product signals → outdoor_furniture', () => {
+    const outdoor: Array<[string, string]> = [
+      ['patio dining set', '7-Piece Patio Dining Set, Acacia Wood Table and Chairs'],
+      ['outdoor sectional sofa', 'Outdoor Sectional Sofa Set, PE Rattan Wicker'],
+      ['garden bench', 'Garden Bench, Cast Iron Outdoor Seating'],
+      ['porch swing', '3-Seat Porch Swing with Chain, Weather Resistant'],
+      ['fire pit table', 'Propane Fire Pit Table, 44 inch Rectangular'],
+      ['patio umbrella', '10ft Patio Umbrella with Crank and Tilt'],
+      ['outdoor storage', 'Outdoor Storage Deck Box 120 Gallon Waterproof'],
+      ['poolside furniture', 'Poolside Lounge Chair Set, Aluminum Frame'],
+    ];
+    for (const [label, t] of outdoor) {
+      assert.equal(cls(t), 'outdoor_furniture', `${label}: ${t} → ${cls(t)}`);
+      assert.equal(outdoorSignalOf(t), 'strong_outdoor_product_signal', label);
+    }
+  });
+
+  it('15b. a room-suitability list never makes an indoor product outdoor', () => {
+    const t = 'Natural Finish Round Wood Accent Table - Elegant Curved Base End Table for Living Room, Bedroom, or Patio';
+    assert.equal(cls(t), 'core_indoor_furniture');
+    assert.equal(outdoorSignalOf(t), 'indoor_product_with_optional_outdoor_use');
+  });
+
+  it('15c. balcony alongside an indoor room stays indoor', () => {
+    const t = 'Lazy sofa balcony leisure chair bedroom sofa chair foldable reclining chair';
+    assert.equal(cls(t), 'core_indoor_furniture');
+    assert.equal(outdoorSignalOf(t), 'indoor_product_with_optional_outdoor_use');
+  });
+
+  it('15d. "deck chair" is a style phrase, not a location', () => {
+    const t = 'Adjustable head and waist, game chair, lounge chair in the living room, 360 degree rotatable sofa chair, Leisure Chair deck chair';
+    assert.notEqual(cls(t), 'outdoor_furniture');
+    assert.equal(cls(t), 'core_indoor_furniture');
+    // Even with no indoor room named, a bare "deck chair" cannot establish outdoor identity.
+    assert.notEqual(outdoorSignalOf('Folding Deck Chair with Armrest'), 'strong_outdoor_product_signal');
+  });
+
+  it('15e. the cat-paw sofa (W2311P345745) is indoor furniture', () => {
+    const t = 'TS Cat paw leather upholstered sofa 2PC Cream White,Nordic retro light luxury living room balcony bedroom single';
+    assert.equal(cls(t), 'core_indoor_furniture');
+  });
+
+  it('15f. indoor/outdoor dual use is resolved by construction, not by the keyword', () => {
+    // No weather-specific construction → a suitability claim, so it stays in the core assortment.
+    const bench = 'Indoor Outdoor Storage Bench with Cushion Seat';
+    assert.equal(outdoorSignalOf(bench), 'outdoor_suitability_mention');
+    assert.equal(cls(bench), 'core_indoor_furniture');
+    // Acacia picnic construction → genuinely an outdoor product despite naming both.
+    const dining = 'GO 3 Pieces Acacia Wood Table Bench Dining Set For Outdoor & Indoor Furniture With 2 Benches, Picnic';
+    assert.equal(outdoorSignalOf(dining), 'strong_outdoor_product_signal');
+    assert.equal(cls(dining), 'outdoor_furniture');
+  });
+
+  it('15g. a multi-location weather-built product goes to manual review, not a guess', () => {
+    const t = 'Folding PE Rattan Hanging Egg Chair with Stand, Gray Indoor Outdoor Hammock Swing Basket Chair, Aluminum Steel Frame for Patio Balcony Backyard Bedroom';
+    assert.equal(outdoorSignalOf(t), 'ambiguous_outdoor_manual_review');
+    assert.equal(cls(t), 'ambiguous_manual_review');
+  });
+
+  it('15h. a single outdoor keyword never overrides a strong indoor identity', () => {
+    for (const t of [
+      'Murphy Bed Cabinet for Bedroom, also suits patio guest room',
+      'Bunk Bed for Kids Bedroom, garden view window',
+      '6-Drawer Dresser for Bedroom, Patio Storage Alternative',
+      'Gaming Chair for Home Office, use on patio too',
+    ]) {
+      assert.equal(cls(t), 'core_indoor_furniture', `${t} → ${cls(t)}`);
+    }
+  });
+
+  // ── Corpus regression: the real saved-asset sets must not drift ─────────────
+
+  it('15i. the Founder outdoor-policy set stays outdoor (1 documented exception)', () => {
+    // W2500P479541 is a rattan hanging egg chair marketed for "Patio Balcony Backyard Bedroom" —
+    // genuinely dual-use. It moved to manual review rather than being guessed either way.
+    const DUAL_USE_EXCEPTION = 'W2500P479541';
+    let outdoor = 0;
+    for (const [sku, title] of OUTDOOR_POLICY_SKUS) {
+      const c = cls(title);
+      if (sku === DUAL_USE_EXCEPTION) {
+        assert.equal(c, 'ambiguous_manual_review', `${sku} should be manual review`);
+        continue;
+      }
+      assert.equal(c, 'outdoor_furniture', `${sku} drifted out of the outdoor set → ${c}: ${title.slice(0, 60)}`);
+      outdoor++;
+    }
+    assert.equal(OUTDOOR_POLICY_SKUS.length, 42);
+    assert.equal(outdoor, 41);
+  });
+
+  it('15j. every rescued furniture SKU stays furniture', () => {
+    assert.equal(RESCUED_FURNITURE_SKUS.length, 9);
+    for (const [sku, title] of RESCUED_FURNITURE_SKUS) {
+      assert.ok(furniture(title), `${sku} lost furniture status → ${cls(title)}`);
+    }
+  });
+
+  it('15k. no genuine non-furniture SKU becomes furniture', () => {
+    assert.equal(NON_FURNITURE_SKUS.length, 30);
+    for (const [sku, title] of NON_FURNITURE_SKUS) {
+      assert.equal(cls(title), 'genuine_non_furniture', `${sku} became ${cls(title)}: ${title.slice(0, 60)}`);
+    }
+  });
 
   it('16. unknown stays ambiguous — never silently excluded', () => {
     assert.equal(cls(''), 'ambiguous_manual_review');

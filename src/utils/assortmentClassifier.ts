@@ -36,6 +36,7 @@ export type AssortmentBasis =
   | 'taxonomy_outdoor_garden'
   | 'taxonomy_non_furniture_department'
   | 'supplementary_furniture_head'
+  | 'supplementary_outdoor_product'
   | 'supplementary_non_furniture'
   | 'unresolved';
 
@@ -48,6 +49,8 @@ export interface AssortmentResult {
   taxonomyProductType: string;
   /** The token that triggered `basis`, when a regex rule decided. */
   matched: string | null;
+  /** How the title uses outdoor language — the input to indoor/outdoor placement. */
+  outdoorSignal: OutdoorSignal;
 }
 
 export interface AssortmentInput {
@@ -131,8 +134,134 @@ const FURNITURE_TYPES_OUTSIDE_FURNITURE_DEPT = new Set([
   'kids-storage',
 ]);
 
-const OUTDOOR_MARKER =
-  /\b(?:outdoor|patio|backyard|garden|poolside|porch|balcony|lawn|deck|all[\s-]?weather|weather[\s-]?resistant)\b/i;
+// ── Outdoor context analysis ──────────────────────────────────────────────────
+//
+// A bare outdoor keyword is NOT evidence that a product is outdoor furniture. Supplier titles use
+// these words in three non-identifying ways, each of which previously produced a false outdoor
+// classification:
+//
+//   1. Multi-room suitability lists — "End Table for Living Room, Bedroom, or Patio"
+//   2. Style phrases              — "deck chair" is a recliner style, not a location
+//   3. Dual-use claims            — "Indoor & Outdoor" without any outdoor product identity
+//
+// Outdoor identity therefore requires an outdoor word bound to an outdoor-capable product, and a
+// strong indoor identity is never overridden by a single loose keyword.
+
+/** Outdoor words that can carry product identity when bound to a product noun. */
+const OUTDOOR_STRONG_WORD = 'outdoor|patio|garden|backyard|poolside|porch|lawn|yard';
+
+/**
+ * Outdoor words that are only ever weak hints. `balcony`, `deck` and `terrace` overwhelmingly appear
+ * as room-suitability mentions or in style phrases ("deck chair"), so they can never establish
+ * outdoor identity on their own.
+ */
+const OUTDOOR_WEAK_WORD = /\b(?:balcony|balconies|deck|terrace|veranda)\b/i;
+
+/** Products that can plausibly be outdoor furniture. */
+const OUTDOOR_CAPABLE_HEAD =
+  'sofas?|sectionals?|couch(?:es)?|settees?|benches?|bench|chairs?|tables?|sets?|dining|daybeds?|loungers?|lounge|chaise|furniture|umbrellas?|swings?|storage|conversation|bistro|hammocks?|gliders?';
+
+/**
+ * Outdoor identity by proximity: a strong outdoor word within 60 characters of an outdoor-capable
+ * product noun, in either order. The window is generous because supplier titles pad heavily
+ * ("Outdoor Extendable Acacia Wood 3 Seater Sofa"), and it is only consulted when no strong indoor
+ * identity is present.
+ */
+const OUTDOOR_PROXIMITY: RegExp[] = [
+  new RegExp(`\\b(?:${OUTDOOR_STRONG_WORD})\\b[^.]{0,60}?\\b(?:${OUTDOOR_CAPABLE_HEAD})\\b`, 'i'),
+  new RegExp(`\\b(?:${OUTDOOR_CAPABLE_HEAD})\\b[^.]{0,60}?\\b(?:${OUTDOOR_STRONG_WORD})\\b`, 'i'),
+];
+
+/**
+ * Unambiguous outdoor products. These are tight enough to outrank even a strong indoor identity —
+ * a title naming a "porch swing" or a "patio dining set" is describing an outdoor product regardless
+ * of which rooms it also mentions.
+ */
+const OUTDOOR_PRODUCT_PHRASE: Array<[RegExp, string]> = [
+  [/\bporch\s+swings?\b/i, 'porch swing'],
+  [/\bfire\s?pits?(?:\s+tables?)?\b/i, 'fire pit'],
+  [/\b(?:patio|outdoor|garden)\s+umbrellas?\b/i, 'patio umbrella'],
+  [/\bumbrella\s+holes?\b/i, 'umbrella hole'],
+  [/\b(?:patio|outdoor)\s+(?:\w+\s+){0,2}?dining\s+sets?\b/i, 'patio dining set'],
+  [/\b(?:patio|outdoor)\s+(?:\w+\s+){0,2}?(?:sectionals?|sofa\s+sets?)\b/i, 'outdoor sectional'],
+  [/\b(?:garden|patio)\s+(?:\w+\s+){0,2}?bench(?:es)?\b/i, 'garden bench'],
+  [/\ball[\s-]?weather\b/i, 'all-weather'],
+  [/\bweather[\s-]?(?:resistant|proof)\b/i, 'weather-resistant'],
+];
+
+/**
+ * Weather-facing materials and construction. Used to resolve dual-use titles: "Dining Set For
+ * Outdoor & Indoor" on an ACACIA picnic set is an outdoor product, while "Indoor Outdoor Storage
+ * Bench with Cushion Seat" carries no outdoor-specific construction and is a suitability claim.
+ */
+const OUTDOOR_MATERIAL_HINT =
+  /\b(?:acacia|teak|eucalyptus|rattan|wicker|hdpe|pe\s+rattan|picnic|rust[\s-]?(?:resistant|proof)|powder[\s-]?coated|galvani[sz]ed)\b/i;
+
+/**
+ * A named room implies the product's home is indoors. Bare "indoor" is deliberately EXCLUDED — it
+ * appears in dual-use claims like "For Outdoor & Indoor", where it does not indicate indoor identity.
+ */
+const INDOOR_ROOM_IDENTITY =
+  /\b(?:living\s*rooms?|bed\s*rooms?|dining\s*rooms?|home\s+offices?|study\s*rooms?|nurser(?:y|ies)|apartments?)\b/i;
+
+/** Indoor-only furniture types — an outdoor keyword must never move these outside. */
+const INDOOR_ONLY_TYPE =
+  /\b(?:murphy\s+beds?|bunk\s*beds?|nightstands?|dressers?|wardrobes?|armoires?|gaming\s+chairs?|office\s+chairs?|desks?|bookcases?|bookshel(?:f|ves)|headboards?|mattress(?:es)?|vanit(?:y|ies))\b/i;
+
+/** "Indoor & Outdoor" / "indoor-outdoor" — a suitability claim, not an outdoor identity. */
+const DUAL_USE =
+  /\b(?:indoors?\s*(?:&|and|\/|,)\s*outdoors?|outdoors?\s*(?:&|and|\/|,)\s*indoors?|indoor[-\s]outdoor)\b/i;
+
+/**
+ * How an outdoor word in the title should be read. Exported so the distinction is directly testable
+ * rather than only observable through the final class.
+ */
+export type OutdoorSignal =
+  | 'strong_outdoor_product_signal'
+  | 'outdoor_suitability_mention'
+  | 'indoor_product_with_optional_outdoor_use'
+  | 'ambiguous_outdoor_manual_review'
+  | 'none';
+
+/** Classify how the title uses outdoor language. Pure; exported for tests. */
+export function outdoorSignalOf(title: string): OutdoorSignal {
+  const t = title ?? '';
+
+  // 1. An unambiguous outdoor product wins outright — even over a named indoor room.
+  if (OUTDOOR_PRODUCT_PHRASE.some(([re]) => re.test(t))) return 'strong_outdoor_product_signal';
+
+  const strongWordPresent = new RegExp(`\\b(?:${OUTDOOR_STRONG_WORD})\\b`, 'i').test(t);
+  const weakWordPresent = OUTDOOR_WEAK_WORD.test(t);
+  if (!strongWordPresent && !weakWordPresent) return 'none';
+
+  // 2. A strong indoor identity is never overridden by a loose outdoor keyword.
+  if (INDOOR_ROOM_IDENTITY.test(t) || INDOOR_ONLY_TYPE.test(t)) {
+    // Exception: a room list naming SEVERAL outdoor locations on a weather-built product is a
+    // genuine dual-use item ("Rattan Hanging Egg Chair … for Patio Balcony Backyard Bedroom").
+    // Calling it indoor would be as wrong as calling it outdoor, so it goes to manual review.
+    const distinctStrongWords = new Set(
+      (t.match(new RegExp(`\\b(?:${OUTDOOR_STRONG_WORD})\\b`, 'gi')) ?? []).map(w => w.toLowerCase()),
+    );
+    if (distinctStrongWords.size >= 2 && OUTDOOR_MATERIAL_HINT.test(t)) {
+      return 'ambiguous_outdoor_manual_review';
+    }
+    return 'indoor_product_with_optional_outdoor_use';
+  }
+
+  // 3. "Indoor & Outdoor" is a suitability claim UNLESS the product is built for weather.
+  if (DUAL_USE.test(t) && !OUTDOOR_MATERIAL_HINT.test(t)) return 'outdoor_suitability_mention';
+
+  // 4. Does the outdoor word actually bind to an outdoor-capable product?
+  if (strongWordPresent && OUTDOOR_PROXIMITY.some(re => re.test(t))) {
+    return 'strong_outdoor_product_signal';
+  }
+
+  // 5. A weak word alone (balcony / deck / terrace) never establishes outdoor identity.
+  if (!strongWordPresent) return 'outdoor_suitability_mention';
+
+  // 6. A strong word floating free of any product noun — unresolvable from the title.
+  return 'ambiguous_outdoor_manual_review';
+}
 
 const first = (table: Array<[RegExp, string]>, s: string): string | null => {
   for (const [re, label] of table) if (re.test(s)) return label;
@@ -155,19 +284,23 @@ export function classifyAssortment(input: AssortmentInput): AssortmentResult {
   } as Pick<Product, 'name' | 'category' | 'categoryLabel'>);
   const dept = tax.department;
   const type = tax.productType;
-  const base = { taxonomyDepartment: dept, taxonomyProductType: type };
+  // Outdoor placement is decided by CONTEXT, not by the presence of an outdoor keyword.
+  const outdoorSignal = outdoorSignalOf(title);
+  const base = { taxonomyDepartment: dept, taxonomyProductType: type, outdoorSignal };
 
   if (!title) {
     return { assortment: 'ambiguous_manual_review', basis: 'unresolved', matched: null, ...base };
   }
 
-  const outdoor = OUTDOOR_MARKER.test(title);
-  const asFurniture = (basis: AssortmentBasis, matched: string | null): AssortmentResult => ({
-    assortment: outdoor ? 'outdoor_furniture' : 'core_indoor_furniture',
-    basis,
-    matched,
-    ...base,
-  });
+  const asFurniture = (basis: AssortmentBasis, matched: string | null): AssortmentResult => {
+    const assortment: AssortmentClass =
+      outdoorSignal === 'strong_outdoor_product_signal' ? 'outdoor_furniture'
+      : outdoorSignal === 'ambiguous_outdoor_manual_review' ? 'ambiguous_manual_review'
+      // `outdoor_suitability_mention` and `indoor_product_with_optional_outdoor_use` are indoor
+      // products that merely mention outdoor use — they stay in the core assortment.
+      : 'core_indoor_furniture';
+    return { assortment, basis, matched, ...base };
+  };
 
   // 1. Furniture compounds win outright — a fish-tank STAND is furniture.
   const override = first(FURNITURE_COMPOUND_OVERRIDE, title);
@@ -204,6 +337,13 @@ export function classifyAssortment(input: AssortmentInput): AssortmentResult {
 
   const head = first(FURNITURE_HEAD, title);
   if (head) return asFurniture('supplementary_furniture_head', head);
+
+  // 4b. Outdoor products whose head-noun is not indoor furniture — a porch swing, a patio umbrella,
+  // an outdoor storage box. A strong outdoor signal has already established outdoor identity here,
+  // and decor and non-furniture were both ruled out above.
+  if (outdoorSignal === 'strong_outdoor_product_signal') {
+    return { assortment: 'outdoor_furniture', basis: 'supplementary_outdoor_product', matched: null, ...base };
+  }
 
   // 5. Unknown stays unknown. Never inferred as excluded.
   return { assortment: 'ambiguous_manual_review', basis: 'unresolved', matched: null, ...base };
