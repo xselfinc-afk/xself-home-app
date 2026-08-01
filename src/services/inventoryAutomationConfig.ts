@@ -13,6 +13,7 @@ export type InventoryAutomationConfig = {
   automationEnabled: boolean;          // global kill switch (master)
   pickupScanEnabled: boolean;          // per-source: Pickup
   dropshipScanEnabled: boolean;        // per-source: Dropship
+  apiScanEnabled: boolean;             // per-source: browser-free GIGA Open API availability scan
   autoDelistEnabled: boolean;          // live delist apply (Phase 1: stays false)
   autoRelistEnabled: boolean;          // live relist apply (Phase 1: stays false)
   outOfStockConfirmations: number;     // zeros required before delist-eligible
@@ -20,6 +21,7 @@ export type InventoryAutomationConfig = {
   maxScanPerRun: number;
   maxDelistPerRun: number;             // absolute cap
   maxDelistPercent: number;            // percentage cap
+  maxFailurePercent: number;           // abort a run whose failure rate exceeds this
   bulkChangeRequiresApproval: boolean;
   caPriorityEnabled: boolean;          // browse CA-priority consumption (default off)
   checkoutRevalidationEnabled: boolean;// checkout stale/unknown gate (default off)
@@ -29,13 +31,15 @@ export const INVENTORY_AUTOMATION_DEFAULTS: InventoryAutomationConfig = {
   automationEnabled: false,
   pickupScanEnabled: false,
   dropshipScanEnabled: false,
+  apiScanEnabled: false,
   autoDelistEnabled: false,
   autoRelistEnabled: false,
   outOfStockConfirmations: 2,
   relistConfirmations: 2,
-  maxScanPerRun: 100,
+  maxScanPerRun: 500,
   maxDelistPerRun: 5,
   maxDelistPercent: 5,
+  maxFailurePercent: 20,
   bulkChangeRequiresApproval: true,
   caPriorityEnabled: false,
   checkoutRevalidationEnabled: false,
@@ -45,6 +49,7 @@ const KEY_MAP: Record<string, keyof InventoryAutomationConfig> = {
   inventory_automation_enabled: 'automationEnabled',
   inventory_pickup_scan_enabled: 'pickupScanEnabled',
   inventory_dropship_scan_enabled: 'dropshipScanEnabled',
+  inventory_api_scan_enabled: 'apiScanEnabled',
   inventory_auto_delist_enabled: 'autoDelistEnabled',
   inventory_auto_relist_enabled: 'autoRelistEnabled',
   inventory_out_of_stock_confirmations: 'outOfStockConfirmations',
@@ -52,6 +57,7 @@ const KEY_MAP: Record<string, keyof InventoryAutomationConfig> = {
   inventory_max_scan_per_run: 'maxScanPerRun',
   inventory_max_delist_per_run: 'maxDelistPerRun',
   inventory_max_delist_percent: 'maxDelistPercent',
+  inventory_max_failure_percent: 'maxFailurePercent',
   inventory_bulk_change_requires_approval: 'bulkChangeRequiresApproval',
   inventory_ca_priority_enabled: 'caPriorityEnabled',
   inventory_checkout_revalidation_enabled: 'checkoutRevalidationEnabled',
@@ -96,16 +102,28 @@ export type SafetyBlock =
   | 'auto_delist_disabled'
   | 'exceeds_max_delist_per_run'
   | 'exceeds_max_delist_percent'
+  | 'exceeds_max_failure_percent'
   | 'requires_human_approval';
 
 export interface SafetyDecision { allowed: boolean; blocks: SafetyBlock[]; }
 
 /** Would a per-source SCAN be allowed to run live? (Dry-run always runs; this gates the future apply.) */
-export function evaluateSourceScanAllowed(cfg: InventoryAutomationConfig, source: 'pickup' | 'dropship'): SafetyDecision {
+export function evaluateSourceScanAllowed(cfg: InventoryAutomationConfig, source: 'pickup' | 'dropship' | 'open_api'): SafetyDecision {
   const blocks: SafetyBlock[] = [];
   if (!cfg.automationEnabled) blocks.push('automation_disabled');
   if (source === 'pickup' && !cfg.pickupScanEnabled) blocks.push('source_disabled');
   if (source === 'dropship' && !cfg.dropshipScanEnabled) blocks.push('source_disabled');
+  if (source === 'open_api' && !cfg.apiScanEnabled) blocks.push('source_disabled');
+  return { allowed: blocks.length === 0, blocks };
+}
+
+/**
+ * Would a run whose failure rate is `failurePercent` be allowed to APPLY changes? A run that could
+ * not read a large share of the catalogue has not proven anything, so it must change nothing.
+ */
+export function evaluateFailureRateAllowed(cfg: InventoryAutomationConfig, failurePercent: number): SafetyDecision {
+  const blocks: SafetyBlock[] = [];
+  if (failurePercent > cfg.maxFailurePercent) blocks.push('exceeds_max_failure_percent');
   return { allowed: blocks.length === 0, blocks };
 }
 

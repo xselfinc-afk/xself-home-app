@@ -51,6 +51,9 @@ scripts/manual-inputs/
 # Product Family pilot precheck — regenerated read-only DB analysis (not source)
 reports/product-family/
 
+# Saved Asset review analysis — regenerated read-only DB analysis (not source)
+reports/saved-assets/
+
 # Local backups, debug output, and Deno lockfile (not part of the app/release)
 backups/
 scripts/debug-output/
@@ -60,3 +63,6 @@ deno.lock
 # (.env.* already ignores the real file; this is explicit and re-includes the example.)
 .env.giga-delivery.local
 !.env.giga-delivery.local.example
+
+# API availability scan reports — regenerated read-only analysis (not source)
+reports/inventory-availability/

@@ -57,6 +57,8 @@
     "inventory:workflow:dry": "DRY_RUN=1 tsx scripts/inventoryWorkflowRun.ts",
     "inventory:workflow:run": "tsx scripts/inventoryWorkflowRun.ts",
     "inventory:reco": "tsx scripts/inventoryActionRecommendations.ts",
+    "inventory:published:scan": "tsx scripts/scanPublishedAvailability.ts",
+    "test:open-api-availability": "tsx src/__tests__/openApiAvailability.test.ts",
     "inventory:action:dry": "tsx scripts/inventoryActionApply.ts",
     "test:inventory-workflow": "tsx src/__tests__/inventoryWorkflowRunner.test.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",

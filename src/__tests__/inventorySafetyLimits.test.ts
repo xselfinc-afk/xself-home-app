@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import {
   INVENTORY_AUTOMATION_DEFAULTS, applyInventoryConfigRow,
-  evaluateSourceScanAllowed, evaluateDelistBatchAllowed,
+  evaluateSourceScanAllowed, evaluateDelistBatchAllowed, evaluateFailureRateAllowed,
   type InventoryAutomationConfig,
 } from '../services/inventoryAutomationConfig';
 
@@ -26,9 +26,32 @@ it('DEFAULTS ship all automation + catalog mutation DISABLED', () => {
   assert.equal(d.bulkChangeRequiresApproval, true);
   assert.equal(d.outOfStockConfirmations, 2);
   assert.equal(d.relistConfirmations, 2);
-  assert.equal(d.maxScanPerRun, 100);
+  // 500 covers the whole published catalogue (353) in one run without truncating it.
+  assert.equal(d.maxScanPerRun, 500);
   assert.equal(d.maxDelistPerRun, 5);
   assert.equal(d.maxDelistPercent, 5);
+  // Browser-free Open API scan — disabled by default like every other source.
+  assert.equal(d.apiScanEnabled, false);
+  assert.equal(d.maxFailurePercent, 20);
+});
+
+it('open_api is a first-class scan source, gated off by default', () => {
+  const d = { ...INVENTORY_AUTOMATION_DEFAULTS };
+  assert.deepEqual(evaluateSourceScanAllowed(d, 'open_api').blocks.sort(),
+    ['automation_disabled', 'source_disabled']);
+  const on = { ...d, automationEnabled: true, apiScanEnabled: true };
+  assert.equal(evaluateSourceScanAllowed(on, 'open_api').allowed, true);
+  // Enabling the API scan must not enable the browser sources.
+  assert.equal(evaluateSourceScanAllowed(on, 'pickup').allowed, false);
+  assert.equal(evaluateSourceScanAllowed(on, 'dropship').allowed, false);
+});
+
+it('failure-rate abort: a run that could not read the catalogue changes nothing', () => {
+  const d = { ...INVENTORY_AUTOMATION_DEFAULTS };
+  assert.equal(evaluateFailureRateAllowed(d, 0).allowed, true);
+  assert.equal(evaluateFailureRateAllowed(d, 20).allowed, true);   // at the limit
+  assert.equal(evaluateFailureRateAllowed(d, 20.01).allowed, false);
+  assert.deepEqual(evaluateFailureRateAllowed(d, 55).blocks, ['exceeds_max_failure_percent']);
 });
 
 it('config row parse: booleans + positive ints; junk ignored', () => {
