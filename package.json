@@ -58,6 +58,8 @@
     "inventory:workflow:run": "tsx scripts/inventoryWorkflowRun.ts",
     "inventory:reco": "tsx scripts/inventoryActionRecommendations.ts",
     "inventory:published:scan": "tsx scripts/scanPublishedAvailability.ts",
+    "inventory:scan:scheduler": "bash scripts/installAvailabilityScanScheduler.sh",
+    "test:availability-scheduler": "tsx src/__tests__/availabilityScheduler.test.ts",
     "test:open-api-availability": "tsx src/__tests__/openApiAvailability.test.ts",
     "inventory:action:dry": "tsx scripts/inventoryActionApply.ts",
     "test:inventory-workflow": "tsx src/__tests__/inventoryWorkflowRunner.test.ts",
