@@ -47,6 +47,7 @@
     "test:inventory-sync-cacheonly": "tsx src/__tests__/inventorySyncCacheOnly.test.ts",
     "test:inventory-sync-session": "tsx src/__tests__/inventorySyncSessionDetection.test.ts",
     "test:stage1-candidate": "tsx src/__tests__/stage1CandidateScore.test.ts",
+    "test:assortment-classifier": "tsx src/__tests__/assortmentClassifier.test.ts",
     "stage1:candidates:report": "tsx scripts/stage1CandidateReport.ts",
     "inventory:decisions:dry": "tsx scripts/inventoryDecisionDryRun.ts",
     "inventory:workflow:dry": "DRY_RUN=1 tsx scripts/inventoryWorkflowRun.ts",
