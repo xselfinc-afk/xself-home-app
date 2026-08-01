@@ -37,6 +37,8 @@ import { pathToFileURL } from 'node:url';
 import { fetchAllSavedItems, GigaSavedItemsError, ENDPOINT_PATH, SKU_FIELD } from './lib/gigaSavedItems';
 // Existing production classifier + validated crosswalk (reused as-is; NO parallel implementation).
 import { classifyCommerce, NEEDS_REVIEW } from '../src/utils/commerceTaxonomy';
+import { SAVED_ITEMS_TAXONOMY_FIRST_ENABLED, isTaxonomyFirstEnabled } from '../src/config/savedItemsAssortment';
+import { assortmentGate, LEGACY_JUNK_REASON, reviewClassificationFor } from '../src/services/savedItemsAssortmentGate';
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 // Saved-items fetch (creds, pagination, SKU extraction, dedupe, loud-fail) lives in the shared
@@ -50,6 +52,11 @@ const MAX_PAGES = maxPagesArg ? Math.max(1, parseInt(maxPagesArg.split('=')[1], 
 // Additive candidate-pipeline mode: emit candidate-focused reports IN ADDITION to the existing
 // latest-saved-plan.{json,md}. Without this flag, behavior is byte-for-byte the legacy behavior.
 const CANDIDATE_SCAN = argv.includes('--candidate-scan');
+// Taxonomy-first assortment gate. Default comes from src/config/savedItemsAssortment.ts (false);
+// --taxonomy-first forces it on for a single run without touching the shipped default.
+const TAXONOMY_FIRST = isTaxonomyFirstEnabled(argv.includes('--taxonomy-first') ? true : undefined);
+// Read-only assortment comparison: no supplier call, no write of the production plan artifact.
+const COMPARE_ASSORTMENT = argv.includes('--compare-assortment');
 
 const ENRICH_BATCH = 200;       // detailInfo/price accept up to 200 SKUs per call
 const PAGE_DELAY_MS = 400;      // be polite to the supplier API
@@ -59,7 +66,10 @@ const REPORT_JSON = path.join(REPORT_DIR, 'latest-saved-plan.json');
 const REPORT_MD = path.join(REPORT_DIR, 'latest-saved-plan.md');
 
 // Hard-junk categories that cannot onboard as commercial indoor furniture (mirrors planner).
-const HARD_JUNK = /\b(pet|dog|cat|kitten|puppy|fish\s*tank|aquarium|litter|kennel|crate|kid|kids|toy|toddler|nursery|bunk|murphy|crib|playpen|patio|outdoor|garden|gazebo|pergola|trampoline|trash|garbage|luggage|suitcase|bean\s?bag)\b/i;
+// The assortment gate (src/services/savedItemsAssortmentGate.ts) holds a replica of this literal;
+// it is exported so the test suite can assert the two are identical by comparing the RegExp objects
+// rather than by scraping source text.
+export const HARD_JUNK = /\b(pet|dog|cat|kitten|puppy|fish\s*tank|aquarium|litter|kennel|crate|kid|kids|toy|toddler|nursery|bunk|murphy|crib|playpen|patio|outdoor|garden|gazebo|pergola|trampoline|trash|garbage|luggage|suitcase|bean\s?bag)\b/i;
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 const rel = (p: string) => path.relative(process.cwd(), p);
@@ -120,7 +130,11 @@ export function computeHeadline(c: CandidateShape): string {
   return 'ready';                                           // 7
 }
 
-type Classification = 'already_published' | 'already_imported' | 'new_candidate' | 'blocked_or_invalid';
+// The three review values are emitted ONLY when the taxonomy-first flag is enabled. With the flag
+// off (the shipped default) the union is exercised exactly as before and the report is unchanged.
+type Classification =
+  | 'already_published' | 'already_imported' | 'new_candidate' | 'blocked_or_invalid'
+  | 'policy_review_outdoor' | 'policy_review_decor' | 'manual_review_required';
 
 type SkuReport = {
   sku: string;
@@ -141,7 +155,107 @@ function die(msg: string, extra?: Record<string, unknown>): never {
   process.exit(1);
 }
 
+/**
+ * READ-ONLY assortment comparison. Runs the legacy gate and the taxonomy-first gate over the last
+ * recorded plan artifact and prints the decision diff.
+ *
+ * Deliberately offline: it reads `reports/giga-auto-publish/latest-saved-plan.json` rather than
+ * calling the supplier, so it needs no session and cannot mutate supplier state. It writes nothing —
+ * not the plan artifact, not the database.
+ */
+export async function compareAssortment(): Promise<void> {
+  if (!fs.existsSync(REPORT_JSON)) {
+    die(`missing ${rel(REPORT_JSON)} — run the saved-items plan first`, {});
+  }
+  const plan = JSON.parse(fs.readFileSync(REPORT_JSON, 'utf8')) as {
+    run_id: string; timestamp: string;
+    items: Array<{
+      sku: string; title: string; classification: string; invalid_reasons?: string[];
+      in_supplier_products: boolean; in_standardized_products: boolean; in_sellable_products: boolean | null;
+    }>;
+  };
+
+  console.log(`GIGA_SAVED_ASSORTMENT_COMPARE`);
+  console.log(`plan_run=${plan.run_id}  plan_timestamp=${plan.timestamp}  items=${plan.items.length}`);
+  console.log(`flag_default=${SAVED_ITEMS_TAXONOMY_FIRST_ENABLED}  (compare mode does not change it)`);
+
+  const rescued: typeof plan.items = [];
+  const newlyExcluded: typeof plan.items = [];
+  const outdoor: typeof plan.items = [];
+  const decor: typeof plan.items = [];
+  const ambiguous: typeof plan.items = [];
+  const nonFurniture: typeof plan.items = [];
+  let gateApplies = 0, membershipAffected = 0, drift = 0;
+
+  for (const it of plan.items) {
+    // Membership precedence runs BEFORE the assortment gate in both modes, so a published or
+    // imported SKU never reaches it. Counted here rather than assumed: this is the number of
+    // members whose classification the flag could change, and it is 0 by construction.
+    const isMember = it.in_sellable_products === true || it.in_supplier_products || it.in_standardized_products;
+    if (isMember) {
+      if (it.classification !== 'already_published' && it.classification !== 'already_imported') {
+        membershipAffected++;
+      }
+      continue;
+    }
+    gateApplies++;
+
+    const legacy = assortmentGate({ title: it.title, taxonomyFirst: false });
+    const next = assortmentGate({ title: it.title, taxonomyFirst: true });
+
+    // The legacy replica must reproduce what production actually recorded.
+    const productionBlocked =
+      it.classification === 'blocked_or_invalid' && (it.invalid_reasons ?? []).includes(LEGACY_JUNK_REASON);
+    if (productionBlocked !== legacy.blocked) {
+      drift++;
+      console.log(`  DRIFT ${it.sku}: production=${productionBlocked} replica=${legacy.blocked}`);
+    }
+
+    switch (next.outcome) {
+      case 'policy_review_outdoor': outdoor.push(it); break;
+      case 'policy_review_decor': decor.push(it); break;
+      case 'manual_review_required': ambiguous.push(it); break;
+      case 'reject_non_furniture':
+        nonFurniture.push(it);
+        if (!legacy.blocked) newlyExcluded.push(it);
+        break;
+      case 'allow':
+        if (legacy.blocked) rescued.push(it);
+        break;
+    }
+  }
+
+  const list = (label: string, rows: typeof plan.items) => {
+    console.log(`\n${label} (${rows.length}):`);
+    for (const r of rows) console.log(`  ${r.sku.padEnd(22)} ${(r.title ?? '').slice(0, 78)}`);
+  };
+
+  list('RESCUED — would become candidates', rescued);
+  list('NEWLY EXCLUDED', newlyExcluded);
+  list('OUTDOOR — policy_review_outdoor', outdoor);
+  list('HOME DECOR — policy_review_decor', decor);
+  list('AMBIGUOUS — manual_review_required', ambiguous);
+  list('GENUINE NON-FURNITURE — rejected', nonFurniture);
+
+  console.log(`\nGIGA_SAVED_ASSORTMENT_COMPARE_SUMMARY`);
+  console.log(`gate_applies=${gateApplies}`);
+  console.log(`candidate_delta=${rescued.length - newlyExcluded.length}`);
+  console.log(`rescued=${rescued.length}`);
+  console.log(`newly_excluded=${newlyExcluded.length}`);
+  console.log(`outdoor_policy_review=${outdoor.length}`);
+  console.log(`decor_policy_review=${decor.length}`);
+  console.log(`ambiguous_manual_review=${ambiguous.length}`);
+  console.log(`non_furniture_rejected=${nonFurniture.length}`);
+  console.log(`published_or_imported_affected=${membershipAffected}`);
+  console.log(`legacy_replica_drift=${drift}`);
+  console.log(`database_writes=0`);
+  console.log(`report_files_written=0`);
+}
+
 export async function main(): Promise<void> {
+  // Read-only comparison short-circuits before any supplier or database work.
+  if (COMPARE_ASSORTMENT) return compareAssortment();
+
   const RUN_ID = crypto.randomUUID();
   const TIMESTAMP = new Date().toISOString();
   if (CANDIDATE_SCAN && NO_ENRICH) die('--candidate-scan requires detail/price enrichment; do not combine with --no-enrich');
@@ -258,9 +372,12 @@ export async function main(): Promise<void> {
     const hasPrice = enrichAttempted ? hasPriceRaw : null;
     const hasTitle = title.length > 0;
 
+    // Assortment gate. Flag OFF (shipped default) → the legacy HARD_JUNK expression, unchanged.
+    const gate = assortmentGate({ title, taxonomyFirst: TAXONOMY_FIRST });
+
     const invalid_reasons: string[] = [];
     if (!hasTitle) invalid_reasons.push('missing_title');
-    if (HARD_JUNK.test(title)) invalid_reasons.push('junk_category');
+    if (gate.blocked) invalid_reasons.push(gate.reason!);
     if (enrichAttempted) {
       if (hasImage === false) invalid_reasons.push('no_image');
       if (hasImage === null) invalid_reasons.push('image_unknown');
@@ -281,13 +398,19 @@ export async function main(): Promise<void> {
       // Not in our DB → candidate. A saved item is candidate-only; block if it fails basic validity.
       const hardInvalid =
         !hasTitle ||
-        HARD_JUNK.test(title) ||
+        gate.blocked ||
         hasImage === false ||
         hasPrice === false ||
         (hasPrice === true && !pricePositive) ||
         // conservative: if we tried to enrich but couldn't confirm image/price, do not call it safe
         (enrichAttempted && (hasImage === null || hasPrice === null));
-      classification = hardInvalid ? 'blocked_or_invalid' : 'new_candidate';
+      // Review outcomes are held for a Founder decision rather than dropped — but only after the
+      // image/price/enrichment gates have had their say, so a review outcome can never smuggle a
+      // product past a safety check it would otherwise have failed.
+      const review = TAXONOMY_FIRST ? reviewClassificationFor(gate.outcome) : null;
+      classification = hardInvalid
+        ? 'blocked_or_invalid'
+        : (review as Classification | null) ?? 'new_candidate';
     }
 
     return {

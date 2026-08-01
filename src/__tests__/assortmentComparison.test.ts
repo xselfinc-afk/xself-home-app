@@ -42,25 +42,31 @@ function main(): void {
   it('1. the legacy replica is character-identical to BOTH production literals', () => {
     const expected = String(LEGACY_HARD_JUNK);
     for (const f of [PLAN_SAVED, PLAN_PUBLISH]) {
-      const m = read(f).match(/^const HARD_JUNK = (.+);$/m);
+      const m = read(f).match(/^(?:export )?const HARD_JUNK = (.+);$/m);
       assert.ok(m, `no HARD_JUNK literal found in ${f}`);
       assert.equal(m![1], expected, `HARD_JUNK drifted in ${f}`);
     }
   });
 
-  it('2. production plan scripts do NOT import the classifier or the comparison', () => {
-    for (const f of [PLAN_SAVED, PLAN_PUBLISH]) {
-      const src = read(f);
-      assert.ok(!/assortmentClassifier/.test(src), `${f} must not import assortmentClassifier yet`);
-      assert.ok(!/assortmentComparison/.test(src), `${f} must not import assortmentComparison`);
-    }
+  it('2. auto-publish stays clean; saved-items routes through the DEFAULT-OFF gate', () => {
+    const pub = read(PLAN_PUBLISH);
+    assert.ok(!/assortmentClassifier|assortmentComparison|savedItemsAssortment/.test(pub),
+      'planGigaAutoPublish must not import the new assortment code');
+
+    const saved = read(PLAN_SAVED);
+    assert.ok(!/assortmentComparison/.test(saved), 'the comparison module is tooling, not production');
+    // The classifier is reached only through the gate, and the gate ships disabled.
+    assert.match(saved, /from '\.\.\/src\/services\/savedItemsAssortmentGate'/);
+    assert.match(read('src/config/savedItemsAssortment.ts'), /SAVED_ITEMS_TAXONOMY_FIRST_ENABLED = false;/);
   });
 
-  it('3. the production junk gate is still applied unconditionally in planGigaSavedItems', () => {
+  it('3. the assortment gate is applied at both original call sites, default OFF', () => {
     const src = read(PLAN_SAVED);
-    // Both call sites intact: the invalid_reasons tag and the hardInvalid gate.
-    assert.ok(/invalid_reasons\.push\('junk_category'\)/.test(src), 'junk_category reason removed');
-    assert.ok(/HARD_JUNK\.test\(title\)/.test(src), 'hardInvalid junk term removed');
+    // Call site 1: the invalid_reasons tag. Call site 2: the hardInvalid expression.
+    assert.match(src, /invalid_reasons\.push\(gate\.reason!\)/);
+    assert.match(src, /const hardInvalid =[\s\S]{0,200}gate\.blocked/);
+    // The legacy reason string is still what a disabled gate emits.
+    assert.match(read('src/services/savedItemsAssortmentGate.ts'), /LEGACY_JUNK_REASON = 'junk_category'/);
     // Membership precedence still short-circuits before the gate.
     assert.ok(/already_published/.test(src) && /already_imported/.test(src), 'membership precedence changed');
   });
