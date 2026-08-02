@@ -63,6 +63,7 @@
     "test:open-api-availability": "tsx src/__tests__/openApiAvailability.test.ts",
     "test:availability-persistence": "tsx src/__tests__/availabilityPersistence.test.ts",
     "test:confirmation-interval": "tsx src/__tests__/confirmationInterval.test.ts",
+    "test:migration-consistency": "tsx src/__tests__/migrationConsistency.test.ts",
     "inventory:action:dry": "tsx scripts/inventoryActionApply.ts",
     "test:inventory-workflow": "tsx src/__tests__/inventoryWorkflowRunner.test.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",
