@@ -22,7 +22,7 @@ export type InventoryAutomationConfig = {
   maxDelistPerRun: number;             // absolute cap
   maxDelistPercent: number;            // percentage cap
   maxFailurePercent: number;           // abort a run whose failure rate exceeds this
-  minConfirmationIntervalHours: number;// two confirmations must be separate observation cycles
+  minConfirmationIntervalHours: number;// two confirmations must be separate observation cycles (48h cadence -> 36h)
   bulkChangeRequiresApproval: boolean;
   caPriorityEnabled: boolean;          // browse CA-priority consumption (default off)
   checkoutRevalidationEnabled: boolean;// checkout stale/unknown gate (default off)
@@ -41,7 +41,7 @@ export const INVENTORY_AUTOMATION_DEFAULTS: InventoryAutomationConfig = {
   maxDelistPerRun: 5,
   maxDelistPercent: 5,
   maxFailurePercent: 20,
-  minConfirmationIntervalHours: 48,
+  minConfirmationIntervalHours: 36,
   bulkChangeRequiresApproval: true,
   caPriorityEnabled: false,
   checkoutRevalidationEnabled: false,

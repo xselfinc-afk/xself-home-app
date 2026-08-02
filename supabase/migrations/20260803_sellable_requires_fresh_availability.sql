@@ -16,9 +16,9 @@
 -- stays visible forever on inventory evidence of any age. This adds the missing requirement:
 -- recent CONFIRMED supplier availability.
 --
--- The 96-hour window (not 72) is deliberate. The scan runs every 3 days (72h), so a 72h cutoff
--- would hide the catalogue on any scheduler delay — indistinguishable, from the view's
--- perspective, from a genuine supplier outage. 96h absorbs one missed cycle; alerting fires at 72h.
+-- The 72-hour grace window (not 48) is deliberate. The scan runs every 48h, so a 48h cutoff would
+-- hide the catalogue on any scheduler delay — indistinguishable, from the view's perspective, from
+-- a genuine supplier outage. 72h absorbs one missed cycle; alerting fires at 48h.
 --
 -- FAILURE SAFETY
 -- --------------
@@ -50,13 +50,13 @@ WHERE sp.normalization_status = 'done'::text
   AND sp.selling_price > 0::numeric
   -- NEW: the supplier must currently consider the SKU available …
   AND la.available IS TRUE
-  -- … and that answer must be recent enough to trust (96h grace, see header).
+  -- … and that answer must be recent enough to trust (72h grace, see header).
   AND la.within_grace IS TRUE;
 
 COMMENT ON VIEW public.sellable_products IS
   'Customer-visible catalogue. A product appears only when published, normalized, priced, imaged, '
   'flagged in_stock with positive qty, AND carrying a confirmed Open API availability answer within '
-  'the 96-hour grace window. API failures never remove a product — latest_product_availability '
+  'the 72-hour grace window. API failures never remove a product — latest_product_availability '
   'ignores failure rows, so the last confirmed answer stands.';
 
 -- ============================================================================

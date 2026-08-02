@@ -1,7 +1,7 @@
 #!/bin/bash
 # Scheduled runner for the API-ONLY availability scan.
 #
-# Invoked by launchd every 3 days. Loads credentials from the existing env files, runs the scan in
+# Invoked by launchd every 48 hours. Loads credentials from the existing env files, runs the scan in
 # DRY-RUN mode, and exits. It NEVER launches a browser: no Chrome, Chromium, Playwright, puppeteer,
 # or browser session file is referenced anywhere in this path.
 #

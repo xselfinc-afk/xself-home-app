@@ -4,7 +4,7 @@
  * WHY THIS EXISTS
  * ---------------
  * Two out-of-stock confirmations are supposed to represent two genuinely separate observation
- * cycles three days apart. Without a timing guard they only represent "the command ran twice".
+ * cycles 48 hours apart. Without a timing guard they only represent "the command ran twice".
  * A bounded test re-ran the same unavailable SKUs within seconds and drove
  * consecutive_out_of_stock 1 → 2 and pending_out_of_stock → eligible_for_delist. A retry, a
  * duplicate scheduler invocation, or an operator running the command twice would have made a
@@ -31,8 +31,15 @@ import {
   type WorkflowSnapshot,
 } from './inventoryStateMachine';
 
-/** Safe default: 48h. The scan runs every 72h, so a real cycle always clears it with margin. */
-export const DEFAULT_MIN_CONFIRMATION_INTERVAL_HOURS = 48;
+/**
+ * Safe default: 36h, sized against the 48-hour scan cadence.
+ *
+ * It must sit BELOW the cadence so ordinary scheduler jitter — a late wake from sleep, a run that
+ * starts a few minutes behind — cannot stop the next legitimate scan from counting. It must sit far
+ * ENOUGH above zero that an immediate retry or a same-day duplicate run stays inert. 36h leaves 12h
+ * of slack on a 48h cycle in both directions.
+ */
+export const DEFAULT_MIN_CONFIRMATION_INTERVAL_HOURS = 36;
 
 export type ConfirmationOutcome =
   /** A confirmed observation that genuinely counted; counters/state may move. */

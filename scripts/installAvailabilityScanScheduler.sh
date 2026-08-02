@@ -1,6 +1,6 @@
 #!/bin/bash
 # Availability-scan scheduler — installs a launchd agent that runs the API-ONLY availability scan
-# once every 3 days (259200 seconds).
+# once every 48 hours (172800 seconds).
 #
 # NO BROWSER. The scan calls the credential-signed GIGA Open API only; it never launches Chrome,
 # Chromium or Playwright and never reads a browser session file. Runs independently of XOne.
@@ -25,7 +25,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="$REPO/scripts/runAvailabilityScan.sh"
 LOG_DIR="$REPO/logs"
 REPORT="$REPO/reports/inventory-availability/latest-availability-scan.json"
-INTERVAL=259200   # exactly 3 days
+INTERVAL=172800   # exactly 48 hours
 
 cmd="${1:-status}"
 
@@ -43,7 +43,7 @@ write_plist() {
     <string>${RUNNER}</string>
   </array>
   <key>WorkingDirectory</key><string>${REPO}</string>
-  <!-- Every 3 days. StartInterval is the established safe pattern in this repo: it survives
+  <!-- Every 48 hours. StartInterval is the established safe pattern in this repo: it survives
        sleep/wake and does not depend on the machine being awake at an exact calendar time. -->
   <key>StartInterval</key><integer>${INTERVAL}</integer>
   <key>RunAtLoad</key><false/>
@@ -62,7 +62,7 @@ case "$cmd" in
     launchctl unload "$PLIST" 2>/dev/null || true
     launchctl load "$PLIST"
     echo "installed  label=${LABEL}"
-    echo "interval   ${INTERVAL}s (3 days)"
+    echo "interval   ${INTERVAL}s (48 hours)"
     echo "plist      ${PLIST}"
     echo "mode       DRY-RUN (no catalogue writes; automation switches default OFF)"
     ;;
@@ -107,7 +107,7 @@ for k,v in r['gates'].items(): print('  gate %-12s allowed=%s blocks=%s' % (k, v
     else
       echo "loaded     no"
     fi
-    echo "interval   ${INTERVAL}s (3 days)"
+    echo "interval   ${INTERVAL}s (48 hours)"
     if [ -f "$REPORT" ]; then
       echo "last run   $(/usr/bin/python3 -c "import json;print(json.load(open('${REPORT}'))['finished_at'])" 2>/dev/null || echo unknown)"
     else

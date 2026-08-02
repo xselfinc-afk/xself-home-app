@@ -106,13 +106,13 @@ SELECT
   checked_at,
   last_confirmed_available_at,
   last_confirmed_unavailable_at,
-  (checked_at > now() - interval '72 hours') AS is_fresh,
-  (checked_at > now() - interval '96 hours') AS within_grace
+  (checked_at > now() - interval '48 hours') AS is_fresh,
+  (checked_at > now() - interval '72 hours') AS within_grace
 FROM public.product_availability_current;
 
 COMMENT ON VIEW public.latest_product_availability IS
-  'Confirmed availability per SKU with freshness flags. 72h = fresh (the scan runs every 3 days), '
-  '96h = grace window absorbing scheduler delay.';
+  'Confirmed availability per SKU with freshness flags. 48h = fresh (the scan cadence), '
+  '72h = grace window absorbing one missed cycle.';
 
 -- ── 4. RLS: service-role only. The app never reads these directly. ───────────────────────────
 ALTER TABLE public.product_availability_checks  ENABLE ROW LEVEL SECURITY;

@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { INVENTORY_AUTOMATION_DEFAULTS } from '../services/inventoryAutomationConfig';
 
 let passed = 0;
 function it(name: string, fn: () => void): void { fn(); passed++; console.log(`  ✓ ${name}`); }
@@ -24,6 +25,7 @@ const ADAPTER = 'src/services/openApiAvailability.ts';
 
 /** Every file that makes up the scheduled API-only path. */
 const API_ONLY_PATH = [INSTALLER, RUNNER, SCANNER, ADAPTER];
+const MIN_CONFIRMATION_HOURS = INVENTORY_AUTOMATION_DEFAULTS.minConfirmationIntervalHours;
 
 /**
  * Strip comments so the ban-list checks CODE, not prose. These files legitimately *document* that
@@ -38,12 +40,32 @@ function codeOnly(src: string): string {
 }
 
 function main(): void {
-  it('1. the interval is exactly 259200 seconds (3 days)', () => {
+  it('1. the interval is exactly 172800 seconds (48 hours)', () => {
     const src = read(INSTALLER);
-    assert.match(src, /INTERVAL=259200/);
+    assert.match(src, /INTERVAL=172800/);
     assert.match(src, /<key>StartInterval<\/key><integer>\$\{INTERVAL\}<\/integer>/);
-    // 3 days, stated in seconds so it cannot drift.
-    assert.equal(259200, 3 * 24 * 60 * 60);
+    // 48 hours, stated in seconds so it cannot drift.
+    assert.equal(172800, 48 * 60 * 60);
+    // The old 3-day cadence must be gone everywhere in the scheduled path.
+    for (const f of [INSTALLER, RUNNER]) {
+      assert.ok(!read(f).includes('259200'), `${f} still references the 3-day interval`);
+      assert.ok(!/3 days|three-day/i.test(read(f)), `${f} still says 3 days`);
+    }
+  });
+
+  it('1b. installer and status output state 48 hours', () => {
+    const src = read(INSTALLER);
+    // Both the install confirmation and the status readout must report the real cadence.
+    const matches = src.match(/echo "interval   \$\{INTERVAL\}s \(48 hours\)"/g) ?? [];
+    assert.equal(matches.length, 2, 'both install and status must print the 48-hour cadence');
+    assert.match(src, /once every 48 hours \(172800 seconds\)/);
+  });
+
+  it('1c. the confirmation interval sits below the scan cadence', () => {
+    // 36h guard against a 48h cadence: a legitimate next scan always counts, an immediate retry
+    // never does. If the guard ever met or exceeded the cadence, real cycles would stop counting.
+    assert.ok(MIN_CONFIRMATION_HOURS < 48, 'the guard must be below the 48h cadence');
+    assert.equal(MIN_CONFIRMATION_HOURS, 36);
   });
 
   it('2. NO browser anywhere in the scheduled path', () => {

@@ -37,9 +37,11 @@ const inStock = (prior: WorkflowSnapshot, last: string | null, now: string) =>
   decideWithInterval({ prior, status: 'confirmed_in_stock_out_of_state', lastConfirmedAtIso: last, nowIso: now });
 
 function main(): void {
-  it('1. the default interval is 48h', () => {
-    assert.equal(DEFAULT_MIN_CONFIRMATION_INTERVAL_HOURS, 48);
-    assert.equal(INVENTORY_AUTOMATION_DEFAULTS.minConfirmationIntervalHours, 48);
+  it('1. the default interval is 36h, below the 48h scan cadence', () => {
+    assert.equal(DEFAULT_MIN_CONFIRMATION_INTERVAL_HOURS, 36);
+    assert.equal(INVENTORY_AUTOMATION_DEFAULTS.minConfirmationIntervalHours, 36);
+    // Must stay under the cadence, or ordinary scheduler jitter would stop real cycles counting.
+    assert.ok(DEFAULT_MIN_CONFIRMATION_INTERVAL_HOURS < 48);
   });
 
   // ── Delist path ─────────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ function main(): void {
 
   it('4. a DIFFERENT run before the interval still does not advance', () => {
     // A distinct run_id is not evidence of a new observation cycle.
-    for (const h of [0.001, 1, 12, 24, 47.9]) {
+    for (const h of [0.001, 1, 12, 24, 35.9]) {
       const d = oos({ state: 'pending_out_of_stock', consecutiveOutOfStock: 1, consecutiveInStock: 0 }, T(0), T(h));
       assert.equal(d.outcome, 'duplicate_or_too_soon', `${h}h should be too soon`);
       assert.equal(d.next.consecutiveOutOfStock, 1);
@@ -73,7 +75,8 @@ function main(): void {
   });
 
   it('5. an observation AFTER the interval advances to eligible_for_delist', () => {
-    for (const h of [48, 72, 100]) {
+    // 36h = the guard, 48h = the normal scheduled cadence, 47h = an early-but-legitimate scan.
+    for (const h of [36, 47, 48, 72]) {
       const d = oos({ state: 'pending_out_of_stock', consecutiveOutOfStock: 1, consecutiveInStock: 0 }, T(0), T(h));
       assert.equal(d.outcome, 'advanced', `${h}h should count`);
       assert.equal(d.next.consecutiveOutOfStock, 2);
@@ -83,11 +86,11 @@ function main(): void {
   });
 
   it('6. a scheduler retry cannot create a second strike', () => {
-    // Real 3-day cadence, but the agent fires twice in the same minute.
+    // Real 48-hour cadence, but the agent fires twice in the same minute.
     const cycle1 = oos(PUBLISHED, null, T(0));
     const dup = oos(cycle1.next, T(0), T(0.01));
     assert.equal(dup.next.consecutiveOutOfStock, 1);
-    const cycle2 = oos(dup.next, T(0), T(72));            // next genuine cycle
+    const cycle2 = oos(dup.next, T(0), T(48));            // next genuine 48h cycle
     assert.equal(cycle2.next.consecutiveOutOfStock, 2);
     assert.equal(cycle2.next.state, 'eligible_for_delist');
   });
@@ -102,7 +105,7 @@ function main(): void {
 
   it('8. an immediate available retry stays relist_pending', () => {
     const first = inStock(DELISTED, null, T(0));
-    const retry = inStock(first.next, T(0), T(1));
+    const retry = inStock(first.next, T(0), T(24));   // 24h retry — still inside the 36h guard
     assert.equal(retry.outcome, 'duplicate_or_too_soon');
     assert.equal(retry.next.state, 'relist_pending');
     assert.notEqual(retry.next.state, 'eligible_for_relist');
@@ -110,7 +113,7 @@ function main(): void {
 
   it('9. available after the interval → eligible_for_relist', () => {
     const first = inStock(DELISTED, null, T(0));
-    const second = inStock(first.next, T(0), T(72));
+    const second = inStock(first.next, T(0), T(48));
     assert.equal(second.outcome, 'advanced');
     assert.equal(second.next.state, 'eligible_for_relist');
   });
@@ -145,8 +148,10 @@ function main(): void {
     // First-ever confirmation always counts; failing open is safe because the FIRST strike is
     // never destructive.
     assert.equal(mayAdvance(null, T(0), 48), true);
-    assert.equal(mayAdvance(T(0), T(47.9), 48), false);
-    assert.equal(mayAdvance(T(0), T(48), 48), true);
+    assert.equal(mayAdvance(T(0), T(35.9), 36), false);
+    assert.equal(mayAdvance(T(0), T(36), 36), true);
+    // A normal 48h scheduled scan always clears a 36h guard.
+    assert.equal(mayAdvance(T(0), T(48), 36), true);
   });
 
   it('13. a custom interval is honoured', () => {
