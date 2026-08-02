@@ -26,6 +26,8 @@ export type InventoryAutomationConfig = {
   bulkChangeRequiresApproval: boolean;
   caPriorityEnabled: boolean;          // browse CA-priority consumption (default off)
   checkoutRevalidationEnabled: boolean;// checkout stale/unknown gate (default off)
+  visibilityEnforcementEnabled: boolean;// App visibility requires fresh availability (default off)
+  minCoveragePercent: number;          // coverage required before visibility may be enforced
 };
 
 export const INVENTORY_AUTOMATION_DEFAULTS: InventoryAutomationConfig = {
@@ -45,6 +47,8 @@ export const INVENTORY_AUTOMATION_DEFAULTS: InventoryAutomationConfig = {
   bulkChangeRequiresApproval: true,
   caPriorityEnabled: false,
   checkoutRevalidationEnabled: false,
+  visibilityEnforcementEnabled: false,
+  minCoveragePercent: 95,
 };
 
 const KEY_MAP: Record<string, keyof InventoryAutomationConfig> = {
@@ -64,6 +68,8 @@ const KEY_MAP: Record<string, keyof InventoryAutomationConfig> = {
   inventory_bulk_change_requires_approval: 'bulkChangeRequiresApproval',
   inventory_ca_priority_enabled: 'caPriorityEnabled',
   inventory_checkout_revalidation_enabled: 'checkoutRevalidationEnabled',
+  inventory_visibility_enforcement_enabled: 'visibilityEnforcementEnabled',
+  inventory_min_coverage_percent: 'minCoveragePercent',
 };
 
 const BOOL_FIELDS: ReadonlySet<keyof InventoryAutomationConfig> = new Set([

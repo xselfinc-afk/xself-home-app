@@ -176,12 +176,14 @@ async function main(): Promise<void> {
     const priorState = new Map<string, WorkflowSnapshot>();
     /** `last_observed_at` per SKU — when a confirmation last COUNTED (see confirmationInterval.ts). */
     const priorObserved = new Map<string, string | null>();
+    /** version + last_observation_key, for optimistic concurrency and duplicate suppression. */
+    const priorMeta = new Map<string, { version: number; key: string | null }>();
     for (const c of chunk(targets, 200)) {
       // Column is `workflow_state`, not `state`. The error MUST be inspected: a silently failed
       // read leaves priorState empty, which pins the consecutive counters at 1 forever and means
       // the second strike — and therefore delist eligibility — can never be reached.
       const { data, error } = await sb.from('inventory_workflow_states')
-        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at')
+        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at,last_observation_key,version')
         .in('supplier_product_id', c);
       if (error) die(1, `inventory_workflow_states read failed: ${error.message}`);
       for (const r of data ?? []) {
@@ -191,6 +193,7 @@ async function main(): Promise<void> {
           consecutiveInStock: r.consecutive_in_stock ?? 0,
         });
         priorObserved.set(r.supplier_product_id, r.last_observed_at ?? null);
+        priorMeta.set(r.supplier_product_id, { version: r.version ?? 1, key: r.last_observation_key ?? null });
       }
     }
 
@@ -361,7 +364,7 @@ async function main(): Promise<void> {
       // The minimum-confirmation-interval guard lives here: a confirmed observation advances a
       // counter only when it is a genuinely separate observation cycle. `last_observed_at` moves
       // ONLY when the observation counted, so it means "when a confirmation last counted".
-      let tooSoon = 0;
+      let tooSoon = 0, alreadyProcessed = 0, versionConflicts = 0;
       for (const r of results) {
         const prior = priorState.get(r.sku) ?? { state: 'published_in_stock' as InventoryWorkflowState, consecutiveOutOfStock: 0, consecutiveInStock: 0 };
         const priorObservedAt = priorObserved.get(r.sku) ?? null;
@@ -377,6 +380,12 @@ async function main(): Promise<void> {
         if (d.outcome === 'no_confirmation') continue;              // failures write nothing
         if (d.outcome === 'duplicate_or_too_soon') { tooSoon++; continue; }
 
+        const meta = priorMeta.get(r.sku);
+        const observationKey = `${r.sku}|${checkedAt}|${r.status}`;
+
+        // Idempotency: this exact observation was already committed — write nothing.
+        if (meta && meta.key === observationKey) { alreadyProcessed++; continue; }
+
         const row = {
           supplier_product_id: r.sku,
           workflow_state: d.next.state,
@@ -384,14 +393,28 @@ async function main(): Promise<void> {
           consecutive_in_stock: d.next.consecutiveInStock,
           last_observed_inventory_status: r.status,
           last_observed_at: checkedAt,          // advanced ONLY because this observation counted
-          last_observation_key: `${r.sku}|${checkedAt}|${r.status}`,
+          last_observation_key: observationKey,
           transition_reason: d.reason,
           updated_at: checkedAt,
         };
-        const { data, error } = await sb.from('inventory_workflow_states')
-          .upsert(row, { onConflict: 'supplier_product_id' }).select('supplier_product_id');
-        if (error) { writeFailed++; writeErrors.push(`workflow ${r.sku}: ${error.message}`); continue; }
-        workflowWritten += (data ?? []).length;
+
+        if (meta) {
+          // Optimistic concurrency: a concurrent run that already advanced this row bumps `version`,
+          // so this update matches zero rows and we skip rather than clobbering its counters.
+          const { data, error } = await sb.from('inventory_workflow_states')
+            .update({ ...row, version: meta.version + 1 })
+            .eq('supplier_product_id', r.sku)
+            .eq('version', meta.version)
+            .select('supplier_product_id');
+          if (error) { writeFailed++; writeErrors.push(`workflow ${r.sku}: ${error.message}`); continue; }
+          if ((data ?? []).length === 0) { versionConflicts++; continue; }
+          workflowWritten += 1;
+        } else {
+          const { data, error } = await sb.from('inventory_workflow_states')
+            .insert({ ...row, version: 1 }).select('supplier_product_id');
+          if (error) { writeFailed++; writeErrors.push(`workflow ${r.sku}: ${error.message}`); continue; }
+          workflowWritten += (data ?? []).length;
+        }
       }
 
       console.log('\nLIVE_WRITE_SUMMARY');
@@ -401,6 +424,8 @@ async function main(): Promise<void> {
       console.log(`failure_rows_annotated=${failureAnnotated}`);
       console.log(`workflow_rows_written=${workflowWritten}`);
       console.log(`skipped_too_soon_min_interval=${tooSoon}`);
+      console.log(`skipped_already_processed=${alreadyProcessed}`);
+      console.log(`skipped_version_conflict=${versionConflicts}`);
       console.log(`min_confirmation_interval_hours=${cfg.minConfirmationIntervalHours}`);
       console.log(`skipped_failures_no_prior_row=${pt.failures - failureAnnotated}`);
       console.log(`write_failed=${writeFailed}`);

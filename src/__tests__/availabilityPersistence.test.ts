@@ -239,7 +239,7 @@ function main(): void {
     // Regression: selecting a non-existent `state` column returned PGRST 42703, and destructuring
     // only { data } swallowed it. priorState stayed empty, pinning the consecutive counters at 1 —
     // so the second strike, and therefore delist eligibility, could never be reached.
-    assert.match(src, /select\('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at'\)/);
+    assert.match(src, /select\('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at,last_observation_key,version'\)/);
     assert.ok(!/select\('supplier_product_id,state,/.test(src), 'the column is workflow_state, not state');
     assert.match(src, /if \(error\) die\(1, `inventory_workflow_states read failed/);
   });
@@ -252,6 +252,18 @@ function main(): void {
       const destructured = (m[1] ?? m[2] ?? '');
       assert.ok(destructured.includes('error'), `a read destructures { data${destructured}} without error`);
     }
+  });
+
+  it('17d. the workflow write is version-guarded and idempotency-checked', () => {
+    const src = read(SCANNER);
+    const live = src.slice(src.indexOf('if (LIVE) {'));
+    // Idempotency: an already-committed observation writes nothing.
+    assert.match(live, /if \(meta && meta\.key === observationKey\) \{ alreadyProcessed\+\+; continue; \}/);
+    // Optimistic concurrency: the update matches on the version we read.
+    assert.match(live, /\.eq\('version', meta\.version\)/);
+    assert.match(live, /if \(\(data \?\? \[\]\)\.length === 0\) \{ versionConflicts\+\+; continue; \}/);
+    // A brand-new row inserts at version 1 rather than blind-upserting.
+    assert.match(live, /\.insert\(\{ \.\.\.row, version: 1 \}\)/);
   });
 
   it('18. delist and relist are NOT performed in this phase', () => {

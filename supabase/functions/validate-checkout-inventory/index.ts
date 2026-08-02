@@ -7,6 +7,20 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '
 
 // Reject inventory data older than this
 const STALE_THRESHOLD_HOURS = 24;
+
+/**
+ * Open API availability as the primary gate. DEFAULT OFF — while false this function behaves
+ * exactly as before, so deploying it changes nothing until the secret is set.
+ *
+ * Why availability leads: `inventory_cache` carries warehouse quantities from the browser-based
+ * sync, which has been failing; every published product currently has evidence older than 24h, so
+ * the legacy path fails EVERY cart line with reason 'stale'. Open API availability is browser-free,
+ * refreshed every 48h, and answers the only question checkout must ask — will the supplier sell it.
+ * Warehouse quantity remains authoritative for HOW MANY and WHICH warehouse.
+ */
+const AVAILABILITY_GATE_ENABLED = Deno.env.get('INVENTORY_CHECKOUT_AVAILABILITY_ENABLED') === 'true';
+/** Grace window for availability evidence — matches sellable_products and the 48h scan cadence. */
+const AVAILABILITY_GRACE_HOURS = 72;
 const MAX_CART_ITEMS = 20;
 const MAX_QTY_PER_ITEM = 99;
 const SKU_PATTERN = /^[A-Za-z0-9_-]{1,60}$/;
@@ -27,7 +41,15 @@ interface CartItem {
   qty: number;
 }
 
-type FailureReason = 'out_of_stock' | 'stale' | 'unknown' | 'insufficient_qty';
+type FailureReason =
+  | 'out_of_stock'
+  | 'stale'
+  | 'unknown'
+  | 'insufficient_qty'
+  /** Supplier explicitly reports the SKU unavailable — a confirmed answer, not an absence. */
+  | 'unavailable'
+  /** We could not obtain trustworthy evidence. NOT a claim of zero stock; the caller should retry. */
+  | 'unconfirmed';
 
 interface FailureDetail {
   sku: string;
@@ -130,11 +152,62 @@ serve(async (req: Request) => {
       }
     }
 
+    // ── Query 3: Open API availability (primary gate when enabled) ───────────
+    // Only CONFIRMED answers live in this view, so a failed supplier read cannot appear here and
+    // cannot block a sale. Absence means "no confirmed answer", never "unavailable".
+    const availabilityMap = new Map<string, { available: boolean; fresh: boolean }>();
+    if (AVAILABILITY_GATE_ENABLED) {
+      const graceThreshold = new Date(
+        Date.now() - AVAILABILITY_GRACE_HOURS * 60 * 60 * 1000,
+      ).toISOString();
+      const { data: availRows, error: availError } = await supabase
+        .from('product_availability_current')
+        .select('supplier_product_id, available, checked_at')
+        .in('supplier_product_id', productIds);
+
+      if (availError) {
+        // Fail closed on an infrastructure error — but as 'unconfirmed', never as out_of_stock.
+        console.error('[validate-checkout-inventory] availability query failed:', availError.message);
+        return jsonResponse({
+          valid: false,
+          failures: items.map((i) => ({
+            sku: i.sku, productId: i.productId, reason: 'unconfirmed' as FailureReason, available: 0,
+          })),
+        });
+      }
+      for (const row of availRows ?? []) {
+        availabilityMap.set(row.supplier_product_id as string, {
+          available: row.available === true,
+          fresh: String(row.checked_at) >= graceThreshold,
+        });
+      }
+    }
+
     // ── Evaluate each cart item ───────────────────────────────────────────────
     const failures: FailureDetail[] = [];
 
     for (const item of items) {
       const available = stockMap.get(item.productId) ?? 0;
+
+      // Availability gate first: a fresh confirmed answer decides whether the line may proceed.
+      if (AVAILABILITY_GATE_ENABLED) {
+        const avail = availabilityMap.get(item.productId);
+        if (avail?.fresh) {
+          if (!avail.available) {
+            // Confirmed unavailable — block THIS line only. Other lines are evaluated normally.
+            failures.push({ sku: item.sku, productId: item.productId, reason: 'unavailable', available: 0 });
+            continue;
+          }
+          // Confirmed available. Warehouse quantity still governs quantity, but its ABSENCE or
+          // staleness must not block the sale — the supplier has already confirmed it will sell.
+          if (stockMap.has(item.productId) && available < item.qty) {
+            failures.push({ sku: item.sku, productId: item.productId, reason: 'insufficient_qty', available });
+          }
+          continue;
+        }
+        // No fresh confirmed answer → fall through to the legacy warehouse path below, which
+        // fails closed as 'stale' / 'unknown'. Never treated as unavailable.
+      }
 
       if (!stockMap.has(item.productId)) {
         // No fresh data — distinguish stale from unknown

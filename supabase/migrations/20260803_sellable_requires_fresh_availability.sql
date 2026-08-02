@@ -26,6 +26,17 @@
 -- product disappear: the last confirmed answer keeps standing until it ages out of the grace window.
 -- Suppression is reversible the moment a good read lands; nothing is delisted by this view.
 -- ============================================================================
+--
+-- ⛔ SUPERSEDED BY 20260807_sellable_requires_fresh_availability_v2.sql — DO NOT APPLY.
+--    This version has NO coverage guard, so applying it would silently empty the storefront.
+--    The guard below makes that impossible; use 20260807 instead.
+-- ============================================================================
+
+DO $superseded$
+BEGIN
+  RAISE EXCEPTION
+    'Migration 20260803 is SUPERSEDED and must not be applied. Use 20260807_sellable_requires_fresh_availability_v2.sql, which refuses to apply below 95%% availability coverage.';
+END $superseded$;
 
 CREATE OR REPLACE VIEW public.sellable_products AS
 SELECT sp.*,

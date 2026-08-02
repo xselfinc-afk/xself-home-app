@@ -97,6 +97,33 @@ function main(): void {
     assert.match(src, /within_grace/);
   });
 
+  it('7b. the Step-2 migrations exist, are unapplied, and carry rollback', () => {
+    for (const f of ['20260805_publication_provenance.sql',
+                     '20260806_publish_from_availability.sql',
+                     '20260807_sellable_requires_fresh_availability_v2.sql']) {
+      const src = read(f);
+      assert.match(src, /ROLLBACK/, `${f} has no rollback section`);
+      assert.match(src, /NOT APPLIED|SUPERSEDED/, `${f} must be marked unapplied`);
+    }
+  });
+
+  it('7c. provenance is additive and never rewrites existing rows', () => {
+    const src = read('20260805_publication_provenance.sql');
+    assert.match(src, /ADD COLUMN IF NOT EXISTS delist_reason/);
+    // No UPDATE/DELETE against existing catalogue data.
+    const exec = src.split('\n').filter(l => !l.trim().startsWith('--')).join('\n');
+    assert.ok(!/UPDATE public\.standardized_products/.test(exec), 'must not rewrite catalogue rows');
+    assert.ok(!/DELETE/i.test(exec));
+  });
+
+  it('7d. the publication writer never redefines the warehouse authority', () => {
+    const src = read('20260806_publish_from_availability.sql');
+    assert.ok(!/CREATE OR REPLACE FUNCTION public\.refresh_product_inventory_status/.test(src),
+      'the shared warehouse authority must not be redefined');
+    assert.match(src, /CREATE OR REPLACE FUNCTION public\.set_publication_from_availability/);
+    assert.match(src, /product_availability_current/);
+  });
+
   it('8. migrations are ordered and uniquely dated', () => {
     const files = fs.readdirSync(MIG).filter(f => f.endsWith('.sql')).sort();
     const idx = (f: string) => files.indexOf(f);
