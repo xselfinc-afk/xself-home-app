@@ -86,13 +86,23 @@ function main(): void {
   it('8. enforcement is refused when it would remove more than the coverage gap explains', () => {
     const published = skus(100);
     const report = evaluateCoverage({ publishedSkus: published, evidence: fresh(published), nowIso: NOW, lastRunFailurePercent: 0 });
-    // Coverage is 100%, yet only 40 of 100 would remain — the evidence disagrees with the catalogue.
-    const bad = readyForVisibilityEnforcement(report, 100, 40);
+    // 60 removals with NO confirmed-unavailable answers to explain them → unsafe.
+    const bad = readyForVisibilityEnforcement(report, 100, 40, 0);
     assert.equal(bad.ready, false);
-    assert.ok(bad.blocks.includes('would_remove_more_than_uncovered'));
+    assert.ok(bad.blocks.includes('unexplained_removals_exceed_coverage_gap'));
     assert.equal(bad.wouldRemove, 60);
+    assert.equal(bad.unexplainedRemovals, 60);
+    // The SAME 60 removals are fine when the supplier confirmed all 60 unavailable — that is the
+    // feature working. An earlier guard blocked this, which would have made enforcement
+    // impossible whenever more than ~6% of the catalogue was genuinely out of stock.
+    const good = readyForVisibilityEnforcement(report, 100, 40, 60);
+    assert.equal(good.ready, true);
+    assert.equal(good.explainedByUnavailable, 60);
+    assert.equal(good.unexplainedRemovals, 0);
+    // Partially explained: 40 confirmed unavailable, 20 unexplained → still unsafe.
+    assert.equal(readyForVisibilityEnforcement(report, 100, 40, 40).ready, false);
     // A small, explainable reduction is fine.
-    assert.equal(readyForVisibilityEnforcement(report, 100, 98).ready, true);
+    assert.equal(readyForVisibilityEnforcement(report, 100, 98, 2).ready, true);
   });
 
   it('9. an empty catalogue is never "ready"', () => {

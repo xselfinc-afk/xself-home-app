@@ -99,19 +99,34 @@ export function evaluateCoverage(input: CoverageInput): CoverageReport {
 /**
  * Would applying visibility enforcement right now be safe?
  *
- * Deliberately stricter than `evaluateCoverage`: it also refuses when enforcement would remove more
- * of the catalogue than the coverage shortfall can explain — a blunt guard against enabling on a
- * scan that technically passed but disagrees wildly with the current storefront.
+ * The distinction that matters: hiding a product because the supplier CONFIRMED it unavailable is
+ * the entire point of the feature, however many there are. Hiding one because we have no evidence
+ * is a coverage failure. Only the second kind is dangerous, so only the second kind is counted.
+ *
+ * (An earlier version compared total removals against the coverage shortfall. That blocked
+ * enforcement whenever more than ~6% of the catalogue was genuinely out of stock — i.e. in the
+ * normal case the feature exists to handle.)
  */
 export function readyForVisibilityEnforcement(
   report: CoverageReport,
   currentlyVisible: number,
   wouldRemainVisible: number,
-): { ready: boolean; blocks: string[]; wouldRemove: number; wouldRemovePercent: number } {
+  /** Products removed because the supplier confirmed them unavailable — expected, not a fault. */
+  confirmedUnavailable = 0,
+): {
+  ready: boolean; blocks: string[]; wouldRemove: number; wouldRemovePercent: number;
+  explainedByUnavailable: number; unexplainedRemovals: number;
+} {
   const blocks: string[] = [...report.blocks];
   const wouldRemove = Math.max(0, currentlyVisible - wouldRemainVisible);
   const wouldRemovePercent = currentlyVisible === 0 ? 0 : +((wouldRemove / currentlyVisible) * 100).toFixed(2);
-  // Removing more than the uncovered share means the evidence disagrees with the catalogue itself.
-  if (wouldRemovePercent > 100 - report.coveragePercent + 5) blocks.push('would_remove_more_than_uncovered');
-  return { ready: blocks.length === 0, blocks, wouldRemove, wouldRemovePercent };
+
+  const explainedByUnavailable = Math.min(confirmedUnavailable, wouldRemove);
+  const unexplainedRemovals = Math.max(0, wouldRemove - explainedByUnavailable);
+  const unexplainedPercent = currentlyVisible === 0 ? 0 : (unexplainedRemovals / currentlyVisible) * 100;
+
+  // Only removals we cannot attribute to a confirmed-unavailable answer count against us.
+  if (unexplainedPercent > 100 - report.coveragePercent + 5) blocks.push('unexplained_removals_exceed_coverage_gap');
+
+  return { ready: blocks.length === 0, blocks, wouldRemove, wouldRemovePercent, explainedByUnavailable, unexplainedRemovals };
 }

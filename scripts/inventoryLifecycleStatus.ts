@@ -95,7 +95,10 @@ async function main(): Promise<void> {
   const freshAvailable = evidence.filter(e =>
     e.available && (Date.parse(nowIso) - Date.parse(e.checkedAt)) / 3_600_000 <= 72).length;
   const { count: currentlyVisible } = await sb.from('sellable_products').select('*', { count: 'exact', head: true });
-  const enforcement = readyForVisibilityEnforcement(coverage, currentlyVisible ?? 0, freshAvailable);
+  // Removals attributable to a confirmed-unavailable answer are the feature working, not a fault.
+  const freshUnavailable = evidence.filter(e =>
+    !e.available && (Date.parse(nowIso) - Date.parse(e.checkedAt)) / 3_600_000 <= 72).length;
+  const enforcement = readyForVisibilityEnforcement(coverage, currentlyVisible ?? 0, freshAvailable, freshUnavailable);
 
   // ── Workflow distribution ─────────────────────────────────────────────────────────────────
   const wf = must('workflow', await sb.from('inventory_workflow_states').select('workflow_state'));
@@ -141,6 +144,7 @@ async function main(): Promise<void> {
   console.log(`coverage_ready=${coverage.ready}  blocks=${coverage.blocks.join(',') || 'none'}`);
   console.log(`visibility_enforcement_safe=${enforcement.ready}  blocks=${enforcement.blocks.join(',') || 'none'}`);
   console.log(`would_remove_if_enforced=${enforcement.wouldRemove} of ${currentlyVisible ?? 0} (${enforcement.wouldRemovePercent}%)`);
+  console.log(`  explained_by_confirmed_unavailable=${enforcement.explainedByUnavailable}  unexplained=${enforcement.unexplainedRemovals}`);
   console.log('workflow_states=' + JSON.stringify(states));
   console.log('switches=' + JSON.stringify({
     automation: cfg.automationEnabled, apiScan: cfg.apiScanEnabled,
