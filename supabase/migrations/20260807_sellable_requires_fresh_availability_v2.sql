@@ -55,7 +55,18 @@ BEGIN
   RAISE NOTICE 'Coverage gate passed: % percent (% of % published).', round(v_pct, 2), v_covered, v_published;
 END $guard$;
 
-CREATE OR REPLACE VIEW public.sellable_products AS
+-- DROP + CREATE rather than CREATE OR REPLACE.
+--
+-- 20260805 added `delist_reason` to standardized_products, and this view selects `sp.*`, so the
+-- trailing computed column `inventory_freshness` shifts position. CREATE OR REPLACE VIEW can only
+-- APPEND columns, never reposition them, and fails with 42P16. Verified: zero dependent views, so
+-- the drop is safe. Wrapped in a transaction with the coverage guard above, so a failure at any
+-- point leaves the previous view intact.
+BEGIN;
+
+DROP VIEW IF EXISTS public.sellable_products;
+
+CREATE VIEW public.sellable_products AS
 SELECT sp.*,
   CASE
     WHEN sp.inventory_last_synced_at IS NULL THEN 'missing'::text
@@ -81,16 +92,23 @@ WHERE sp.normalization_status = 'done'::text
   -- … on evidence recent enough to trust (72h grace absorbs one missed 48h cycle).
   AND la.within_grace IS TRUE;
 
+-- Restore the grants the view carried before the drop.
+GRANT ALL ON public.sellable_products TO anon, authenticated, service_role, postgres;
+
 COMMENT ON VIEW public.sellable_products IS
   'Customer-visible catalogue. Requires published, normalized, priced, imaged, a verified '
   'fulfillment path, AND a confirmed Open API availability answer within the 72-hour grace window. '
   'API failures never remove a product — latest_product_availability contains only confirmed '
   'answers, so the last good answer stands until it ages out.';
 
+COMMIT;
+
 -- ============================================================================
 -- ROLLBACK — restores the pre-enforcement definition verbatim, instantly
 -- ============================================================================
--- CREATE OR REPLACE VIEW public.sellable_products AS
+-- BEGIN;
+-- DROP VIEW IF EXISTS public.sellable_products;
+-- CREATE VIEW public.sellable_products AS
 -- SELECT sp.*,
 --   CASE
 --     WHEN inventory_last_synced_at IS NULL THEN 'missing'::text
@@ -103,6 +121,8 @@ COMMENT ON VIEW public.sellable_products IS
 --   AND inventory_status = 'in_stock'::text AND total_available_qty > 0
 --   AND product_title IS NOT NULL AND primary_image IS NOT NULL AND primary_image <> ''::text
 --   AND price > 0::numeric AND selling_price IS NOT NULL AND selling_price > 0::numeric;
+-- GRANT ALL ON public.sellable_products TO anon, authenticated, service_role, postgres;
+-- COMMIT;
 --
--- One statement, no data touched in either direction.
+-- No data touched in either direction; zero dependent views.
 -- ============================================================================
