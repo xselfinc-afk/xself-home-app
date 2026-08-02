@@ -92,33 +92,32 @@ export function applyInventoryConfigRow(cfg: InventoryAutomationConfig, key: str
   return { ...cfg, [field]: n };
 }
 
-export async function loadInventoryAutomationConfig(): Promise<InventoryAutomationConfig> {
-  try {
-    // Scripts and the app read the SAME rows, but not through the same client.
-    //
-    // `../lib/supabase` is the APP client, built from EXPO_PUBLIC_* vars that Metro inlines at
-    // bundle time. A Node/tsx script loads .env.local (SUPABASE_URL + service-role key) and has no
-    // EXPO_PUBLIC_* vars at all, so that client resolves to the non-throwing stub and every lookup
-    // silently returned code defaults — meaning enabling automation in the database had NO effect
-    // on the scanner, the lifecycle runner, or the scheduler. Prefer a service-role client whenever
-    // one is available; fall back to the app client inside the React Native runtime.
-    const serviceUrl = typeof process !== 'undefined' ? process.env?.SUPABASE_URL : undefined;
-    const serviceKey = typeof process !== 'undefined' ? process.env?.SUPABASE_SERVICE_ROLE_KEY : undefined;
-
-    let client: {
-      from: (t: string) => {
-        select: (c: string) => {
-          eq: (a: string, b: unknown) => { eq: (c: string, d: unknown) => Promise<{ data: Array<{ key: string; value: string }> | null; error: unknown }> };
-        };
+/**
+ * Minimal read surface this module needs. Lets a caller inject a different client without this
+ * file — which ships inside the app bundle — ever naming a service-role key.
+ */
+export interface ConfigReader {
+  from: (table: string) => {
+    select: (cols: string) => {
+      eq: (a: string, b: unknown) => {
+        eq: (c: string, d: unknown) => Promise<{ data: Array<{ key: string; value: string }> | null; error: unknown }>;
       };
     };
-    if (serviceUrl && serviceKey) {
-      const { createClient } = await import('@supabase/supabase-js');
-      client = createClient(serviceUrl, serviceKey, { auth: { persistSession: false } }) as never;
-    } else {
-      client = (await import('../lib/supabase')).supabase as never;
-    }
+  };
+}
 
+/**
+ * Load the remote automation config.
+ *
+ * The APP calls this with no argument and reads through the anon client. SCRIPTS must inject a
+ * service-role client: a Node/tsx process loads .env.local and has no EXPO_PUBLIC_* vars, so the
+ * app client resolves to the non-throwing stub and every lookup silently returns code defaults —
+ * which previously meant enabling automation in the database had NO effect on the scanner, the
+ * lifecycle runner or the scheduler. See scripts/lib/inventoryConfigClient.ts.
+ */
+export async function loadInventoryAutomationConfig(reader?: ConfigReader): Promise<InventoryAutomationConfig> {
+  try {
+    const client: ConfigReader = reader ?? ((await import('../lib/supabase')).supabase as never);
     const { data, error } = await client
       .from('home_content_config')
       .select('key, value')
@@ -132,6 +131,7 @@ export async function loadInventoryAutomationConfig(): Promise<InventoryAutomati
     return { ...INVENTORY_AUTOMATION_DEFAULTS };
   }
 }
+
 
 // ── Pure safety-limit policy (Scope D) ──────────────────────────────────────────
 export type SafetyBlock =

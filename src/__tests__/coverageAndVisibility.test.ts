@@ -119,8 +119,12 @@ function main(): void {
     assert.match(src, /Visibility enforcement refused/);
     assert.match(src, /v_min\s+numeric\s*:=\s*95/);
     // The guard must run BEFORE the view is replaced.
-    assert.ok(src.indexOf('RAISE EXCEPTION') < src.indexOf('CREATE OR REPLACE VIEW public.sellable_products'),
-      'the coverage guard must precede the view replacement');
+    // The view is now DROP+CREATE (20260805 added a column, so CREATE OR REPLACE cannot reposition
+    // the trailing computed column). The guard must still fire before the drop.
+    assert.ok(src.indexOf('RAISE EXCEPTION') < src.indexOf('DROP VIEW IF EXISTS public.sellable_products'),
+      'the coverage guard must precede the view drop');
+    assert.match(src, /BEGIN;[\s\S]*DROP VIEW IF EXISTS public\.sellable_products;[\s\S]*CREATE VIEW public\.sellable_products/);
+    assert.match(src, /GRANT ALL ON public\.sellable_products TO anon, authenticated, service_role, postgres;/);
   });
 
   it('11. v2 requires available AND within_grace', () => {
@@ -137,7 +141,7 @@ function main(): void {
   it('12. v2 ships rollback restoring the pre-enforcement view', () => {
     const src = read(V2);
     assert.match(src, /ROLLBACK/);
-    assert.match(src, /-- CREATE OR REPLACE VIEW public\.sellable_products AS/);
+    assert.match(src, /-- CREATE VIEW public\.sellable_products AS/);
   });
 
   it('13. the superseded v1 migration now refuses to run', () => {

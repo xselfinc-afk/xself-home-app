@@ -123,12 +123,27 @@ function main(): void {
     assert.ok(!/StartCalendarInterval/.test(src), 'interval scheduling only');
   });
 
-  it('9. the scheduled run is dry-run — it cannot mutate the catalogue', () => {
+  it('9. the scheduled run persists evidence but cannot change publication by itself', () => {
     const runner = read(RUNNER);
-    assert.ok(!runner.includes('--live'), 'the scheduled runner must never pass --live');
+    // The scheduler DOES run --live: that is how evidence and lifecycle state advance every cycle.
+    // The scan has no publication write path at all (availabilityPersistence.test.ts asserts it),
+    // so --live here cannot touch the catalogue.
+    assert.match(runner, /scanPublishedAvailability\.ts --limit=400 --live/);
     const scanner = read(SCANNER);
     assert.match(scanner, /const LIVE = has\('--live'\)/);
     assert.match(scanner, /const DRY = !LIVE/);
+    // Publication changes go only through the separate executor, and only for eligible SKUs.
+    assert.match(runner, /applyInventoryLifecycleActions\.ts --action="\$ACTION" --only="\$SKUS"/);
+    assert.ok(!/--only=all|--all\b/.test(runner), 'the scheduler must never use an "all" mode');
+  });
+
+  it('9b. lifecycle actions run ONLY after a successful scan', () => {
+    const runner = read(RUNNER);
+    // Acting on a failed or aborted scan would decide publication on partial evidence.
+    assert.match(runner, /if \[ "\$code" -eq 0 \]; then/);
+    const guarded = runner.slice(runner.indexOf('if [ "$code" -eq 0 ]; then'));
+    assert.ok(guarded.includes('applyInventoryLifecycleActions.ts'),
+      'the executor must sit inside the success guard');
   });
 
   it('10. overlapping runs are prevented by a self-healing lock', () => {

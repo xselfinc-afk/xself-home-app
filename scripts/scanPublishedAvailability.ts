@@ -145,8 +145,8 @@ async function main(): Promise<void> {
     // ── Config: every switch defaults OFF; a missing/unreadable row keeps defaults ───────────
     let cfg: InventoryAutomationConfig = { ...INVENTORY_AUTOMATION_DEFAULTS };
     try {
-      const { loadInventoryAutomationConfig } = await import('../src/services/inventoryAutomationConfig');
-      cfg = await loadInventoryAutomationConfig();
+      const { loadInventoryConfigForScript } = await import('./lib/inventoryConfigClient');
+      cfg = await loadInventoryConfigForScript();
     } catch { /* defaults — fail safe */ }
 
     const scanGate = evaluateSourceScanAllowed(cfg, OPEN_API_SOURCE);

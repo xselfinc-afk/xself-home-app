@@ -206,7 +206,8 @@ function main(): void {
 
   it('18. the scheduler honours the switch and auto-delist/relist stay disabled', () => {
     const runner = read(RUNNER);
-    assert.ok(!runner.includes('--live'), 'the scheduler never passes --live');
+    // The scheduler runs the full lifecycle, so it does pass --live; the switches remain the gate.
+    assert.match(runner, /--live/);
     const d = INVENTORY_AUTOMATION_DEFAULTS;
     assert.equal(d.autoDelistEnabled, false);
     assert.equal(d.autoRelistEnabled, false);
