@@ -51,6 +51,7 @@ DECLARE
   v_avail_status     text;
   v_checked_at       timestamptz;
   v_held             boolean;
+  v_wf_state         text;
 BEGIN
   -- ── Product must exist ────────────────────────────────────────────────────────────────────
   SELECT published, delist_reason, normalization_status, product_title, primary_image,
@@ -83,9 +84,15 @@ BEGIN
     RETURN 'skipped_evidence_stale';
   END IF;
 
+  -- The two-confirmation lifecycle is the safety model. Fresh evidence alone must never authorise a
+  -- publication change: one confirmed-unavailable reading only reaches 'pending_out_of_stock'.
+  SELECT workflow_state INTO v_wf_state
+  FROM public.inventory_workflow_states WHERE supplier_product_id = p_supplier_product_id;
+
   -- ════════════════════════════════════ DELIST ═════════════════════════════════════════════
   IF p_target_published = false THEN
     IF v_avail IS NOT false THEN RETURN 'skipped_evidence_not_unavailable'; END IF;
+    IF v_wf_state IS DISTINCT FROM 'eligible_for_delist' THEN RETURN 'skipped_not_eligible_state'; END IF;
 
     UPDATE public.standardized_products
        SET published = false, delist_reason = 'inventory_unavailable', updated_at = now()
@@ -105,6 +112,7 @@ BEGIN
   END IF;
 
   IF v_avail IS NOT true THEN RETURN 'skipped_evidence_not_available'; END IF;
+  IF v_wf_state IS DISTINCT FROM 'eligible_for_relist' THEN RETURN 'skipped_not_eligible_state'; END IF;
 
   -- Re-assert every gate `sellable_products` enforces, so relisting can never surface a product
   -- that would be broken or invisible anyway.
@@ -132,7 +140,7 @@ END $$;
 COMMENT ON FUNCTION public.set_publication_from_availability(text, boolean, text, text, integer) IS
   'Availability-driven publication writer. Delist requires fresh confirmed-unavailable Open API '
   'evidence; relist additionally requires provenance proving the inventory lifecycle delisted it, '
-  'plus every sellable_products quality gate. Manual holds block both. Writes publication_audit_log. '
+  'plus every sellable_products quality gate, and the two-confirmation workflow state. Manual holds block both. Writes publication_audit_log. '
   'Never touches inventory_status or any warehouse field. Returns a status; never raises.';
 
 REVOKE ALL ON FUNCTION public.set_publication_from_availability(text, boolean, text, text, integer) FROM PUBLIC;

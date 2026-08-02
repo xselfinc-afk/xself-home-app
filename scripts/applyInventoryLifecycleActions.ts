@@ -127,6 +127,15 @@ async function main(): Promise<void> {
       for (const r of data ?? []) availability.set(r.supplier_product_id, { available: r.available, status: r.status, checkedAt: r.checked_at });
     }
 
+    // The two-confirmation lifecycle state is a hard precondition for any publication change.
+    const workflowState = new Map<string, string>();
+    for (const c of chunk(ONLY, 100)) {
+      const { data, error } = await sb.from('inventory_workflow_states')
+        .select('supplier_product_id,workflow_state').in('supplier_product_id', c);
+      if (error) die(1, `inventory_workflow_states read failed: ${error.message}`);
+      for (const r of data ?? []) workflowState.set(r.supplier_product_id, r.workflow_state);
+    }
+
     const held = new Set<string>();
     {
       const { data, error } = await sb.from('active_inventory_holds').select('supplier_product_id').in('supplier_product_id', ONLY);
@@ -142,6 +151,7 @@ async function main(): Promise<void> {
       action: ACTION,
       heldManually: held.has(sku),
       nowIso,
+      workflowState: workflowState.get(sku) ?? null,
     }));
     const t = tallyDecisions(decisions);
 

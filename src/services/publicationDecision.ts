@@ -37,7 +37,9 @@ export type DecisionOutcome =
   | 'skipped_quality_price'
   | 'skipped_quality_selling_price'
   | 'skipped_no_fulfillment_path'
-  | 'skipped_no_fulfillment_qty';
+  | 'skipped_no_fulfillment_qty'
+  /** The two-confirmation lifecycle has not reached the eligible state yet. */
+  | 'skipped_not_eligible_state';
 
 export const APPLIED_OUTCOMES: ReadonlySet<DecisionOutcome> =
   new Set<DecisionOutcome>(['delisted', 'relisted']);
@@ -71,6 +73,13 @@ export interface DecisionInput {
   heldManually: boolean;
   nowIso: string;
   graceHours?: number;
+  /**
+   * Current `inventory_workflow_states.workflow_state`. Fresh evidence alone must NEVER authorise a
+   * publication change: the two-confirmation lifecycle (two observations >= 36h apart) is the whole
+   * safety model, and it lives in this state machine. A single confirmed-unavailable reading only
+   * reaches `pending_out_of_stock`.
+   */
+  workflowState?: string | null;
 }
 
 export const DEFAULT_GRACE_HOURS = 72;
@@ -119,7 +128,12 @@ export function decidePublication(input: DecisionInput): Decision {
     if (input.availability.available !== false) {
       return done('skipped_evidence_not_unavailable', 'supplier does not report this SKU unavailable');
     }
-    return done('delisted', 'fresh confirmed-unavailable evidence');
+    // 5b. Two independent confirmations are mandatory. `pending_out_of_stock` is strike one.
+    if (input.workflowState !== 'eligible_for_delist') {
+      return done('skipped_not_eligible_state',
+        `workflow_state=${input.workflowState ?? 'null'} — delist requires eligible_for_delist (two confirmations >= 36h apart)`);
+    }
+    return done('delisted', 'fresh confirmed-unavailable evidence and eligible_for_delist');
   }
 
   // ── relist ──
@@ -130,6 +144,10 @@ export function decidePublication(input: DecisionInput): Decision {
   }
   if (input.availability.available !== true) {
     return done('skipped_evidence_not_available', 'supplier does not report this SKU available');
+  }
+  if (input.workflowState !== 'eligible_for_relist') {
+    return done('skipped_not_eligible_state',
+      `workflow_state=${input.workflowState ?? 'null'} — relist requires eligible_for_relist (two confirmations >= 36h apart)`);
   }
 
   // 7. Every gate sellable_products enforces.

@@ -45,10 +45,10 @@ const delisted = (over: Partial<ProductRow> = {}): ProductRow =>
 const avail = (a: boolean, hoursAgo = 1): AvailabilityRow =>
   ({ available: a, status: a ? 'confirmed_available' : 'confirmed_out_of_stock', checkedAt: T(-hoursAgo) });
 
-const decideDelist = (p: ProductRow | null, a: AvailabilityRow | null, held = false) =>
-  decidePublication({ product: p, availability: a, action: 'delist', heldManually: held, nowIso: NOW });
-const decideRelist = (p: ProductRow | null, a: AvailabilityRow | null, held = false) =>
-  decidePublication({ product: p, availability: a, action: 'relist', heldManually: held, nowIso: NOW });
+const decideDelist = (p: ProductRow | null, a: AvailabilityRow | null, held = false, wf = 'eligible_for_delist') =>
+  decidePublication({ product: p, availability: a, action: 'delist', heldManually: held, nowIso: NOW, workflowState: wf });
+const decideRelist = (p: ProductRow | null, a: AvailabilityRow | null, held = false, wf = 'eligible_for_relist') =>
+  decidePublication({ product: p, availability: a, action: 'relist', heldManually: held, nowIso: NOW, workflowState: wf });
 
 function main(): void {
   // ── Delist ──────────────────────────────────────────────────────────────────
@@ -142,13 +142,36 @@ function main(): void {
 
   // ── The preview must match the SQL enforcement boundary ────────────────────
 
+  it('12b. TWO CONFIRMATIONS ARE MANDATORY — first strike can never delist', () => {
+    // pending_out_of_stock is strike one. Fresh unavailable evidence alone must not authorise it.
+    for (const wf of ['published_in_stock', 'pending_out_of_stock', null]) {
+      const d = decideDelist(good(), avail(false), false, wf as string);
+      assert.equal(d.outcome, 'skipped_not_eligible_state', `workflow_state=${wf}`);
+      assert.equal(d.willApply, false);
+    }
+    // An ABSENT workflowState (field omitted entirely) must also refuse. Called directly, because
+    // passing undefined to the helper would trigger its default parameter instead.
+    const omitted = decidePublication({
+      product: good(), availability: avail(false), action: 'delist', heldManually: false, nowIso: NOW,
+    });
+    assert.equal(omitted.outcome, 'skipped_not_eligible_state', 'omitted workflowState must refuse');
+    assert.equal(decideDelist(good(), avail(false), false, 'eligible_for_delist').outcome, 'delisted');
+  });
+
+  it('12c. relist likewise requires eligible_for_relist', () => {
+    for (const wf of ['delisted_out_of_stock', 'relist_pending', null]) {
+      assert.equal(decideRelist(delisted(), avail(true), false, wf as string).outcome, 'skipped_not_eligible_state');
+    }
+    assert.equal(decideRelist(delisted(), avail(true), false, 'eligible_for_relist').outcome, 'relisted');
+  });
+
   it('13. every TypeScript outcome exists verbatim in the SQL function', () => {
     const outcomes = [
       'skipped_product_not_found', 'skipped_manual_hold', 'skipped_no_availability_evidence',
       'skipped_evidence_stale', 'skipped_evidence_not_unavailable', 'skipped_evidence_not_available',
       'skipped_not_inventory_delisted', 'skipped_quality_normalization', 'skipped_quality_title',
       'skipped_quality_image', 'skipped_quality_price', 'skipped_quality_selling_price',
-      'skipped_no_fulfillment_path', 'skipped_no_fulfillment_qty', 'delisted', 'relisted',
+      'skipped_no_fulfillment_path', 'skipped_no_fulfillment_qty', 'skipped_not_eligible_state', 'delisted', 'relisted',
     ];
     for (const o of outcomes) {
       assert.ok(SQL.includes(`'${o}'`), `SQL is missing outcome ${o} — preview and enforcement have diverged`);

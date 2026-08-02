@@ -29,10 +29,43 @@ if [ ! -f "$REPO/.env.local" ]; then
   exit 1
 fi
 
+# ── 1. Availability scan (LIVE): refresh evidence + advance the workflow ──────────────────────
+# --live persists evidence and lifecycle state. It CANNOT change publication: the scanner has no
+# publication write path, asserted by availabilityPersistence.test.ts. Every write remains gated by
+# inventory_automation_enabled + inventory_api_scan_enabled.
 NODE_PATH="$REPO/node_modules" npx dotenv -e .env.giga-alt.local -e .env.local -- \
-  npx tsx scripts/scanPublishedAvailability.ts 2>&1 | grep -v '^\[GIGA\]'
+  npx tsx scripts/scanPublishedAvailability.ts --limit=400 --live 2>&1 | grep -v '^\[GIGA\]'
 
 code=${PIPESTATUS[0]}
+# ── 2. Lifecycle actions — only for SKUs the state machine already marked eligible ───────────
+# Runs ONLY when the scan succeeded: acting on a failed or aborted scan would decide on partial
+# evidence. Eligibility requires two confirmations >= 36h apart, so the first cycle produces none.
+# Each SKU is passed explicitly through --only; there is no "all" mode. Publication changes still
+# require inventory_auto_delist_enabled / inventory_auto_relist_enabled, which ship OFF.
+if [ "$code" -eq 0 ]; then
+  for ACTION in delist relist; do
+    STATE=$([ "$ACTION" = "delist" ] && echo eligible_for_delist || echo eligible_for_relist)
+    SKUS=$(NODE_PATH="$REPO/node_modules" npx dotenv -e .env.local -- node -e "
+      const {createClient}=require('@supabase/supabase-js');
+      const sb=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false}});
+      (async()=>{const r=await sb.from('inventory_workflow_states').select('supplier_product_id').eq('workflow_state','$STATE').limit(50);
+      process.stdout.write((r.data||[]).map(x=>x.supplier_product_id).join(','));})();" 2>/dev/null)
+    if [ -n "$SKUS" ]; then
+      echo "[$STAMP] $ACTION candidates ($STATE): $(echo "$SKUS" | tr ',' '\n' | wc -l | tr -d ' ')"
+      NODE_PATH="$REPO/node_modules" npx dotenv -e .env.giga-alt.local -e .env.local -- \
+        npx tsx scripts/applyInventoryLifecycleActions.ts --action="$ACTION" --only="$SKUS" \
+        --approve --approved-by=scheduler 2>&1 | grep -vE '^\[GIGA\]'
+      echo "[$STAMP] $ACTION exit=$?"
+    else
+      echo "[$STAMP] no $STATE candidates this cycle"
+    fi
+  done
+
+  # ── 3. Status + alerts ──────────────────────────────────────────────────────────────────────
+  NODE_PATH="$REPO/node_modules" npx dotenv -e .env.local -- \
+    npx tsx scripts/inventoryLifecycleStatus.ts 2>&1 | grep -vE '^\[GIGA\]'
+fi
+
 case "$code" in
   0) echo "[$STAMP] availability-scan completed ok" ;;
   2) echo "[$STAMP] availability-scan ABORTED — failure rate exceeded; nothing applied" ;;
