@@ -47,6 +47,7 @@ import {
   type InventoryWorkflowState,
   type WorkflowSnapshot,
 } from '../src/services/inventoryStateMachine';
+import { decideWithInterval } from '../src/services/confirmationInterval';
 import {
   assertNoPublicationWrite,
   planPersistence,
@@ -173,12 +174,14 @@ async function main(): Promise<void> {
 
     // ── 2. Existing lifecycle state (never invented) ─────────────────────────────────────────
     const priorState = new Map<string, WorkflowSnapshot>();
+    /** `last_observed_at` per SKU — when a confirmation last COUNTED (see confirmationInterval.ts). */
+    const priorObserved = new Map<string, string | null>();
     for (const c of chunk(targets, 200)) {
       // Column is `workflow_state`, not `state`. The error MUST be inspected: a silently failed
       // read leaves priorState empty, which pins the consecutive counters at 1 forever and means
       // the second strike — and therefore delist eligibility — can never be reached.
       const { data, error } = await sb.from('inventory_workflow_states')
-        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock')
+        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at')
         .in('supplier_product_id', c);
       if (error) die(1, `inventory_workflow_states read failed: ${error.message}`);
       for (const r of data ?? []) {
@@ -187,6 +190,7 @@ async function main(): Promise<void> {
           consecutiveOutOfStock: r.consecutive_out_of_stock ?? 0,
           consecutiveInStock: r.consecutive_in_stock ?? 0,
         });
+        priorObserved.set(r.supplier_product_id, r.last_observed_at ?? null);
       }
     }
 
@@ -289,6 +293,19 @@ async function main(): Promise<void> {
     }
 
     if (LIVE) {
+      // ── Scope 2 kill switch: production evidence writes require the scan switch ────────────
+      // Dry-run is unaffected; only writes are gated. The override exists solely so automated
+      // tests can exercise the live path, and it is documented, not a silent production bypass.
+      const TEST_OVERRIDE = process.env.INVENTORY_SCAN_TEST_OVERRIDE === '1';
+      if (!scanGate.allowed && !TEST_OVERRIDE) {
+        console.error(`\nBLOCKED: live writes require inventory_api_scan_enabled=true (and inventory_automation_enabled).`);
+        console.error(`  blocks=${scanGate.blocks.join(',')}`);
+        console.error(`  nothing was written.`);
+        releaseLock();
+        process.exit(3);
+      }
+      if (TEST_OVERRIDE) console.log('WARNING test override active — INVENTORY_SCAN_TEST_OVERRIDE=1');
+
       // ── PHASE 1 LIVE WRITE: evidence + lifecycle ONLY ──────────────────────────────────────
       // Publication is untouched. Delist/relist remain gated by autoDelistEnabled /
       // autoRelistEnabled and are NOT performed here regardless of the proposed action.
@@ -340,24 +357,40 @@ async function main(): Promise<void> {
 
       // Lifecycle counters LAST. If this step fails, the next run re-plans from the unchanged
       // persisted row and the new observation — consistent, never half-advanced.
-      for (const p of proposals) {
-        const prior = priorState.get(p.sku);
+      //
+      // The minimum-confirmation-interval guard lives here: a confirmed observation advances a
+      // counter only when it is a genuinely separate observation cycle. `last_observed_at` moves
+      // ONLY when the observation counted, so it means "when a confirmation last counted".
+      let tooSoon = 0;
+      for (const r of results) {
+        const prior = priorState.get(r.sku) ?? { state: 'published_in_stock' as InventoryWorkflowState, consecutiveOutOfStock: 0, consecutiveInStock: 0 };
+        const priorObservedAt = priorObserved.get(r.sku) ?? null;
+        const d = decideWithInterval({
+          prior,
+          status: r.inventoryStatus,
+          lastConfirmedAtIso: priorObservedAt,
+          nowIso: checkedAt,
+          minIntervalHours: cfg.minConfirmationIntervalHours,
+          policy,
+        });
+
+        if (d.outcome === 'no_confirmation') continue;              // failures write nothing
+        if (d.outcome === 'duplicate_or_too_soon') { tooSoon++; continue; }
+
         const row = {
-          supplier_product_id: p.sku,
-          workflow_state: p.proposedState,
-          consecutive_out_of_stock: p.status === 'confirmed_out_of_stock' ? (prior?.consecutiveOutOfStock ?? 0) + 1 : (p.status === 'confirmed_available' ? 0 : (prior?.consecutiveOutOfStock ?? 0)),
-          consecutive_in_stock: p.status === 'confirmed_available' ? (prior?.consecutiveInStock ?? 0) + 1 : (p.status === 'confirmed_out_of_stock' ? 0 : (prior?.consecutiveInStock ?? 0)),
-          last_observed_inventory_status: p.status,
-          last_observed_at: checkedAt,
-          last_observation_key: `${p.sku}|${checkedAt}|${p.status}`,
-          transition_reason: p.reason,
+          supplier_product_id: r.sku,
+          workflow_state: d.next.state,
+          consecutive_out_of_stock: d.next.consecutiveOutOfStock,
+          consecutive_in_stock: d.next.consecutiveInStock,
+          last_observed_inventory_status: r.status,
+          last_observed_at: checkedAt,          // advanced ONLY because this observation counted
+          last_observation_key: `${r.sku}|${checkedAt}|${r.status}`,
+          transition_reason: d.reason,
           updated_at: checkedAt,
         };
-        // An exception (failure) must not advance counters or state — skip the write entirely.
-        if (p.isException) continue;
         const { data, error } = await sb.from('inventory_workflow_states')
           .upsert(row, { onConflict: 'supplier_product_id' }).select('supplier_product_id');
-        if (error) { writeFailed++; writeErrors.push(`workflow ${p.sku}: ${error.message}`); continue; }
+        if (error) { writeFailed++; writeErrors.push(`workflow ${r.sku}: ${error.message}`); continue; }
         workflowWritten += (data ?? []).length;
       }
 
@@ -367,6 +400,8 @@ async function main(): Promise<void> {
       console.log(`current_unchanged_answer=${pt.unchanged}`);
       console.log(`failure_rows_annotated=${failureAnnotated}`);
       console.log(`workflow_rows_written=${workflowWritten}`);
+      console.log(`skipped_too_soon_min_interval=${tooSoon}`);
+      console.log(`min_confirmation_interval_hours=${cfg.minConfirmationIntervalHours}`);
       console.log(`skipped_failures_no_prior_row=${pt.failures - failureAnnotated}`);
       console.log(`write_failed=${writeFailed}`);
       for (const e of writeErrors.slice(0, 10)) console.log(`  write_error=${redactReason(e)}`);

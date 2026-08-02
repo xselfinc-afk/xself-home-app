@@ -239,7 +239,7 @@ function main(): void {
     // Regression: selecting a non-existent `state` column returned PGRST 42703, and destructuring
     // only { data } swallowed it. priorState stayed empty, pinning the consecutive counters at 1 —
     // so the second strike, and therefore delist eligibility, could never be reached.
-    assert.match(src, /select\('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock'\)/);
+    assert.match(src, /select\('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_at'\)/);
     assert.ok(!/select\('supplier_product_id,state,/.test(src), 'the column is workflow_state, not state');
     assert.match(src, /if \(error\) die\(1, `inventory_workflow_states read failed/);
   });
@@ -259,8 +259,9 @@ function main(): void {
     const live = src.slice(src.indexOf('if (LIVE) {'));
     assert.match(live, /products_delisted=0/);
     assert.match(live, /products_relisted=0/);
-    // An exception must skip the workflow write entirely.
-    assert.match(live, /if \(p\.isException\) continue;/);
+    // A failure must skip the workflow write entirely, and a too-soon repeat must be inert.
+    assert.match(live, /if \(d\.outcome === 'no_confirmation'\) continue;/);
+    assert.match(live, /if \(d\.outcome === 'duplicate_or_too_soon'\) \{ tooSoon\+\+; continue; \}/);
   });
 
   console.log(`\n${passed} passed`);
