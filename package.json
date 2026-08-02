@@ -61,6 +61,7 @@
     "inventory:scan:scheduler": "bash scripts/installAvailabilityScanScheduler.sh",
     "test:availability-scheduler": "tsx src/__tests__/availabilityScheduler.test.ts",
     "test:open-api-availability": "tsx src/__tests__/openApiAvailability.test.ts",
+    "test:availability-persistence": "tsx src/__tests__/availabilityPersistence.test.ts",
     "inventory:action:dry": "tsx scripts/inventoryActionApply.ts",
     "test:inventory-workflow": "tsx src/__tests__/inventoryWorkflowRunner.test.ts",
     "inventory:audit:full": "tsx scripts/inventoryFullAudit.ts",

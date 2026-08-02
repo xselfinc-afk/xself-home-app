@@ -47,6 +47,13 @@ import {
   type InventoryWorkflowState,
   type WorkflowSnapshot,
 } from '../src/services/inventoryStateMachine';
+import {
+  assertNoPublicationWrite,
+  planPersistence,
+  tallyPlans,
+  type PersistencePlan,
+  type PriorCurrentRow,
+} from '../src/services/availabilityPersistence';
 
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(f);
@@ -278,16 +285,93 @@ async function main(): Promise<void> {
     }
 
     if (LIVE) {
-      // Every live write remains gated. Phase 1 ships with the switches OFF, so this reports the
-      // block rather than mutating the catalogue.
-      if (!scanGate.allowed || !delistGate.allowed) {
-        console.error('\nBLOCKED: safety gates are not satisfied — no catalogue changes applied.');
-        releaseLock();
-        process.exit(3);
+      // ── PHASE 1 LIVE WRITE: evidence + lifecycle ONLY ──────────────────────────────────────
+      // Publication is untouched. Delist/relist remain gated by autoDelistEnabled /
+      // autoRelistEnabled and are NOT performed here regardless of the proposed action.
+      const checkedAt = new Date().toISOString();
+
+      // Existing confirmed answers, so a failure can annotate rather than displace them.
+      const priorCurrent = new Map<string, PriorCurrentRow>();
+      for (const c of chunk(targets, 200)) {
+        const { data, error } = await sb.from('product_availability_current')
+          .select('supplier_product_id,available,status,checked_at,last_confirmed_available_at,last_confirmed_unavailable_at,consecutive_failures')
+          .in('supplier_product_id', c);
+        if (error) die(1, `product_availability_current read failed: ${error.message} — is the persistence migration applied?`);
+        for (const r of data ?? []) priorCurrent.set(r.supplier_product_id, r as PriorCurrentRow);
       }
-      console.error('\nLIVE apply is not enabled in this phase; re-run once writes are approved.');
+
+      const plans: PersistencePlan[] = results.map(r => planPersistence(r, priorCurrent.get(r.sku) ?? null, RUN_ID, checkedAt));
+      assertNoPublicationWrite(plans);   // throws rather than writing a publication field
+      const pt = tallyPlans(plans);
+
+      let auditInserted = 0, currentUpserted = 0, failureAnnotated = 0, workflowWritten = 0, writeFailed = 0;
+      const writeErrors: string[] = [];
+
+      // Audit rows first (idempotent on run_id+supplier_product_id).
+      for (const c of chunk(plans.map(p => p.checkRow), 100)) {
+        const { data, error } = await sb.from('product_availability_checks')
+          .upsert(c, { onConflict: 'run_id,supplier_product_id' }).select('supplier_product_id');
+        if (error) { writeFailed += c.length; writeErrors.push(`audit: ${error.message}`); continue; }
+        auditInserted += (data ?? []).length;
+      }
+
+      // Confirmed answers → the authoritative current row. Failures can never reach this table.
+      const upserts = plans.map(p => p.currentUpsert).filter(Boolean) as NonNullable<PersistencePlan['currentUpsert']>[];
+      for (const c of chunk(upserts, 100)) {
+        const { data, error } = await sb.from('product_availability_current')
+          .upsert(c, { onConflict: 'supplier_product_id' }).select('supplier_product_id');
+        if (error) { writeFailed += c.length; writeErrors.push(`current: ${error.message}`); continue; }
+        currentUpserted += (data ?? []).length;
+      }
+
+      // Failure telemetry — annotates an existing row, never creates or zeroes one.
+      for (const p of plans) {
+        if (!p.failureUpdate) continue;
+        const { supplier_product_id, ...patch } = p.failureUpdate;
+        const { data, error } = await sb.from('product_availability_current')
+          .update(patch).eq('supplier_product_id', supplier_product_id).select('supplier_product_id');
+        if (error) { writeFailed++; writeErrors.push(`failure-annotate ${supplier_product_id}: ${error.message}`); continue; }
+        failureAnnotated += (data ?? []).length;
+      }
+
+      // Lifecycle counters LAST. If this step fails, the next run re-plans from the unchanged
+      // persisted row and the new observation — consistent, never half-advanced.
+      for (const p of proposals) {
+        const prior = priorState.get(p.sku);
+        const row = {
+          supplier_product_id: p.sku,
+          workflow_state: p.proposedState,
+          consecutive_out_of_stock: p.status === 'confirmed_out_of_stock' ? (prior?.consecutiveOutOfStock ?? 0) + 1 : (p.status === 'confirmed_available' ? 0 : (prior?.consecutiveOutOfStock ?? 0)),
+          consecutive_in_stock: p.status === 'confirmed_available' ? (prior?.consecutiveInStock ?? 0) + 1 : (p.status === 'confirmed_out_of_stock' ? 0 : (prior?.consecutiveInStock ?? 0)),
+          last_observed_inventory_status: p.status,
+          last_observed_at: checkedAt,
+          last_observation_key: `${p.sku}|${checkedAt}|${p.status}`,
+          transition_reason: p.reason,
+          updated_at: checkedAt,
+        };
+        // An exception (failure) must not advance counters or state — skip the write entirely.
+        if (p.isException) continue;
+        const { data, error } = await sb.from('inventory_workflow_states')
+          .upsert(row, { onConflict: 'supplier_product_id' }).select('supplier_product_id');
+        if (error) { writeFailed++; writeErrors.push(`workflow ${p.sku}: ${error.message}`); continue; }
+        workflowWritten += (data ?? []).length;
+      }
+
+      console.log('\nLIVE_WRITE_SUMMARY');
+      console.log(`audit_rows_written=${auditInserted}`);
+      console.log(`current_rows_upserted=${currentUpserted}`);
+      console.log(`current_unchanged_answer=${pt.unchanged}`);
+      console.log(`failure_rows_annotated=${failureAnnotated}`);
+      console.log(`workflow_rows_written=${workflowWritten}`);
+      console.log(`skipped_failures_no_prior_row=${pt.failures - failureAnnotated}`);
+      console.log(`write_failed=${writeFailed}`);
+      for (const e of writeErrors.slice(0, 10)) console.log(`  write_error=${redactReason(e)}`);
+      console.log(`publication_fields_written=0`);
+      console.log(`products_delisted=0`);
+      console.log(`products_relisted=0`);
+
       releaseLock();
-      process.exit(3);
+      process.exit(writeFailed > 0 ? 1 : 0);
     }
 
     releaseLock();
