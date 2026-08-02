@@ -5,8 +5,10 @@
 # NO BROWSER. The scan calls the credential-signed GIGA Open API only; it never launches Chrome,
 # Chromium or Playwright and never reads a browser session file. Runs independently of XOne.
 #
-# The agent runs in DRY-RUN mode. It writes a redacted JSON report and changes no catalogue state.
-# Live writes stay gated behind the inventory automation switches, which default to OFF.
+# The agent runs the COMPLETE lifecycle: live availability scan (evidence + workflow state), then
+# delist/relist for SKUs the state machine already marked eligible, then a status report. The scan
+# itself has no publication write path; publication changes go only through the guarded executor and
+# remain gated by the inventory automation switches.
 #
 # Usage:
 #   scripts/installAvailabilityScanScheduler.sh install     # write + load the agent
@@ -59,24 +61,29 @@ PLISTEOF
 case "$cmd" in
   install)
     write_plist
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
     launchctl unload "$PLIST" 2>/dev/null || true
-    launchctl load "$PLIST"
+    # bootstrap is the modern API; load is kept as a fallback for older macOS.
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
+    launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
     echo "installed  label=${LABEL}"
     echo "interval   ${INTERVAL}s (48 hours)"
     echo "plist      ${PLIST}"
-    echo "mode       DRY-RUN (no catalogue writes; automation switches default OFF)"
+    echo "mode       FULL LIFECYCLE (live scan -> eligible delist/relist -> status)"
+    echo "gates      publication changes still require inventory_auto_delist_enabled / inventory_auto_relist_enabled"
     ;;
   enable)
     [ -f "$PLIST" ] || { echo "not installed — run: $0 install"; exit 1; }
-    launchctl load "$PLIST" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIST" 2>/dev/null || true
+    launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
     echo "enabled ${LABEL}"
     ;;
   disable)
-    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
     echo "disabled ${LABEL} (plist kept at ${PLIST})"
     ;;
   uninstall)
-    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
     rm -f "$PLIST"
     echo "uninstalled ${LABEL}"
     ;;
