@@ -35,6 +35,33 @@ it('DEFAULTS ship all automation + catalog mutation DISABLED', () => {
   assert.equal(d.maxFailurePercent, 20);
 });
 
+it('EVERY boolean config field is registered in BOOL_FIELDS', () => {
+  // A boolean absent from BOOL_FIELDS parses through the integer branch, where parseInt('true')
+  // is NaN and the row is dropped: the switch looks enabled in the database but does nothing.
+  // This caught inventory_api_scan_enabled and inventory_visibility_enforcement_enabled during the
+  // Step 3 rollout, after the config rows had already been written.
+  const d = INVENTORY_AUTOMATION_DEFAULTS;
+  for (const [field, value] of Object.entries(d)) {
+    if (typeof value !== 'boolean') continue;
+    const key = Object.entries({
+      automationEnabled: 'inventory_automation_enabled',
+      pickupScanEnabled: 'inventory_pickup_scan_enabled',
+      dropshipScanEnabled: 'inventory_dropship_scan_enabled',
+      apiScanEnabled: 'inventory_api_scan_enabled',
+      autoDelistEnabled: 'inventory_auto_delist_enabled',
+      autoRelistEnabled: 'inventory_auto_relist_enabled',
+      bulkChangeRequiresApproval: 'inventory_bulk_change_requires_approval',
+      caPriorityEnabled: 'inventory_ca_priority_enabled',
+      checkoutRevalidationEnabled: 'inventory_checkout_revalidation_enabled',
+      visibilityEnforcementEnabled: 'inventory_visibility_enforcement_enabled',
+    }).find(([f]) => f === field)?.[1];
+    assert.ok(key, `boolean field ${field} has no config key mapping`);
+    const flipped = applyInventoryConfigRow({ ...d }, key!, 'true');
+    assert.equal((flipped as Record<string, unknown>)[field], true,
+      `config key ${key} does not flip ${field} — it is probably missing from BOOL_FIELDS`);
+  }
+});
+
 it('open_api is a first-class scan source, gated off by default', () => {
   const d = { ...INVENTORY_AUTOMATION_DEFAULTS };
   assert.deepEqual(evaluateSourceScanAllowed(d, 'open_api').blocks.sort(),

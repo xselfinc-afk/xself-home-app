@@ -75,6 +75,11 @@ const KEY_MAP: Record<string, keyof InventoryAutomationConfig> = {
 const BOOL_FIELDS: ReadonlySet<keyof InventoryAutomationConfig> = new Set([
   'automationEnabled', 'pickupScanEnabled', 'dropshipScanEnabled', 'autoDelistEnabled',
   'autoRelistEnabled', 'bulkChangeRequiresApproval', 'caPriorityEnabled', 'checkoutRevalidationEnabled',
+  // A boolean missing from this set silently falls through to the integer branch, where
+  // Number.parseInt('true') is NaN and the row is discarded — the switch appears set in the
+  // database but never takes effect. `inventorySafetyLimits.test.ts` asserts this set covers every
+  // boolean field in the config type.
+  'apiScanEnabled', 'visibilityEnforcementEnabled',
 ]);
 
 /** Parse one config row onto the typed config. Exported for tests. Numeric values must be >= 0. */
@@ -89,8 +94,32 @@ export function applyInventoryConfigRow(cfg: InventoryAutomationConfig, key: str
 
 export async function loadInventoryAutomationConfig(): Promise<InventoryAutomationConfig> {
   try {
-    const { supabase } = await import('../lib/supabase');
-    const { data, error } = await supabase
+    // Scripts and the app read the SAME rows, but not through the same client.
+    //
+    // `../lib/supabase` is the APP client, built from EXPO_PUBLIC_* vars that Metro inlines at
+    // bundle time. A Node/tsx script loads .env.local (SUPABASE_URL + service-role key) and has no
+    // EXPO_PUBLIC_* vars at all, so that client resolves to the non-throwing stub and every lookup
+    // silently returned code defaults — meaning enabling automation in the database had NO effect
+    // on the scanner, the lifecycle runner, or the scheduler. Prefer a service-role client whenever
+    // one is available; fall back to the app client inside the React Native runtime.
+    const serviceUrl = typeof process !== 'undefined' ? process.env?.SUPABASE_URL : undefined;
+    const serviceKey = typeof process !== 'undefined' ? process.env?.SUPABASE_SERVICE_ROLE_KEY : undefined;
+
+    let client: {
+      from: (t: string) => {
+        select: (c: string) => {
+          eq: (a: string, b: unknown) => { eq: (c: string, d: unknown) => Promise<{ data: Array<{ key: string; value: string }> | null; error: unknown }> };
+        };
+      };
+    };
+    if (serviceUrl && serviceKey) {
+      const { createClient } = await import('@supabase/supabase-js');
+      client = createClient(serviceUrl, serviceKey, { auth: { persistSession: false } }) as never;
+    } else {
+      client = (await import('../lib/supabase')).supabase as never;
+    }
+
+    const { data, error } = await client
       .from('home_content_config')
       .select('key, value')
       .eq('screen', 'inventory_automation')
