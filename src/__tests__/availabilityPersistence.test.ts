@@ -234,6 +234,26 @@ function main(): void {
     assert.match(src, /targets\.slice\(0, LIMIT \|\| cfg\.maxScanPerRun\)/);
   });
 
+  it('17b. the lifecycle read uses the real column name and inspects its error', () => {
+    const src = read(SCANNER);
+    // Regression: selecting a non-existent `state` column returned PGRST 42703, and destructuring
+    // only { data } swallowed it. priorState stayed empty, pinning the consecutive counters at 1 —
+    // so the second strike, and therefore delist eligibility, could never be reached.
+    assert.match(src, /select\('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock'\)/);
+    assert.ok(!/select\('supplier_product_id,state,/.test(src), 'the column is workflow_state, not state');
+    assert.match(src, /if \(error\) die\(1, `inventory_workflow_states read failed/);
+  });
+
+  it('17c. every Supabase read in the scanner inspects its error', () => {
+    const src = read(SCANNER);
+    // A read whose error is ignored can silently return nothing and corrupt the lifecycle.
+    const reads = [...src.matchAll(/const \{ data([^}]*)\} = await sb\s*\n?\s*\.from\(|const \{ data([^}]*)\} = await sb\.from\(/g)];
+    for (const m of reads) {
+      const destructured = (m[1] ?? m[2] ?? '');
+      assert.ok(destructured.includes('error'), `a read destructures { data${destructured}} without error`);
+    }
+  });
+
   it('18. delist and relist are NOT performed in this phase', () => {
     const src = read(SCANNER);
     const live = src.slice(src.indexOf('if (LIVE) {'));

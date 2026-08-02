@@ -174,12 +174,16 @@ async function main(): Promise<void> {
     // ── 2. Existing lifecycle state (never invented) ─────────────────────────────────────────
     const priorState = new Map<string, WorkflowSnapshot>();
     for (const c of chunk(targets, 200)) {
-      const { data } = await sb.from('inventory_workflow_states')
-        .select('supplier_product_id,state,consecutive_out_of_stock,consecutive_in_stock')
+      // Column is `workflow_state`, not `state`. The error MUST be inspected: a silently failed
+      // read leaves priorState empty, which pins the consecutive counters at 1 forever and means
+      // the second strike — and therefore delist eligibility — can never be reached.
+      const { data, error } = await sb.from('inventory_workflow_states')
+        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock')
         .in('supplier_product_id', c);
+      if (error) die(1, `inventory_workflow_states read failed: ${error.message}`);
       for (const r of data ?? []) {
         priorState.set(r.supplier_product_id, {
-          state: r.state as InventoryWorkflowState,
+          state: r.workflow_state as InventoryWorkflowState,
           consecutiveOutOfStock: r.consecutive_out_of_stock ?? 0,
           consecutiveInStock: r.consecutive_in_stock ?? 0,
         });
