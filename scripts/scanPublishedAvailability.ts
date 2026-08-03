@@ -64,6 +64,7 @@ const LIVE = has('--live');
 const DRY = !LIVE;                       // dry-run unless --live is explicit
 const ONLY_SKUS = (val('skus') ?? '').split(',').map(s => s.trim()).filter(Boolean);
 const LIMIT = Math.max(0, parseInt(val('limit') ?? '0', 10) || 0);
+const XONE_TARGETED_TOKEN = val('xone-targeted') ?? '';
 const BATCH = 200;                        // the Open API accepts up to 200 SKUs per call
 const REPORT_DIR = path.join(process.cwd(), 'reports', 'inventory-availability');
 const LOCK_PATH = path.join(REPORT_DIR, '.scan.lock');
@@ -131,6 +132,9 @@ interface Proposal {
 }
 
 async function main(): Promise<void> {
+  if (XONE_TARGETED_TOKEN && (!/^[A-Za-z0-9_-]{8,80}$/.test(XONE_TARGETED_TOKEN) || ONLY_SKUS.length !== 1)) {
+    die(1, '--xone-targeted requires one explicit SKU and a safe request token');
+  }
   const RUN_ID = `avail-${new Date().toISOString()}-${process.pid}`;
   const startedAt = new Date().toISOString();
 
@@ -160,12 +164,21 @@ async function main(): Promise<void> {
       if (!data || data.length < 1000) break;
     }
     const published: Array<{ sku: string; published: boolean }> = [];
-    for (let f = 0; ; f += 1000) {
+    if (XONE_TARGETED_TOKEN) {
+      // A human-confirmed review may target a currently delisted item. The explicit one-SKU
+      // allowlist is still bounded, and every observation follows the same API/state-machine path.
       const { data, error } = await sb.from('standardized_products')
-        .select('supplier_product_id,published').eq('published', true).range(f, f + 999);
-      if (error) die(1, `standardized_products read failed: ${error.message}`);
-      (data ?? []).forEach(r => published.push({ sku: r.supplier_product_id, published: r.published }));
-      if (!data || data.length < 1000) break;
+        .select('supplier_product_id,published').in('supplier_product_id', ONLY_SKUS);
+      if (error) die(1, `standardized_products targeted read failed: ${error.message}`);
+      (data ?? []).forEach(r => published.push({ sku: r.supplier_product_id, published: Boolean(r.published) }));
+    } else {
+      for (let f = 0; ; f += 1000) {
+        const { data, error } = await sb.from('standardized_products')
+          .select('supplier_product_id,published').eq('published', true).range(f, f + 999);
+        if (error) die(1, `standardized_products read failed: ${error.message}`);
+        (data ?? []).forEach(r => published.push({ sku: r.supplier_product_id, published: r.published }));
+        if (!data || data.length < 1000) break;
+      }
     }
 
     let targets = published.map(p => p.sku);
@@ -215,10 +228,11 @@ async function main(): Promise<void> {
       outOfStockConfirmationsRequired: cfg.outOfStockConfirmations,
       inStockConfirmationsRequired: cfg.relistConfirmations,
     };
+    const publishedBySku = new Map(published.map((product) => [product.sku, product.published]));
     const proposals: Proposal[] = results.map(r => {
       const prior = priorState.get(r.sku) ?? { state: 'published_in_stock' as InventoryWorkflowState, consecutiveOutOfStock: 0, consecutiveInStock: 0 };
       const tr = transitionInventoryState(prior, r.inventoryStatus, policy);
-      const publishedNow = true;               // targets are published by construction
+      const publishedNow = publishedBySku.get(r.sku) ?? false;
       const visibleNow = visible.has(r.sku);
       return {
         sku: r.sku, status: r.status, available: r.available, reason: r.reason,
@@ -238,13 +252,16 @@ async function main(): Promise<void> {
 
     // ── 5. Report (redacted; no raw bodies, no credentials) ──────────────────────────────────
     fs.mkdirSync(REPORT_DIR, { recursive: true });
-    const reportPath = path.join(REPORT_DIR, 'latest-availability-scan.json');
+    const reportPath = XONE_TARGETED_TOKEN
+      ? path.join(REPORT_DIR, `xone-targeted-${XONE_TARGETED_TOKEN}.json`)
+      : path.join(REPORT_DIR, 'latest-availability-scan.json');
     const report = {
       run_id: RUN_ID, started_at: startedAt, finished_at: new Date().toISOString(),
       mode: DRY ? 'dry_run' : 'live',
       source: OPEN_API_SOURCE,
       endpoint: '/b2b-overseas-api/v1/buyer/product/price/v1',
       browser_used: false,
+      report_kind: XONE_TARGETED_TOKEN ? 'xone_single_sku_recheck' : 'scheduled_inventory_scan',
       database_rows_written: 0,
       totals: t,
       gates: { scan: scanGate, failureRate: failureGate, delistBatch: delistGate },
