@@ -10,7 +10,21 @@ import { config as loadEnv } from 'dotenv';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { loadInventoryConfigForScript } from './lib/inventoryConfigClient';
+import {
+  readSupplierAccountProductFacts,
+  SupplierTargetedReadError,
+  type SupplierAccountProductFacts,
+} from './lib/gigaAccountReadClient';
+import {
+  InventoryIdentityMappingError,
+  resolveInventoryLookupIdentity,
+  type ResolvedInventoryLookupIdentity,
+} from '../src/services/supplierInventoryLookupIdentity';
+import { planPersistence, assertNoPublicationWrite, type PriorCurrentRow } from '../src/services/availabilityPersistence';
+import { transitionInventoryState, type InventoryWorkflowState } from '../src/services/inventoryStateMachine';
+import type { AvailabilityResult } from '../src/services/openApiAvailability';
 
 loadEnv({ path: '.env.local' });
 loadEnv({ path: '.env' });
@@ -36,6 +50,7 @@ const LOCK_STALE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_ITEMS_LIMIT = 100;
 const MAX_RUNS_LIMIT = 50;
+const TARGETED_IDENTITY_REPAIR_SKU = 'XH-GH-HM-86617W';
 
 export type InventoryLifecycleBucket =
   | 'pending'
@@ -62,6 +77,7 @@ type WorkflowRow = {
   last_observed_at: string | null;
   last_transition_at: string | null;
   transition_reason: string | null;
+  last_observation_key?: string | null;
   version: number;
 };
 
@@ -89,6 +105,11 @@ type ProductRow = {
   specifications_json: unknown;
   inventory_status?: string | null;
   total_available_qty?: number | string | null;
+};
+
+type SupplierRelationshipRow = {
+  supplier_product_id: string;
+  raw_payload: Record<string, unknown> | null;
 };
 
 type HoldRow = {
@@ -526,61 +547,255 @@ async function runTargetedRecheck(
   request: Extract<InventoryLifecycleBridgeRequest, { operation: 'recheck-item' }>,
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
+  const targetedFailure = (input: {
+    code: string;
+    message: string;
+    product?: ProductRow | null;
+    identity?: ResolvedInventoryLookupIdentity | null;
+    pickup?: SupplierAccountProductFacts | null;
+    dropship?: SupplierAccountProductFacts | null;
+    checkedAt?: string;
+    productionWriteAttempted?: boolean;
+  }): Record<string, unknown> => success('recheck-item', {
+    production_write_attempted: input.productionWriteAttempted ?? false,
+    sku: request.sku,
+    supplier_product_id: input.product?.supplier_product_id ?? null,
+    targeted_recheck_attempted: true,
+    targeted_recheck_result: 'failed',
+    resulting_action: 'none',
+    final_status: 'recheck_failed',
+    checked_at: input.checkedAt ?? new Date().toISOString(),
+    inventory_status: 'unknown',
+    error_code: input.code,
+    error_message: input.message,
+    other_items_scanned: 0,
+    identity: input.identity ? {
+      ...input.identity,
+      favorites_lookup_identity: input.identity.lookup_identity,
+      product_detail_identity: input.identity.lookup_identity,
+      availability_lookup_identity: input.identity.lookup_identity,
+      inventory_lookup_identity: input.identity.lookup_identity,
+      website_search_identity: 'pending_verification',
+    } : null,
+    accounts: {
+      pickup: input.pickup ?? null,
+      dropship: input.dropship ?? null,
+    },
+  });
+
+  if (request.sku !== TARGETED_IDENTITY_REPAIR_SKU) {
+    return targetedFailure({
+      code: 'target_scope_not_configured',
+      message: '本轮定向身份修复仅允许处理已批准的目标 SKU',
+    });
+  }
+
   const matchesResult = await client.from('standardized_products')
     .select('supplier_product_id,sku_custom,product_title,published,delist_reason,primary_image,selling_price,specifications_json,inventory_status,total_available_qty')
     .eq('sku_custom', request.sku)
     .limit(3);
   const matches = mustRows(matchesResult as never, 'targeted_product_lookup') as ProductRow[];
   if (matches.length !== 1) {
-    return failure(matches.length ? 'DUPLICATE_SKU' : 'SKU_NOT_FOUND', matches.length ? '该 SKU 对应多个商品，已拒绝单商品复核' : '未找到该 SKU');
+    return targetedFailure({
+      code: matches.length ? 'duplicate_sku' : 'sku_not_found',
+      message: matches.length ? '该 SKU 对应多个商品，已拒绝单商品复核' : '未找到该 SKU',
+    });
   }
   const product = matches[0];
-  const token = `${Date.now()}-${process.pid}`;
-  const reportPath = path.join(REPORT_DIR, `xone-targeted-${token}.json`);
-  const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
-  const scanner = path.join(REPO, 'scripts', 'scanPublishedAvailability.ts');
-  const scan = spawnSync('/opt/homebrew/bin/node', [
-    runtime,
-    scanner,
-    '--live',
-    `--skus=${product.supplier_product_id}`,
-    '--limit=1',
-    `--xone-targeted=${token}`,
-  ], {
-    cwd: REPO,
-    encoding: 'utf8',
-    timeout: 120_000,
-    env: { ...process.env },
-  });
-  let report: Record<string, any> | null = null;
-  try { report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, any>; } catch { report = null; }
-  const proposal = Array.isArray(report?.proposals) ? report?.proposals[0] as Record<string, any> | undefined : undefined;
-  const checkedAt = typeof report?.finished_at === 'string' ? report.finished_at : new Date().toISOString();
-  const scanPersisted = scan.status === 0;
-  const available = proposal?.available === true;
-  const stillOutOfStock = proposal?.available === false && proposal?.status === 'confirmed_out_of_stock';
-  if (!available) {
+  const relationshipResult = await client.from('supplier_products')
+    .select('supplier_product_id,raw_payload')
+    .eq('supplier_product_id', product.supplier_product_id)
+    .limit(2);
+  const relationshipRows = mustRows(relationshipResult as never, 'targeted_supplier_relationship') as SupplierRelationshipRow[];
+  if (relationshipRows.length !== 1) {
+    return targetedFailure({ code: 'identity_mapping_error', message: '缺少唯一供应商商品关系', product });
+  }
+
+  let identity: ResolvedInventoryLookupIdentity;
+  try {
+    identity = resolveInventoryLookupIdentity({
+      xselfSku: request.sku,
+      legacySupplierProductId: product.supplier_product_id,
+      associateProductList: relationshipRows[0].raw_payload?.associateProductList,
+    });
+  } catch (error) {
+    const message = error instanceof InventoryIdentityMappingError ? error.message : '供应商查询身份解析失败';
+    return targetedFailure({ code: 'identity_mapping_error', message, product });
+  }
+
+  let pickup: SupplierAccountProductFacts | null = null;
+  let dropship: SupplierAccountProductFacts | null = null;
+  try {
+    pickup = await readSupplierAccountProductFacts('pickup', identity.lookup_identity, { repo: REPO });
+    dropship = await readSupplierAccountProductFacts('dropship', identity.lookup_identity, { repo: REPO });
+  } catch (error) {
+    const code = error instanceof SupplierTargetedReadError ? error.code : 'inventory_read_error';
+    const message = error instanceof SupplierTargetedReadError ? error.message : '供应商账号定向读取失败';
+    return targetedFailure({ code, message, product, identity, pickup, dropship });
+  }
+
+  const checkedAt = new Date().toISOString();
+  const sourceFacts = { pickup, dropship };
+  if (!pickup.available || !dropship.available) {
     return success('recheck-item', {
-      production_write_attempted: true,
+      production_write_attempted: false,
       sku: request.sku,
       supplier_product_id: product.supplier_product_id,
       targeted_recheck_attempted: true,
-      targeted_recheck_result: stillOutOfStock ? 'still_out_of_stock' : 'failed',
+      targeted_recheck_result: 'still_out_of_stock',
       resulting_action: 'none',
-      final_status: stillOutOfStock ? 'recheck_still_out_of_stock' : 'recheck_failed',
+      final_status: 'recheck_still_out_of_stock',
       checked_at: checkedAt,
-      inventory_status: proposal?.status ?? 'unknown',
-      error_code: stillOutOfStock ? null : scanPersisted ? 'INVENTORY_UNKNOWN' : `TARGETED_SCAN_EXIT_${scan.status ?? 'UNKNOWN'}`,
-      error_message: stillOutOfStock ? null : '单商品库存读取未得到可靠有货结论，未执行恢复上架',
-      scan_exit_code: scan.status,
-      other_items_scanned: Number(report?.totals?.total ?? 0) === 1 ? 0 : null,
+      inventory_status: 'confirmed_out_of_stock',
+      error_code: 'confirmed_out_of_stock',
+      error_message: '至少一个已验证供应商账号明确返回当前商品不可售，未执行恢复',
+      other_items_scanned: 0,
+      identity: {
+        ...identity,
+        favorites_lookup_identity: identity.lookup_identity,
+        product_detail_identity: identity.lookup_identity,
+        availability_lookup_identity: identity.lookup_identity,
+        inventory_lookup_identity: identity.lookup_identity,
+        website_search_identity: 'pending_verification',
+      },
+      accounts: sourceFacts,
+    });
+  }
+
+  const pickupHasReliableStock = pickup.total_available_qty > 0;
+  if (!pickupHasReliableStock) {
+    return targetedFailure({
+      code: 'restore_gate_blocked',
+      message: 'Pickup 可售状态存在，但未读取到生产规则认可的正库存数量',
+      product,
+      identity,
+      pickup,
+      dropship,
+      checkedAt,
+    });
+  }
+
+  const runId = `xone-targeted-identity-${randomUUID()}`;
+  const [priorAvailabilityResult, workflowResult, config] = await Promise.all([
+    client.from('product_availability_current')
+      .select('supplier_product_id,available,status,checked_at,last_confirmed_available_at,last_confirmed_unavailable_at,consecutive_failures')
+      .eq('supplier_product_id', product.supplier_product_id)
+      .limit(2),
+    client.from('inventory_workflow_states')
+      .select('supplier_product_id,supplier_sku,workflow_state,consecutive_out_of_stock,consecutive_in_stock,last_observed_inventory_status,last_observed_at,last_observation_key,last_transition_at,transition_reason,version')
+      .eq('supplier_product_id', product.supplier_product_id)
+      .limit(2),
+    loadInventoryConfigForScript(),
+  ]);
+  const priorAvailabilityRows = mustRows(priorAvailabilityResult as never, 'targeted_prior_availability') as PriorCurrentRow[];
+  const workflowRows = mustRows(workflowResult as never, 'targeted_prior_workflow') as WorkflowRow[];
+  if (priorAvailabilityRows.length > 1 || workflowRows.length > 1) {
+    return targetedFailure({ code: 'restore_gate_blocked', message: '现有库存状态存在身份冲突，已拒绝写入', product, identity, pickup, dropship, checkedAt });
+  }
+
+  const hasCaStock = pickup.warehouses.some((warehouse) => warehouse.state === 'CA' && warehouse.available_qty_min > 0);
+  const availabilityResult: AvailabilityResult = {
+    sku: product.supplier_product_id,
+    status: 'confirmed_available',
+    available: true,
+    inventoryStatus: hasCaStock ? 'confirmed_in_stock_ca' : 'confirmed_in_stock_out_of_state',
+    reason: `corrected_lookup_identity:${identity.lookup_identity}`,
+  };
+  const plan = planPersistence(availabilityResult, priorAvailabilityRows[0] ?? null, runId, checkedAt);
+  assertNoPublicationWrite([plan]);
+
+  const priorWorkflow = workflowRows[0] ?? null;
+  const priorSnapshot = priorWorkflow
+    ? {
+      state: priorWorkflow.workflow_state as InventoryWorkflowState,
+      consecutiveOutOfStock: priorWorkflow.consecutive_out_of_stock,
+      consecutiveInStock: priorWorkflow.consecutive_in_stock,
+    }
+    : {
+      state: product.published === false ? 'delisted_out_of_stock' as const : 'published_in_stock' as const,
+      consecutiveOutOfStock: 0,
+      consecutiveInStock: 0,
+    };
+  const transition = transitionInventoryState(priorSnapshot, availabilityResult.inventoryStatus, {
+    outOfStockConfirmationsRequired: config.outOfStockConfirmations,
+    inStockConfirmationsRequired: config.relistConfirmations,
+  });
+  const observationKey = `${product.supplier_product_id}|${runId}|corrected_lookup_identity`;
+  const workflowPatch = {
+    supplier_product_id: product.supplier_product_id,
+    supplier_sku: request.sku,
+    workflow_state: transition.next.state,
+    consecutive_out_of_stock: transition.next.consecutiveOutOfStock,
+    consecutive_in_stock: transition.next.consecutiveInStock,
+    last_observed_inventory_status: availabilityResult.inventoryStatus,
+    last_observed_at: checkedAt,
+    last_observation_key: observationKey,
+    last_transition_at: checkedAt,
+    transition_reason: 'corrected_lookup_identity',
+    updated_at: checkedAt,
+  };
+
+  let productionWriteAttempted = false;
+  try {
+    productionWriteAttempted = true;
+    if (priorWorkflow) {
+      const { data, error } = await client.from('inventory_workflow_states')
+        .update({ ...workflowPatch, version: priorWorkflow.version + 1 })
+        .eq('supplier_product_id', product.supplier_product_id)
+        .eq('version', priorWorkflow.version)
+        .select('supplier_product_id');
+      if (error || (data ?? []).length !== 1) throw new Error('workflow_write_failed');
+    } else {
+      const { error } = await client.from('inventory_workflow_states').insert({ ...workflowPatch, version: 1 });
+      if (error) throw new Error('workflow_write_failed');
+    }
+
+    const transitionInsert = await client.from('inventory_workflow_transitions').insert({
+      supplier_product_id: product.supplier_product_id,
+      supplier_sku: request.sku,
+      from_state: priorSnapshot.state,
+      to_state: transition.next.state,
+      observed_inventory_status: availabilityResult.inventoryStatus,
+      observed_at: checkedAt,
+      observation_key: observationKey,
+      consecutive_out_of_stock_before: priorSnapshot.consecutiveOutOfStock,
+      consecutive_in_stock_before: priorSnapshot.consecutiveInStock,
+      consecutive_out_of_stock_after: transition.next.consecutiveOutOfStock,
+      consecutive_in_stock_after: transition.next.consecutiveInStock,
+      proposed_action: transition.proposedAction,
+      observed_exception: transition.observedException,
+      reason: 'corrected_lookup_identity',
+      run_id: runId,
+      runner: 'xone_targeted_identity_recheck',
+      transitioned_at: checkedAt,
+    });
+    if (transitionInsert.error) throw new Error('workflow_audit_write_failed');
+
+    const checkWrite = await client.from('product_availability_checks')
+      .upsert(plan.checkRow, { onConflict: 'run_id,supplier_product_id' });
+    if (checkWrite.error) throw new Error('availability_audit_write_failed');
+    if (!plan.currentUpsert) throw new Error('availability_plan_not_confirmed');
+    const currentWrite = await client.from('product_availability_current')
+      .upsert(plan.currentUpsert, { onConflict: 'supplier_product_id' });
+    if (currentWrite.error) throw new Error('availability_current_write_failed');
+  } catch (error) {
+    return targetedFailure({
+      code: 'restore_execution_failed',
+      message: '真实有货读取成功，但现有生命周期写入未完整完成',
+      product,
+      identity,
+      pickup,
+      dropship,
+      checkedAt,
+      productionWriteAttempted,
     });
   }
 
   let relistAttempted = false;
   let relistExitCode: number | null = null;
-  if (scanPersisted && product.published === false) {
+  if (product.published === false && transition.next.state === 'eligible_for_relist') {
     relistAttempted = true;
+    const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
     const apply = spawnSync('/opt/homebrew/bin/node', [
       runtime,
       path.join(REPO, 'scripts', 'applyInventoryLifecycleActions.ts'),
@@ -608,35 +823,61 @@ async function runTargetedRecheck(
     .eq('supplier_product_id', product.supplier_product_id)
     .limit(1);
   const sellable = mustRows(sellableResult as never, 'targeted_sellable_readback').length === 1;
+  const availabilityReadbackResult = await client.from('product_availability_current')
+    .select('supplier_product_id,available,status,checked_at,last_run_id')
+    .eq('supplier_product_id', product.supplier_product_id)
+    .limit(1);
+  const availabilityReadback = mustRows(availabilityReadbackResult as never, 'targeted_availability_readback')[0] as Record<string, unknown> | undefined;
+  const workflowReadbackResult = await client.from('inventory_workflow_states')
+    .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,transition_reason,last_observed_inventory_status,last_observed_at')
+    .eq('supplier_product_id', product.supplier_product_id)
+    .limit(1);
+  const workflowReadback = mustRows(workflowReadbackResult as never, 'targeted_workflow_readback')[0] as Record<string, unknown> | undefined;
   const quantity = readback?.total_available_qty == null ? null : Number(readback.total_available_qty);
   const readbackVerified = readback?.published === true
     && readback.inventory_status === 'in_stock'
     && Number.isFinite(quantity)
     && Number(quantity) > 0
-    && sellable;
+    && sellable
+    && availabilityReadback?.available === true
+    && availabilityReadback?.status === 'confirmed_available'
+    && workflowReadback?.workflow_state === 'published_in_stock'
+    && Number(workflowReadback?.consecutive_out_of_stock ?? -1) === 0;
   return success('recheck-item', {
-    production_write_attempted: true,
+    production_write_attempted: productionWriteAttempted,
     sku: request.sku,
     supplier_product_id: product.supplier_product_id,
     targeted_recheck_attempted: true,
-    targeted_recheck_result: scanPersisted ? 'confirmed_in_stock' : 'failed',
-    resulting_action: readbackVerified ? 'safe_relist_verified' : relistAttempted ? 'safe_relist_not_applied' : 'inventory_state_refreshed',
-    final_status: readbackVerified ? 'restored_after_manual_review' : scanPersisted ? 'manual_confirmed_in_stock' : 'recheck_failed',
+    targeted_recheck_result: 'confirmed_in_stock',
+    resulting_action: readbackVerified ? 'safe_restore_verified' : relistAttempted ? 'safe_relist_not_applied' : 'inventory_state_refreshed',
+    final_status: readbackVerified ? 'restored_after_manual_review' : 'manual_confirmed_in_stock',
     checked_at: checkedAt,
-    inventory_status: proposal?.status ?? 'confirmed_available',
+    inventory_status: availabilityResult.inventoryStatus,
     relist_attempted: relistAttempted,
     relist_exit_code: relistExitCode,
+    run_id: runId,
+    identity: {
+      ...identity,
+      favorites_lookup_identity: identity.lookup_identity,
+      product_detail_identity: identity.lookup_identity,
+      availability_lookup_identity: identity.lookup_identity,
+      inventory_lookup_identity: identity.lookup_identity,
+      website_search_identity: 'pending_verification',
+    },
+    accounts: sourceFacts,
+    restore_result: readbackVerified ? 'restored_and_verified' : 'restore_readback_failed',
     readback: {
       published: readback?.published ?? null,
       inventory_status: readback?.inventory_status ?? 'unknown',
       total_available_qty: quantity,
       sellable,
       verified: readbackVerified,
+      availability: availabilityReadback ?? null,
+      workflow: workflowReadback ?? null,
     },
-    error_code: readbackVerified ? null : scanPersisted ? 'RELIST_NOT_VERIFIED' : `TARGETED_SCAN_EXIT_${scan.status ?? 'UNKNOWN'}`,
-    error_message: readbackVerified ? null : scanPersisted ? '已确认有货，但现有安全恢复流程尚未完成全部门禁或回读验证' : '有货结果未能安全写入现有生命周期',
-    scan_exit_code: scan.status,
-    other_items_scanned: Number(report?.totals?.total ?? 0) === 1 ? 0 : null,
+    error_code: readbackVerified ? null : 'restore_readback_failed',
+    error_message: readbackVerified ? null : '已确认有货，但现有恢复流程未通过全部回读验证',
+    other_items_scanned: 0,
   });
 }
 

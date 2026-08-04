@@ -86,4 +86,13 @@ assert.equal(scannerSource.includes("val('xone-targeted')"), true);
 assert.equal(scannerSource.includes("`xone-targeted-${XONE_TARGETED_TOKEN}.json`"), true);
 assert.equal(scannerSource.includes(".in('supplier_product_id', ONLY_SKUS)"), true);
 
+const bridgeSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'xoneInventoryLifecycleBridge.ts'), 'utf8');
+assert.equal(bridgeSource.includes("const TARGETED_IDENTITY_REPAIR_SKU = 'XH-GH-HM-86617W'"), true);
+assert.equal(bridgeSource.includes("readSupplierAccountProductFacts('pickup', identity.lookup_identity"), true);
+assert.equal(bridgeSource.includes("readSupplierAccountProductFacts('dropship', identity.lookup_identity"), true);
+assert.equal(bridgeSource.includes('resolveInventoryLookupIdentity({'), true);
+assert.equal(bridgeSource.includes("'corrected_lookup_identity'"), true);
+assert.equal(bridgeSource.includes('other_items_scanned: 0'), true);
+assert.equal(bridgeSource.includes('`--skus=${product.supplier_product_id}`'), false);
+
 console.log('xoneInventoryLifecycleBridge tests passed');
