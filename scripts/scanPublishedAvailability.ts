@@ -36,6 +36,7 @@ import {
 import {
   OPEN_API_SOURCE,
   classifyBatch,
+  extractRows,
   redactReason,
   tally,
   type AvailabilityResult,
@@ -113,6 +114,37 @@ async function fetchBatch(skus: string[]): Promise<BatchOutcome> {
     if (/JSON|parse|unexpected token/i.test(msg)) return { kind: 'malformed', message: msg };
     return { kind: 'api_error', message: msg };
   }
+}
+
+/** Price rows that carried no usable `skuAvailable`. Only these need the detail fallback. */
+const NEEDS_DETAIL_FALLBACK = (r: AvailabilityResult): boolean =>
+  r.status === 'malformed_response' && r.reason === 'skuAvailable missing or non-boolean';
+
+/**
+ * Ask `/detailInfo/v1` for the handful of SKUs whose price row omitted `skuAvailable`.
+ *
+ * Some products report the flag only on the detail endpoint. Without this they stayed
+ * `malformed_response` on every run, never got an availability row, and so were absent from
+ * `sellable_products` while still published and in stock. This is the same price-then-detail
+ * precedence the targeted read client already uses.
+ *
+ * A failure here is not an answer: the map comes back empty and the SKUs remain
+ * `malformed_response`, which is non-authoritative and can never delist.
+ */
+async function fetchDetailFallback(skus: string[]): Promise<Map<string, { skuAvailable?: unknown }>> {
+  const bySku = new Map<string, { skuAvailable?: unknown }>();
+  if (!skus.length) return bySku;
+  try {
+    const { fetchProductDetails } = await import('../src/services/gigaApiClient');
+    const rows = extractRows(await fetchProductDetails(skus));
+    for (const row of rows ?? []) {
+      const key = row?.sku ?? row?.skuCode;
+      if (typeof key === 'string' && key) bySku.set(key, row);
+    }
+  } catch (e) {
+    console.log(`  detail fallback unavailable → ${redactReason(e)}`);
+  }
+  return bySku;
 }
 
 interface Proposal {
@@ -215,7 +247,18 @@ async function main(): Promise<void> {
     const results: AvailabilityResult[] = [];
     for (const batch of chunk(targets, BATCH)) {
       const outcome = await fetchBatch(batch);
-      results.push(...classifyBatch(batch, outcome));
+      let classified = classifyBatch(batch, outcome);
+
+      // Only re-read the SKUs whose price row had no usable flag — normally a handful per run.
+      const needsDetail = classified.filter(NEEDS_DETAIL_FALLBACK).map(r => r.sku);
+      if (needsDetail.length) {
+        const detailBySku = await fetchDetailFallback(needsDetail);
+        if (detailBySku.size) classified = classifyBatch(batch, outcome, detailBySku);
+        const recovered = classified.filter(r => needsDetail.includes(r.sku) && !NEEDS_DETAIL_FALLBACK(r)).length;
+        console.log(`  detail fallback ${needsDetail.length} sku → ${recovered} resolved`);
+      }
+
+      results.push(...classified);
       console.log(`  batch ${batch.length} → ${outcome.kind}`);
     }
 

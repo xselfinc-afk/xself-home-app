@@ -1,29 +1,36 @@
 /**
  * Resolve the supplier lookup identity ("Supplier Item Code") for one XSelf SKU.
  *
+ * There are two legitimate identity sources, and neither of them is a guess:
+ *
+ *   A. Variant relation — the supplier's own `raw_payload.associateProductList` names a sibling
+ *      code for the same physical item. Selected, never constructed.
+ *
+ *   B. Capability verification — some products are synced with a lean payload that has no
+ *      `associateProductList` at all. For those, `supplier_product_id` (which equals
+ *      `raw_payload.sku`) is offered as a CANDIDATE ONLY. The caller must prove it works against
+ *      the live supplier APIs on both accounts before it may be used.
+ *
  * Hard guarantees, all covered by tests:
  *
  * 1. The XSelf SKU is never used to query the supplier. It is only an input key.
- * 2. The legacy `supplier_product_id` is never used as a fallback lookup identity.
- * 3. The identity is never *constructed*. It is only ever *selected* from the
- *    supplier's own `raw_payload.associateProductList`. If the expected sibling
- *    code is absent from that list, resolution fails — it is not synthesized by
- *    rewriting a character.
- * 4. Ambiguity fails closed. Zero candidates and multiple candidates are two
- *    different, separately reported outcomes; neither guesses.
+ * 2. No identity is ever *constructed*. Source A selects from supplier-provided siblings;
+ *    source B echoes an identifier the supplier itself stored. Neither rewrites characters.
+ * 3. A source-B candidate is never returned as resolved. It comes back as
+ *    `pending_capability_verification` and is only usable after the caller verifies it.
+ * 4. Ambiguity fails closed. Conflicting identifiers are reported, never picked between.
  *
- * The selection rule is a *positional role-marker relation*: within one supplier
- * variant family the same physical item appears under a purchasing code and an
- * inventory code that are identical except for a single role character at a fixed
- * position. Applying it as a filter over supplier-provided siblings is what keeps
- * `N707P186617W` bound to `N707S186617W` instead of its `B`/`E` colour siblings.
- * The rule narrows a supplier-provided set; it does not invent a member of it.
+ * The P/S letters are a supplier coding convention, not a rule. They narrow source A's candidate
+ * set; they never decide whether an identity is legitimate. That is what capability proves.
  */
 
 export type InventoryLookupIdentitySource =
-  | 'supplier_products.raw_payload.associateProductList';
+  | 'supplier_products.raw_payload.associateProductList'
+  | 'capability_verified_supplier_identity';
 
-export type InventoryLookupIdentityConfidence = 'verified_variant_relation';
+export type InventoryLookupIdentityConfidence =
+  | 'verified_variant_relation'
+  | 'verified';
 
 export type InventoryLookupIdentityErrorCode =
   | 'identity_input_invalid'
@@ -46,6 +53,8 @@ export interface InventoryLookupIdentityInput {
   xselfSku: string;
   legacySupplierProductId: string;
   associateProductList: unknown;
+  /** `raw_payload.sku`. When present it must agree with legacySupplierProductId. */
+  supplierPayloadSku?: unknown;
 }
 
 interface InventoryLookupIdentityBase {
@@ -60,6 +69,16 @@ export interface ResolvedInventoryLookupIdentity extends InventoryLookupIdentity
   identity_error: null;
 }
 
+/** Not an answer. A candidate the caller must prove before using. */
+export interface PendingInventoryLookupIdentity extends InventoryLookupIdentityBase {
+  lookup_identity: null;
+  identity_source: null;
+  identity_confidence: null;
+  identity_error: null;
+  pending_capability_verification: true;
+  candidate: string;
+}
+
 export interface UnresolvedInventoryLookupIdentity extends InventoryLookupIdentityBase {
   lookup_identity: null;
   identity_source: null;
@@ -69,6 +88,7 @@ export interface UnresolvedInventoryLookupIdentity extends InventoryLookupIdenti
 
 export type InventoryLookupIdentityResult =
   | ResolvedInventoryLookupIdentity
+  | PendingInventoryLookupIdentity
   | UnresolvedInventoryLookupIdentity;
 
 /** Kept for callers that still want an exception form. Not thrown by the resolver itself. */
@@ -91,11 +111,10 @@ function normalizedStrings(value: unknown): string[] {
 }
 
 /**
- * True when `candidate` is the same code as `legacy` except for exactly one
- * position, and that position carries the purchasing→inventory role markers.
+ * True when `candidate` is the same code as `legacy` except for exactly one position, and that
+ * position carries the purchasing→inventory role markers.
  *
- * This is a predicate over a value the supplier already gave us. It is never used
- * to build a string.
+ * This is a predicate over a value the supplier already gave us. It never builds a string.
  */
 function isVariantRoleSubstitution(legacy: string, candidate: string): boolean {
   if (candidate.length !== legacy.length || candidate === legacy) return false;
@@ -136,10 +155,9 @@ function unresolved(
 }
 
 /**
- * Resolve one XSelf SKU to its supplier lookup identity.
- *
- * Returns a result object for every outcome. It does not throw for expected
- * failures, so callers can report a stable error code instead of parsing a string.
+ * Resolve one XSelf SKU to its supplier lookup identity, or to a candidate that still needs
+ * capability verification. Returns a result object for every outcome; it does not throw for
+ * expected failures, so callers can report a stable code instead of parsing a string.
  */
 export function resolveInventoryLookupIdentity(
   input: InventoryLookupIdentityInput,
@@ -155,22 +173,28 @@ export function resolveInventoryLookupIdentity(
     return unresolved(
       base,
       'identity_input_invalid',
-      '缺少 XSelf SKU 或旧供应商商品身份，无法解析供应商查询身份',
+      '缺少 XSelf SKU 或供应商商品身份，无法解析供应商查询身份',
       [],
     );
   }
 
+  // The supplier stored two different identifiers for the same row. Never pick between them.
+  const payloadSku = input.supplierPayloadSku === undefined || input.supplierPayloadSku === null
+    ? ''
+    : String(input.supplierPayloadSku).trim();
+  if (payloadSku && payloadSku !== legacy) {
+    return unresolved(
+      base,
+      'identity_mapping_conflict',
+      'supplier_product_id 与 raw_payload.sku 不一致，已拒绝在两者之间猜测',
+      [legacy, payloadSku],
+    );
+  }
+
+  // ── Source A: the supplier's own variant relation ──────────────────────────────────────────
   const supplierProvided = normalizedStrings(input.associateProductList);
   const candidates = supplierProvided.filter((candidate) => isVariantRoleSubstitution(legacy, candidate));
 
-  if (candidates.length === 0) {
-    return unresolved(
-      base,
-      'identity_mapping_missing',
-      '现有商品关系中没有可用的 Supplier Item Code；不会用 XSelf SKU 或旧 P 码代替',
-      supplierProvided,
-    );
-  }
   if (candidates.length > 1) {
     return unresolved(
       base,
@@ -180,29 +204,66 @@ export function resolveInventoryLookupIdentity(
     );
   }
 
-  const lookupIdentity = candidates[0];
-  // Guarantee 3, asserted rather than assumed: the resolved value must be a member
-  // of the supplier-provided list, never something this function assembled.
-  if (!supplierProvided.includes(lookupIdentity)) {
-    return unresolved(
-      base,
-      'identity_mapping_missing',
-      '解析结果不在供应商提供的关联商品列表中，已拒绝使用',
-      supplierProvided,
-    );
+  if (candidates.length === 1) {
+    const lookupIdentity = candidates[0];
+    // Guarantee 2, asserted rather than assumed.
+    if (!supplierProvided.includes(lookupIdentity)) {
+      return unresolved(
+        base,
+        'identity_mapping_missing',
+        '解析结果不在供应商提供的关联商品列表中，已拒绝使用',
+        supplierProvided,
+      );
+    }
+    return {
+      ...base,
+      lookup_identity: lookupIdentity,
+      identity_source: 'supplier_products.raw_payload.associateProductList',
+      identity_confidence: 'verified_variant_relation',
+      identity_error: null,
+    };
   }
 
+  // ── Source B: no usable variant relation, so offer the supplier's own identifier ───────────
+  // This is NOT an answer. The caller must prove it against the live APIs on both accounts.
   return {
     ...base,
-    lookup_identity: lookupIdentity,
-    identity_source: 'supplier_products.raw_payload.associateProductList',
-    identity_confidence: 'verified_variant_relation',
+    lookup_identity: null,
+    identity_source: null,
+    identity_confidence: null,
     identity_error: null,
+    pending_capability_verification: true,
+    candidate: legacy,
   };
 }
 
 export function isResolvedInventoryLookupIdentity(
   value: InventoryLookupIdentityResult,
 ): value is ResolvedInventoryLookupIdentity {
-  return value.identity_error === null && typeof value.lookup_identity === 'string';
+  return value.identity_error === null
+    && !('pending_capability_verification' in value)
+    && typeof value.lookup_identity === 'string';
+}
+
+export function isPendingCapabilityVerification(
+  value: InventoryLookupIdentityResult,
+): value is PendingInventoryLookupIdentity {
+  return 'pending_capability_verification' in value;
+}
+
+/**
+ * Promote a proven candidate to a resolved identity. Call this ONLY after every capability in the
+ * chain has succeeded on both accounts and reported the same identity back.
+ */
+export function acceptCapabilityVerifiedIdentity(
+  pending: PendingInventoryLookupIdentity,
+): ResolvedInventoryLookupIdentity {
+  return {
+    xself_sku: pending.xself_sku,
+    legacy_supplier_product_id: pending.legacy_supplier_product_id,
+    lookup_identity: pending.candidate,
+    identity_source: 'capability_verified_supplier_identity',
+    identity_confidence: 'verified',
+    identity_error: null,
+  };
 }

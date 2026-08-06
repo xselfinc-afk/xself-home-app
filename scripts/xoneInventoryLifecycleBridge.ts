@@ -18,6 +18,8 @@ import {
   type SupplierAccountProductFacts,
 } from './lib/gigaAccountReadClient';
 import {
+  acceptCapabilityVerifiedIdentity,
+  isPendingCapabilityVerification,
   isResolvedInventoryLookupIdentity,
   resolveInventoryLookupIdentity,
   type ResolvedInventoryLookupIdentity,
@@ -757,8 +759,9 @@ export async function runTargetedRecheck(
     xselfSku: request.sku,
     legacySupplierProductId: product.supplier_product_id,
     associateProductList: relationshipRows[0].raw_payload?.associateProductList,
+    supplierPayloadSku: relationshipRows[0].raw_payload?.sku,
   });
-  if (!isResolvedInventoryLookupIdentity(identityResult)) {
+  if (!isResolvedInventoryLookupIdentity(identityResult) && !isPendingCapabilityVerification(identityResult)) {
     return targetedFailure({
       code: identityResult.identity_error.code,
       message: identityResult.identity_error.message,
@@ -767,29 +770,61 @@ export async function runTargetedRecheck(
       product,
     });
   }
-  const identity: ResolvedInventoryLookupIdentity = identityResult;
+
+  // A pending candidate is not yet an identity. It is queried exactly like a resolved one, and it
+  // is only accepted if the full capability chain succeeds on BOTH accounts. Anything less leaves
+  // it unresolved — we never fall back to the XSelf SKU and never guess a sibling code.
+  const pendingVerification = isPendingCapabilityVerification(identityResult) ? identityResult : null;
+  const lookupIdentity = pendingVerification ? pendingVerification.candidate : identityResult.lookup_identity;
 
   let pickup: SupplierAccountProductFacts | null = null;
   let dropship: SupplierAccountProductFacts | null = null;
   try {
     // Every supplier call uses the resolved lookup identity — never the XSelf SKU,
-    // never the legacy supplier_product_id.
-    pickup = await readAccountFacts('pickup', identity.lookup_identity);
-    dropship = await readAccountFacts('dropship', identity.lookup_identity);
+    // never a constructed variant code.
+    pickup = await readAccountFacts('pickup', lookupIdentity);
+    dropship = await readAccountFacts('dropship', lookupIdentity);
   } catch (error) {
     const mapped = supplierReadFailure(error);
-    // A read failure is a read failure. It is never reported as "out of stock".
+    // A read failure is a read failure. It is never reported as "out of stock", and for a pending
+    // candidate it means the candidate stays unproven.
     return targetedFailure({
       code: mapped.code,
       message: mapped.message,
-      details: { ...mapped.details, lookup_identity: identity.lookup_identity },
+      details: {
+        ...mapped.details,
+        lookup_identity: lookupIdentity,
+        ...(pendingVerification ? { identity_verification: 'failed' } : {}),
+      },
       retryable: mapped.retryable,
       product,
-      identity,
+      identity: pendingVerification ? null : identityResult,
       pickup,
       dropship,
     });
   }
+
+  // Both accounts answered. Confirm they answered about the SAME item before trusting anything.
+  if (pickup.lookup_identity !== lookupIdentity || dropship.lookup_identity !== lookupIdentity) {
+    return targetedFailure({
+      code: 'identity_mapping_conflict',
+      message: '供应商返回的商品身份与查询身份不一致，已拒绝采信',
+      details: {
+        xself_sku: request.sku,
+        lookup_identity: lookupIdentity,
+        pickup_identity: pickup.lookup_identity,
+        dropship_identity: dropship.lookup_identity,
+      },
+      retryable: false,
+      product,
+    });
+  }
+
+  // Proven on both accounts across favorites, detail, availability and inventory. The P/S letter
+  // plays no part in this decision — capability did.
+  const identity: ResolvedInventoryLookupIdentity = pendingVerification
+    ? acceptCapabilityVerifiedIdentity(pendingVerification)
+    : identityResult;
 
   const checkedAt = new Date().toISOString();
   const sourceFacts = { pickup, dropship };

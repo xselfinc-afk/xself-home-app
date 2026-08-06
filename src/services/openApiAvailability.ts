@@ -127,7 +127,18 @@ export function isApiErrorEnvelope(payload: unknown): boolean {
  * Classify one batch. `requestedSkus` drives the output so a SKU the supplier omitted is reported
  * as `missing_sku` rather than silently disappearing from the run.
  */
-export function classifyBatch(requestedSkus: readonly string[], outcome: BatchOutcome): AvailabilityResult[] {
+export function classifyBatch(
+  requestedSkus: readonly string[],
+  outcome: BatchOutcome,
+  /**
+   * Optional `/detailInfo/v1` rows, consulted ONLY when the price row carries no usable
+   * `skuAvailable`. Some products answer the availability flag on the detail endpoint and omit it
+   * on price; without this they were reported `malformed_response` forever and never got an
+   * evidence row, which kept them out of `sellable_products` while still published and in stock.
+   * Same precedence the targeted read client already uses: price first, detail as fallback.
+   */
+  detailBySku?: ReadonlyMap<string, { skuAvailable?: unknown }>,
+): AvailabilityResult[] {
   const fail = (status: ApiAvailabilityStatus, reason: string): AvailabilityResult[] =>
     requestedSkus.map(sku => ({
       sku,
@@ -165,7 +176,21 @@ export function classifyBatch(requestedSkus: readonly string[], outcome: BatchOu
     if (falsy(raw)) {
       return { sku, status: 'confirmed_out_of_stock', available: false, inventoryStatus: toInventoryResultStatus('confirmed_out_of_stock'), reason: 'skuAvailable=false' };
     }
-    // Present but with no usable flag — unknown, never zero.
+
+    // The price row carries no usable flag. Before calling the response malformed, ask the detail
+    // endpoint — for some products that is simply where the supplier reports the flag.
+    const detail = detailBySku?.get(sku);
+    if (detail) {
+      const detailRaw = detail.skuAvailable;
+      if (truthy(detailRaw)) {
+        return { sku, status: 'confirmed_available', available: true, inventoryStatus: toInventoryResultStatus('confirmed_available'), reason: 'detail skuAvailable=true (price omitted)' };
+      }
+      if (falsy(detailRaw)) {
+        return { sku, status: 'confirmed_out_of_stock', available: false, inventoryStatus: toInventoryResultStatus('confirmed_out_of_stock'), reason: 'detail skuAvailable=false (price omitted)' };
+      }
+    }
+
+    // Neither endpoint gave a usable flag — unknown, never zero.
     return { sku, status: 'malformed_response', available: null, inventoryStatus: toInventoryResultStatus('malformed_response'), reason: 'skuAvailable missing or non-boolean' };
   });
 }

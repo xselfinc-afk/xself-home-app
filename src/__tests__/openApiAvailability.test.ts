@@ -193,6 +193,89 @@ function main(): void {
     for (const r of rs) assert.ok(agreesWithSharedVocabulary(r), `${r.sku}/${r.status} disagrees`);
   });
 
+  // ── Detail fallback: price omits skuAvailable, detail supplies it ───────────
+  //
+  // Regression guard for three real products (XH-CB-HM-06904C / E / K, supplier codes
+  // N710P206904C / E / K). They were synced with a lean payload; `/price/v1` returns their rows
+  // without `skuAvailable`, so every scan classified them `malformed_response`, no availability
+  // row was ever written, and they stayed out of `sellable_products` while published and in stock.
+  // Precedence matches `scripts/lib/gigaAccountReadClient.ts`: price first, detail as fallback.
+
+  const detail = (rows: Array<{ sku: string; skuAvailable?: unknown }>) =>
+    new Map(rows.map(r => [r.sku, r] as const));
+
+  it('19. price skuAvailable=true wins even when detail disagrees', () => {
+    const [r] = classifyBatch(['A'], ok([{ sku: 'A', skuAvailable: true }]), detail([{ sku: 'A', skuAvailable: false }]));
+    assert.equal(r.status, 'confirmed_available');
+    assert.equal(r.available, true);
+    assert.equal(r.reason, 'skuAvailable=true');
+  });
+
+  it('20. price skuAvailable=false wins even when detail disagrees', () => {
+    const [r] = classifyBatch(['A'], ok([{ sku: 'A', skuAvailable: false }]), detail([{ sku: 'A', skuAvailable: true }]));
+    assert.equal(r.status, 'confirmed_out_of_stock');
+    assert.equal(r.available, false);
+    assert.equal(r.reason, 'skuAvailable=false');
+  });
+
+  it('21. price omits the flag + detail true → confirmed_available', () => {
+    for (const sku of ['N710P206904C', 'N710P206904E', 'N710P206904K']) {
+      const [r] = classifyBatch([sku], ok([{ sku, price: 240 }]), detail([{ sku, skuAvailable: true }]));
+      assert.equal(r.status, 'confirmed_available', `${sku} must resolve from detail`);
+      assert.equal(r.available, true);
+      assert.equal(r.inventoryStatus, 'confirmed_in_stock_out_of_state');
+      assert.ok(agreesWithSharedVocabulary(r));
+    }
+  });
+
+  it('22. price omits the flag + detail false → confirmed_out_of_stock', () => {
+    const [r] = classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]), detail([{ sku: 'A', skuAvailable: false }]));
+    assert.equal(r.status, 'confirmed_out_of_stock');
+    assert.equal(r.available, false);
+    assert.equal(countsAsConfirmedZero(r.inventoryStatus), true);
+  });
+
+  it('23. neither price nor detail has a usable flag → malformed_response, never zero', () => {
+    const cases = [
+      classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]), detail([{ sku: 'A' }]))[0],
+      classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]), detail([{ sku: 'A', skuAvailable: 'maybe' }]))[0],
+      classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]), detail([{ sku: 'B', skuAvailable: true }]))[0],
+      classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]), new Map())[0],
+      classifyBatch(['A'], ok([{ sku: 'A', price: 240 }]))[0],
+    ];
+    for (const r of cases) {
+      assert.equal(r.status, 'malformed_response');
+      assert.equal(r.available, null);
+      assert.equal(countsAsConfirmedZero(r.inventoryStatus), false);
+      assert.equal(r.reason, 'skuAvailable missing or non-boolean');
+    }
+  });
+
+  it('24. a transport failure is api_failed, never out_of_stock — detail cannot rescue it', () => {
+    const transportFailures: BatchOutcome[] = [
+      { kind: 'api_error', message: 'boom' },
+      { kind: 'network_error', message: 'ECONNRESET' },
+      { kind: 'rate_limited' },
+      { kind: 'malformed', message: 'bad json' },
+    ];
+    for (const outcome of transportFailures) {
+      const [r] = classifyBatch(['A'], outcome, detail([{ sku: 'A', skuAvailable: false }]));
+      assert.notEqual(r.status, 'confirmed_out_of_stock');
+      assert.notEqual(r.status, 'confirmed_available');
+      assert.equal(r.available, null);
+      assert.equal(countsAsConfirmedZero(r.inventoryStatus), false);
+      assert.ok(agreesWithSharedVocabulary(r));
+    }
+    // The `code: 0` success-shaped failure is the same story.
+    const [envelope] = classifyBatch(['A'], ok({ code: 0, error: 'boom' }), detail([{ sku: 'A', skuAvailable: true }]));
+    assert.equal(envelope.status, 'api_failed');
+    assert.equal(envelope.available, null);
+    // And a SKU the supplier never returned stays unknown — the detail map must not invent it.
+    const [absent] = classifyBatch(['A'], ok([]), detail([{ sku: 'A', skuAvailable: true }]));
+    assert.equal(absent.status, 'missing_sku');
+    assert.equal(absent.available, null);
+  });
+
   console.log(`\n${passed} passed`);
 }
 main();

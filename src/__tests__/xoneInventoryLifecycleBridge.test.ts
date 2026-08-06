@@ -169,17 +169,120 @@ const duplicate = record(await runTargetedRecheck(
 assert.equal(duplicate.error_code, 'duplicate_sku');
 assert.equal((duplicate.error as Record<string, unknown>).code, 'duplicate_sku');
 
-// --- Case 6 via bridge: missing sibling -> identity_mapping_missing -----------
-const identityMissing = record(await runTargetedRecheck(
-  recheckRequest('XH-GH-HM-86617W'),
+// --- Capability verification -------------------------------------------------
+//
+// Three real products (XH-CB-HM-06904C / E / K) were synced with a lean payload that has no
+// associateProductList. Their own supplier_product_id is a legitimate identity — but only
+// because it answers on every capability, not because of the letter it contains. It is queried
+// like any candidate and accepted only when both accounts agree.
+
+const leanProduct = {
+  ...product,
+  supplier_product_id: 'N710P206904K',
+  sku_custom: 'XH-CB-HM-06904K',
+  product_title: '30 英寸浴室柜',
+  published: true,
+  delist_reason: null,
+  inventory_status: 'in_stock',
+  total_available_qty: 72,
+};
+// The real payload shape: a `sku` field and no relation list at all.
+const leanRelationship = {
+  supplier_product_id: 'N710P206904K',
+  raw_payload: { sku: 'N710P206904K', productName: '30 英寸浴室柜' },
+};
+const leanFixture = () => fixtureClient({
+  standardized_products: [leanProduct],
+  supplier_products: [leanRelationship],
+}).client;
+
+const capabilityLookups: string[] = [];
+const capabilityVerified = record(await runTargetedRecheck(
+  recheckRequest('XH-CB-HM-06904K'),
+  leanFixture(),
+  {
+    readAccountFacts: (role, lookupIdentity) => {
+      capabilityLookups.push(lookupIdentity);
+      return inStockFacts(lookupIdentity, role);
+    },
+  },
+));
+assert.equal(capabilityVerified.error_code ?? null, null, '一个可真实查询的身份不应再报 identity_mapping_missing');
+// Already published, so the outcome is a confirmation, not a restore proposal.
+assert.equal(capabilityVerified.targeted_recheck_result, 'confirmed_in_stock');
+assert.equal(capabilityVerified.production_write_attempted, false);
+assert.deepEqual(capabilityLookups, ['N710P206904K', 'N710P206904K'], '两个账号都必须查询同一个候选身份');
+assert.equal(
+  capabilityLookups.includes('XH-CB-HM-06904K'),
+  false,
+  'XSelf SKU 永远不得用于查询供应商',
+);
+const verifiedIdentity = capabilityVerified.identity as Record<string, unknown>;
+assert.equal(verifiedIdentity.lookup_identity, 'N710P206904K');
+assert.equal(verifiedIdentity.identity_source, 'capability_verified_supplier_identity');
+assert.equal(verifiedIdentity.identity_confidence, 'verified');
+
+// Only one account can see it -> unproven. No promotion, no production write.
+const singleAccountOnly = record(await runTargetedRecheck(
+  recheckRequest('XH-CB-HM-06904K'),
+  leanFixture(),
+  {
+    readAccountFacts: (role, lookupIdentity) => role === 'pickup'
+      ? inStockFacts(lookupIdentity, role)
+      : Promise.reject(new SupplierTargetedReadError('favorites_not_synchronized', 'Dropship Favorites 未同步', 'dropship', 'favorites')),
+  },
+));
+assert.equal(singleAccountOnly.targeted_recheck_result, 'failed');
+assert.equal(singleAccountOnly.error_code, 'dropship_favorites_read_error');
+assert.equal(singleAccountOnly.inventory_status, 'unknown', '读取失败不得解释为缺货');
+assert.equal(singleAccountOnly.restore_candidate, false);
+assert.equal(singleAccountOnly.production_write_attempted, false);
+assert.equal(singleAccountOnly.identity, null, '未通过验证的候选不得作为身份对外报告');
+assert.equal(
+  ((singleAccountOnly.error as Record<string, unknown>).details as Record<string, unknown>).identity_verification,
+  'failed',
+);
+
+// Favorites hits but the detail capability fails -> unproven.
+const detailFails = record(await runTargetedRecheck(
+  recheckRequest('XH-CB-HM-06904K'),
+  leanFixture(),
+  {
+    readAccountFacts: () => Promise.reject(
+      new SupplierTargetedReadError('supplier_product_not_found', '商品详情未返回目标商品', 'pickup', 'product_detail'),
+    ),
+  },
+));
+assert.equal(detailFails.targeted_recheck_result, 'failed');
+assert.equal(detailFails.error_code, 'product_detail_read_error');
+assert.equal(detailFails.inventory_status, 'unknown');
+assert.equal(detailFails.identity, null);
+
+// The accounts answer about a different item -> conflict, never accepted.
+const divergentIdentity = record(await runTargetedRecheck(
+  recheckRequest('XH-CB-HM-06904K'),
+  leanFixture(),
+  {
+    readAccountFacts: (role, lookupIdentity) => role === 'pickup'
+      ? inStockFacts(lookupIdentity, role)
+      : inStockFacts('N710P206904E', role),
+  },
+));
+assert.equal(divergentIdentity.targeted_recheck_result, 'failed');
+assert.equal(divergentIdentity.error_code, 'identity_mapping_conflict');
+assert.equal(divergentIdentity.production_write_attempted, false);
+
+// supplier_product_id disagrees with raw_payload.sku -> conflict before any supplier call.
+const payloadSkuConflict = record(await runTargetedRecheck(
+  recheckRequest('XH-CB-HM-06904K'),
   fixtureClient({
-    standardized_products: [product],
-    supplier_products: [{ ...relationship, raw_payload: { associateProductList: [] } }],
+    standardized_products: [leanProduct],
+    supplier_products: [{ supplier_product_id: 'N710P206904K', raw_payload: { sku: 'N710P206904W' } }],
   }).client,
   { readAccountFacts: () => { throw new Error('supplier must not be contacted'); } },
 ));
-assert.equal(identityMissing.error_code, 'identity_mapping_missing');
-assert.equal((identityMissing.error as Record<string, unknown>).retryable, false);
+assert.equal(payloadSkuConflict.error_code, 'identity_mapping_conflict');
+assert.equal((payloadSkuConflict.error as Record<string, unknown>).retryable, false);
 
 // --- Case 7 via bridge: two siblings -> identity_mapping_conflict -------------
 const identityConflict = record(await runTargetedRecheck(
@@ -309,10 +412,15 @@ for (const lookup of observedLookups) {
   assert.notEqual(lookup, 'N707P186617W');
   assert.notEqual(lookup, 'M312P940318437');
 }
-assert.deepEqual([...new Set(observedLookups)].sort(), ['M312S940318437', 'N707S186617W']);
+// Two variant-relation identities plus the capability-verified ones. A capability-verified
+// identity legitimately equals its supplier_product_id — that is what proving it is for.
+assert.deepEqual(
+  [...new Set(observedLookups)].sort(),
+  ['M312S940318437', 'N707S186617W', 'N710P206904E', 'N710P206904K'],
+);
 
 // --- Cases 13/14: invariants hold on every single response --------------------
-assert.equal(allResponses.length, 11);
+assert.equal(allResponses.length, 15);
 for (const response of allResponses) {
   assert.equal(response.production_write_attempted, false, 'no fixture path may attempt a production write');
   assert.equal(response.other_items_scanned, 0, 'targeted recheck must never widen its scope');
@@ -352,14 +460,23 @@ const scannerSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'scanP
 assert.equal(scannerSource.includes("val('xone-targeted')"), true);
 assert.equal(scannerSource.includes("`xone-targeted-${XONE_TARGETED_TOKEN}.json`"), true);
 assert.equal(scannerSource.includes(".in('supplier_product_id', ONLY_SKUS)"), true);
+// The detail fallback is targeted: only SKUs whose price row lacked a usable flag are re-read,
+// and a failure there leaves them malformed_response rather than inventing an answer.
+assert.equal(scannerSource.includes('classified.filter(NEEDS_DETAIL_FALLBACK)'), true);
+assert.equal(scannerSource.includes('fetchDetailFallback(needsDetail)'), true);
+assert.equal(scannerSource.includes('classifyBatch(batch, outcome, detailBySku)'), true);
+assert.equal(scannerSource.includes('fetchProductDetails'), true);
 
 const bridgeSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'xoneInventoryLifecycleBridge.ts'), 'utf8');
 // Case 3: the single-SKU hardcode is gone and must not come back.
 assert.equal(bridgeSource.includes('TARGETED_IDENTITY_REPAIR_SKU'), false);
 assert.equal(bridgeSource.includes('XH-GH-HM-86617W'), false, 'no SKU may be hardcoded in the bridge');
 assert.equal(bridgeSource.includes('target_scope_not_configured'), false);
-assert.equal(bridgeSource.includes("readAccountFacts('pickup', identity.lookup_identity)"), true);
-assert.equal(bridgeSource.includes("readAccountFacts('dropship', identity.lookup_identity)"), true);
+assert.equal(bridgeSource.includes("readAccountFacts('pickup', lookupIdentity)"), true);
+assert.equal(bridgeSource.includes("readAccountFacts('dropship', lookupIdentity)"), true);
+// A candidate is only promoted after both accounts pass — never on the strength of its code.
+assert.equal(bridgeSource.includes('acceptCapabilityVerifiedIdentity(pendingVerification)'), true);
+assert.equal(bridgeSource.includes('supplierPayloadSku: relationshipRows[0].raw_payload?.sku'), true);
 assert.equal(bridgeSource.includes('resolveInventoryLookupIdentity({'), true);
 assert.equal(bridgeSource.includes("'corrected_lookup_identity'"), true);
 assert.equal(bridgeSource.includes('other_items_scanned: 0'), true);
