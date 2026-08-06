@@ -25,6 +25,7 @@ import {
   REMOVAL_ENDPOINT,
 } from '../services/supplierFavoriteRemoval';
 import { buildFactRows, type FavoriteObservation } from '../services/supplierFavoriteFacts';
+import { buildInputs, resolveProductIdMapping } from '../../scripts/xoneSupplierFavoriteBridge';
 
 let passed = 0;
 function it(name: string, fn: () => void): void { fn(); passed++; console.log(`  ✓ ${name}`); }
@@ -315,6 +316,111 @@ async function main(): Promise<void> {
           `${file} must not write ${table}`,
         );
       }
+    }
+  });
+
+  // ── Regression: the two defects that made the first production run unusable ──
+
+  it('16. a missing row means "not saved" when that account was read authoritatively', () => {
+    // Pickup and Dropship legitimately hold largely different Favorites, so most SKUs have a row
+    // for one account only. Reading every gap as UNKNOWN made pickup_only / dropship_only
+    // structurally impossible and inflated read_failed to almost everything.
+    const rows = {
+      memberships: [
+        { supplier_product_id: 'P-ONLY', supplier_account: 'pickup', is_saved: true, sync_status: 'ok', observed_at: 'T' },
+        { supplier_product_id: 'D-ONLY', supplier_account: 'dropship', is_saved: true, sync_status: 'ok', observed_at: 'T' },
+        { supplier_product_id: 'BOTH', supplier_account: 'pickup', is_saved: true, sync_status: 'ok', observed_at: 'T' },
+        { supplier_product_id: 'BOTH', supplier_account: 'dropship', is_saved: true, sync_status: 'ok', observed_at: 'T' },
+      ],
+      assets: [], products: [], supplierManaged: new Set<string>(),
+    };
+    const inputs = buildInputs(rows as never);
+    const byId = new Map(inputs.map((i) => [i.supplier_product_id, i]));
+
+    // P-ONLY has no dropship row, but dropship read cleanly → false, not null.
+    assert.equal(byId.get('P-ONLY')!.dropship_is_saved, false);
+    assert.equal(byId.get('D-ONLY')!.pickup_is_saved, false);
+    assert.equal(byId.get('BOTH')!.pickup_is_saved, true);
+
+    const plan = buildSupplierFavoritePlan(inputs, []);
+    assert.equal(plan.counts.pickup_only, 1);
+    assert.equal(plan.counts.dropship_only, 1);
+    assert.equal(plan.counts.both_accounts, 1);
+    assert.equal(plan.counts.read_failed, 0);
+  });
+
+  it('17. a failed account read still makes every gap UNKNOWN', () => {
+    // The moment an account's sync is not clean, absence stops being evidence.
+    const rows = {
+      memberships: [
+        { supplier_product_id: 'A', supplier_account: 'pickup', is_saved: true, sync_status: 'ok', observed_at: 'T' },
+        { supplier_product_id: 'B', supplier_account: 'dropship', is_saved: null, sync_status: 'auth_failed', observed_at: 'T' },
+      ],
+      assets: [], products: [], supplierManaged: new Set<string>(),
+    };
+    const inputs = buildInputs(rows as never);
+    const byId = new Map(inputs.map((i) => [i.supplier_product_id, i]));
+    // Dropship failed → A's missing dropship row is unknown, never false.
+    assert.equal(byId.get('A')!.dropship_is_saved, null);
+    assert.notEqual(byId.get('A')!.dropship_is_saved, false);
+    assert.equal(byId.get('B')!.dropship_is_saved, null);
+
+    const plan = buildSupplierFavoritePlan(inputs, []);
+    assert.equal(plan.counts.read_failed, 2);
+    assert.equal(plan.counts.cleanup_candidates, 0, '读取失败时不得产生任何清理候选');
+  });
+
+  it('18. every bridge table read is paginated — no unbounded select survives', () => {
+    // Supabase silently caps an unbounded select at 1000 rows. supplier_favorite_memberships
+    // passed that mark in production and the node reported dropship 295 instead of 1497.
+    const src = fs.readFileSync('scripts/xoneSupplierFavoriteBridge.ts', 'utf8');
+    const loadRows = src.slice(src.indexOf('async function loadRows'), src.indexOf('function accountIsAuthoritative'));
+    assert.equal(
+      /\.from\([^)]*\)\s*\.select\([^)]*\)(?!\s*\.range)/.test(loadRows), false,
+      'loadRows must not contain a select without .range()',
+    );
+    assert.ok(src.includes('.range(from, from + PAGE_SIZE - 1)'), 'the paginating reader must be used');
+    for (const table of ['supplier_favorite_memberships', 'saved_assets', 'standardized_products', 'supplier_products']) {
+      assert.ok(
+        new RegExp(`readAll<[^>]*>\\(client, '${table}'`).test(src),
+        `${table} must be read through the paginating reader`,
+      );
+    }
+  });
+
+  it('19. the SKU → product_id mapping is verified in reverse, and ambiguity fails closed', () => {
+    const cache = [
+      { supplier_product_id: 'CLEAN', product_id: 667968 },
+      { supplier_product_id: 'CLEAN', product_id: 667968 },   // 同一映射的多行仓库记录
+      { supplier_product_id: 'TWO-IDS', product_id: 111 },
+      { supplier_product_id: 'TWO-IDS', product_id: 222 },
+      { supplier_product_id: 'SHARES-A', product_id: 333 },
+      { supplier_product_id: 'SHARES-B', product_id: 333 },
+    ];
+    const clean = resolveProductIdMapping('CLEAN', cache);
+    assert.equal(clean.status, 'unique');
+    assert.equal(clean.product_id, 667968);
+    assert.equal(clean.verified_sku, 'CLEAN', 'product_id 必须反查回同一个 SKU');
+
+    // 一个 SKU 对应多个 product_id → 不知道该删哪个。
+    assert.equal(resolveProductIdMapping('TWO-IDS', cache).status, 'multiple_product_ids');
+    assert.equal(resolveProductIdMapping('TWO-IDS', cache).product_id, null);
+
+    // product_id 被两个 SKU 共用 → 删了会连累另一个。这正是反查存在的理由。
+    assert.equal(resolveProductIdMapping('SHARES-A', cache).status, 'shared_product_id');
+    assert.equal(resolveProductIdMapping('SHARES-A', cache).product_id, null);
+
+    assert.equal(resolveProductIdMapping('UNKNOWN', cache).status, 'not_mapped');
+
+    // 任何非 unique 的映射都必须让取消预览失败。
+    for (const sku of ['TWO-IDS', 'SHARES-A', 'UNKNOWN']) {
+      const m = resolveProductIdMapping(sku, cache);
+      const p = previewRemoval({
+        supplier_product_id: sku, product_id: m.product_id,
+        verified_sku_for_product_id: m.verified_sku, approval, session_present: true,
+      }, ON);
+      assert.equal(p.ok, false, `${sku} 的映射不唯一，预览必须失败`);
+      assert.equal(p.payload, null);
     }
   });
 

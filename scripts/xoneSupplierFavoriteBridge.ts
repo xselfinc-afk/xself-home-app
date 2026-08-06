@@ -98,25 +98,104 @@ interface Rows {
 /** Delist reasons that leave a product eligible to come back — those items stay protected. */
 const RESTORABLE_DELIST_REASONS = new Set(['out_of_stock', 'supplier_unavailable', 'temporarily_unavailable']);
 
-async function loadRows(client: SupabaseClient): Promise<Rows> {
-  const [m, a, p, s] = await Promise.all([
-    client.from('supplier_favorite_memberships').select('supplier_product_id,supplier_account,is_saved,sync_status,observed_at'),
-    client.from('saved_assets').select('supplier_product_id,asset_state,founder_status,approved_at,approved_by'),
-    client.from('standardized_products').select('supplier_product_id,sku_custom,published,delist_reason,product_title,primary_image'),
-    client.from('supplier_products').select('supplier_product_id'),
-  ]);
-  for (const r of [m, a, p, s]) {
-    if (r.error) throw new Error(`FAVORITE_READ_FAILED:${r.error.message}`);
+const PAGE_SIZE = 1000;
+
+/**
+ * Read a whole table. Supabase caps an unbounded `select` at 1000 rows and returns them without
+ * any error, so an unpaginated read of `supplier_favorite_memberships` silently loses everything
+ * past the first page and every missing SKU then looks like a failed read. Paginate explicitly.
+ */
+async function readAll<T>(client: SupabaseClient, table: string, columns: string): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await client.from(table).select(columns).range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`FAVORITE_READ_FAILED:${table}:${error.message}`);
+    rows.push(...((data ?? []) as T[]));
+    if (!data || data.length < PAGE_SIZE) break;
   }
+  return rows;
+}
+
+async function loadRows(client: SupabaseClient): Promise<Rows> {
+  const [memberships, assets, products, supplier] = await Promise.all([
+    readAll<Rows['memberships'][number]>(client, 'supplier_favorite_memberships', 'supplier_product_id,supplier_account,is_saved,sync_status,observed_at'),
+    readAll<Rows['assets'][number]>(client, 'saved_assets', 'supplier_product_id,asset_state,founder_status,approved_at,approved_by'),
+    readAll<Rows['products'][number]>(client, 'standardized_products', 'supplier_product_id,sku_custom,published,delist_reason,product_title,primary_image'),
+    readAll<{ supplier_product_id: string }>(client, 'supplier_products', 'supplier_product_id'),
+  ]);
   return {
-    memberships: (m.data ?? []) as Rows['memberships'],
-    assets: (a.data ?? []) as Rows['assets'],
-    products: (p.data ?? []) as Rows['products'],
-    supplierManaged: new Set(((s.data ?? []) as Array<{ supplier_product_id: string }>).map((r) => r.supplier_product_id)),
+    memberships,
+    assets,
+    products,
+    supplierManaged: new Set(supplier.map((r) => r.supplier_product_id)),
   };
 }
 
-/** Assemble the per-SKU inputs. A SKU with no membership row for an account reads as UNKNOWN. */
+/**
+ * Was this account's last sync complete and authoritative?
+ *
+ * The sync writes a row for every SKU it observed plus every SKU it already knew about, and marks
+ * a failed read with a non-`ok` `sync_status` and `is_saved = null`. So an account whose rows are
+ * all `ok` was read cleanly end to end — and for such an account the ABSENCE of a row is a real
+ * answer ("this SKU is not in that account's Favorites"), not an unknown.
+ */
+export interface ProductIdMapping {
+  product_id: number | null;
+  /** The SKU the product_id resolves back to. Null when the reverse lookup is not unique. */
+  verified_sku: string | null;
+  status: 'unique' | 'multiple_product_ids' | 'shared_product_id' | 'not_mapped';
+}
+
+/**
+ * Resolve one supplier SKU to the website's numeric product_id, and verify it in REVERSE.
+ *
+ * Reuses `inventory_cache`, which already stores both identifiers side by side — no second product
+ * identity model is introduced. READ ONLY: this chain never writes that table, and the isolation
+ * test enforces it.
+ *
+ * The reverse check matters more than the forward one. Removing a Favorite is irreversible and the
+ * request carries the product_id, not the SKU, so a product_id shared by two SKUs would remove the
+ * wrong item. Anything short of a clean one-to-one match is reported for human review.
+ */
+export function resolveProductIdMapping(
+  sku: string,
+  cache: ReadonlyArray<{ supplier_product_id: string | null; product_id: string | number | null }>,
+): ProductIdMapping {
+  const forward = new Set<string>();
+  const reverse = new Map<string, Set<string>>();
+  for (const row of cache) {
+    if (!row.supplier_product_id || row.product_id === null || row.product_id === undefined) continue;
+    const id = String(row.product_id);
+    if (row.supplier_product_id === sku) forward.add(id);
+    if (!reverse.has(id)) reverse.set(id, new Set());
+    reverse.get(id)!.add(row.supplier_product_id);
+  }
+  if (forward.size === 0) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+  if (forward.size > 1) return { product_id: null, verified_sku: null, status: 'multiple_product_ids' };
+
+  const id = [...forward][0];
+  const owners = reverse.get(id) ?? new Set();
+  if (owners.size !== 1) return { product_id: null, verified_sku: null, status: 'shared_product_id' };
+  const numeric = Number(id);
+  if (!Number.isInteger(numeric) || numeric <= 0) {
+    return { product_id: null, verified_sku: null, status: 'not_mapped' };
+  }
+  return { product_id: numeric, verified_sku: [...owners][0], status: 'unique' };
+}
+
+function accountIsAuthoritative(memberships: Rows['memberships'], account: string): boolean {
+  const rows = memberships.filter((r) => r.supplier_account === account);
+  return rows.length > 0 && rows.every((r) => r.sync_status === 'ok');
+}
+
+/**
+ * Assemble the per-SKU inputs.
+ *
+ * Whether a missing row means "not saved" or "unknown" depends entirely on whether that account's
+ * last sync was authoritative — see `accountIsAuthoritative`. Treating every gap as unknown makes
+ * "only Pickup" and "only Dropship" structurally impossible to report, since the two accounts
+ * legitimately hold largely different Favorites.
+ */
 export function buildInputs(rows: Rows): SupplierFavoriteInput[] {
   const byAccount = new Map<string, Map<string, Rows['memberships'][number]>>();
   for (const r of rows.memberships) {
@@ -125,30 +204,47 @@ export function buildInputs(rows: Rows): SupplierFavoriteInput[] {
   }
   const assets = new Map(rows.assets.map((r) => [r.supplier_product_id, r]));
   const products = new Map(rows.products.map((r) => [r.supplier_product_id, r]));
+  const authoritative = {
+    pickup: accountIsAuthoritative(rows.memberships, 'pickup'),
+    dropship: accountIsAuthoritative(rows.memberships, 'dropship'),
+  };
+  // Counting duplicates once, instead of re-scanning every product per SKU.
+  const productCounts = new Map<string, number>();
+  for (const r of rows.products) {
+    productCounts.set(r.supplier_product_id, (productCounts.get(r.supplier_product_id) ?? 0) + 1);
+  }
 
   const skus = new Set<string>([
     ...rows.memberships.map((r) => r.supplier_product_id),
     ...rows.assets.map((r) => r.supplier_product_id),
   ]);
 
+  /**
+   * A row whose `sync_status` is not `ok` is UNKNOWN whatever `is_saved` holds. A MISSING row is
+   * "not saved" when that account was read authoritatively, and UNKNOWN when it was not.
+   */
+  const factOf = (
+    row: Rows['memberships'][number] | undefined,
+    accountAuthoritative: boolean,
+  ): boolean | null => {
+    if (!row) return accountAuthoritative ? false : null;
+    return row.sync_status !== 'ok' ? null : row.is_saved;
+  };
+
   return [...skus].map((sku) => {
     const pickup = byAccount.get('pickup')?.get(sku);
     const dropship = byAccount.get('dropship')?.get(sku);
     const asset = assets.get(sku);
     const product = products.get(sku);
-    // A membership row whose sync_status is not 'ok' is an UNKNOWN, whatever is_saved happens to
-    // hold. An absent row is likewise unknown — never "not saved".
-    const factOf = (row?: Rows['memberships'][number]): boolean | null =>
-      !row || row.sync_status !== 'ok' ? null : row.is_saved;
 
-    const matchingProducts = rows.products.filter((r) => r.supplier_product_id === sku);
+    const matchingProducts = { length: productCounts.get(sku) ?? 0 };
     return {
       supplier_product_id: sku,
       xself_sku: product?.sku_custom ?? null,
       product_title: product?.product_title ?? null,
       primary_image: product?.primary_image ?? null,
-      pickup_is_saved: factOf(pickup),
-      dropship_is_saved: factOf(dropship),
+      pickup_is_saved: factOf(pickup, authoritative.pickup),
+      dropship_is_saved: factOf(dropship, authoritative.dropship),
       api_managed: rows.supplierManaged.has(sku),
       published: product?.published === true,
       restorable_delisted: product?.published === false
@@ -169,8 +265,9 @@ function accountStates(rows: Rows): AccountReadState[] {
     const observed = forAccount.map((r) => r.observed_at).filter(Boolean).sort();
     return {
       account,
-      // No rows at all means the account has never been read — not that it read clean.
-      ok: forAccount.length > 0 && failed.length === 0,
+      // Same predicate that decides whether a missing row means "not saved" or "unknown", so the
+      // panel's per-account status can never disagree with how the diff was computed.
+      ok: accountIsAuthoritative(rows.memberships, account),
       total: forAccount.filter((r) => r.sync_status === 'ok' && r.is_saved === true).length,
       observed_at: observed[observed.length - 1] ?? null,
       error: forAccount.length === 0 ? 'never_synced' : failed.length ? failed[0].sync_status : null,
@@ -259,22 +356,29 @@ export async function executeFavoriteBridge(
   }
 
   // removal-preview — never sends anything, whatever the switch says.
+  // Resolve the website product_id from the existing inventory_cache mapping and verify it in
+  // reverse. A non-unique mapping leaves product_id null, which the preview rejects.
+  const cache = await readAll<{ supplier_product_id: string | null; product_id: string | number | null }>(
+    client, 'inventory_cache', 'supplier_product_id,product_id',
+  );
+  const mapping = resolveProductIdMapping(target.supplier_product_id, cache);
   const preview = previewRemoval({
     supplier_product_id: target.supplier_product_id,
-    // Mapping is supplied by a later phase; with none present the preview reports the gap rather
-    // than inventing a product_id.
-    product_id: null,
-    verified_sku_for_product_id: null,
+    product_id: mapping.product_id,
+    verified_sku_for_product_id: mapping.verified_sku,
     approval: {
       asset_state: target.asset_state,
       founder_status: target.founder_status,
       approved_at: target.approved_at,
       approved_by: target.approved_by,
     },
+    // The website session lives outside this process; the preview reports it as a gate rather
+    // than pretending to hold one.
     session_present: false,
   });
   return envelope('removal-preview', {
     sku: request.sku,
+    product_id_mapping: mapping,
     preview,
     // Restated explicitly so the UI can never misread a preview as an execution.
     favorite_removal_attempted: false,
