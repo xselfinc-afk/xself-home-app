@@ -25,6 +25,11 @@ import {
   type ResolvedInventoryLookupIdentity,
 } from '../src/services/supplierInventoryLookupIdentity';
 import { planPersistence, assertNoPublicationWrite, type PriorCurrentRow } from '../src/services/availabilityPersistence';
+import {
+  applyStandardizedInventoryProjection,
+  channelFromAccountFacts,
+  deriveStandardizedInventoryProjection,
+} from '../src/services/standardizedInventoryProjection';
 import { transitionInventoryState, type InventoryWorkflowState } from '../src/services/inventoryStateMachine';
 import type { AvailabilityResult } from '../src/services/openApiAvailability';
 
@@ -1044,6 +1049,27 @@ export async function runTargetedRecheck(
     });
   }
 
+  // Evidence is written. Now bring the two display fields on standardized_products in line with
+  // it, using the SAME shared projection the full scan uses. Both accounts reported real
+  // per-warehouse quantities here, so nothing is invented; if they had not, the projection would
+  // decline to write rather than guess.
+  const inventoryProjection = deriveStandardizedInventoryProjection({
+    channels: [
+      channelFromAccountFacts('pickup', pickup),
+      channelFromAccountFacts('dropship', dropship),
+    ],
+    currentInventoryStatus: product.inventory_status ?? null,
+    currentTotalAvailableQty: product.total_available_qty == null ? null : Number(product.total_available_qty),
+    evidenceCheckedAt: checkedAt,
+  });
+  const standardizedInventoryWrite = await applyStandardizedInventoryProjection(
+    client as never,
+    request.sku,
+    inventoryProjection,
+    product.inventory_status ?? null,
+    product.total_available_qty == null ? null : Number(product.total_available_qty),
+  );
+
   let relistAttempted = false;
   let relistExitCode: number | null = null;
   if (product.published === false && transition.next.state === 'eligible_for_relist') {
@@ -1098,6 +1124,7 @@ export async function runTargetedRecheck(
     && Number(workflowReadback?.consecutive_out_of_stock ?? -1) === 0;
   return success('recheck-item', {
     production_write_attempted: productionWriteAttempted,
+    standardized_inventory: standardizedInventoryWrite,
     sku: request.sku,
     supplier_product_id: product.supplier_product_id,
     targeted_recheck_attempted: true,

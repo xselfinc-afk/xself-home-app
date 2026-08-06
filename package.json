@@ -9,6 +9,7 @@
     "xone:inventory-lifecycle": "tsx scripts/xoneInventoryLifecycleBridge.ts",
     "test:xone-inventory-lifecycle": "tsx src/__tests__/xoneInventoryLifecycleBridge.test.ts",
     "test:inventory-lookup-identity": "tsx src/__tests__/supplierInventoryLookupIdentity.test.ts",
+    "test:standardized-inventory": "tsx src/__tests__/standardizedInventoryProjection.test.ts",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "inventory:save-session": "tsx scripts/saveGigaSession.ts",

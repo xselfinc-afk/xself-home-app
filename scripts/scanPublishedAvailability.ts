@@ -37,11 +37,16 @@ import {
   OPEN_API_SOURCE,
   classifyBatch,
   extractRows,
+  isApiConfirmed,
   redactReason,
   tally,
   type AvailabilityResult,
   type BatchOutcome,
 } from '../src/services/openApiAvailability';
+import {
+  applyStandardizedInventoryProjection,
+  deriveStandardizedInventoryProjection,
+} from '../src/services/standardizedInventoryProjection';
 import {
   DEFAULT_STATE_MACHINE_POLICY,
   transitionInventoryState,
@@ -195,20 +200,33 @@ async function main(): Promise<void> {
       (data ?? []).forEach(r => visible.add(r.supplier_product_id));
       if (!data || data.length < 1000) break;
     }
-    const published: Array<{ sku: string; published: boolean }> = [];
+    // `sku_custom` and the two inventory fields ride along so the standardized projection can run
+    // from the same read — matched by XSelf SKU, compared against the values already stored.
+    const STD_COLS = 'supplier_product_id,sku_custom,published,inventory_status,total_available_qty';
+    const published: Array<{
+      sku: string; published: boolean; xselfSku: string | null;
+      inventoryStatus: string | null; totalQty: number | null;
+    }> = [];
+    const pushProduct = (r: Record<string, unknown>) => published.push({
+      sku: r.supplier_product_id as string,
+      published: Boolean(r.published),
+      xselfSku: (r.sku_custom as string | null) ?? null,
+      inventoryStatus: (r.inventory_status as string | null) ?? null,
+      totalQty: r.total_available_qty == null ? null : Number(r.total_available_qty),
+    });
     if (XONE_TARGETED_TOKEN) {
       // A human-confirmed review may target a currently delisted item. The explicit one-SKU
       // allowlist is still bounded, and every observation follows the same API/state-machine path.
       const { data, error } = await sb.from('standardized_products')
-        .select('supplier_product_id,published').in('supplier_product_id', ONLY_SKUS);
+        .select(STD_COLS).in('supplier_product_id', ONLY_SKUS);
       if (error) die(1, `standardized_products targeted read failed: ${error.message}`);
-      (data ?? []).forEach(r => published.push({ sku: r.supplier_product_id, published: Boolean(r.published) }));
+      (data ?? []).forEach(pushProduct);
     } else {
       for (let f = 0; ; f += 1000) {
         const { data, error } = await sb.from('standardized_products')
-          .select('supplier_product_id,published').eq('published', true).range(f, f + 999);
+          .select(STD_COLS).eq('published', true).range(f, f + 999);
         if (error) die(1, `standardized_products read failed: ${error.message}`);
-        (data ?? []).forEach(r => published.push({ sku: r.supplier_product_id, published: r.published }));
+        (data ?? []).forEach(pushProduct);
         if (!data || data.length < 1000) break;
       }
     }
@@ -272,6 +290,7 @@ async function main(): Promise<void> {
       inStockConfirmationsRequired: cfg.relistConfirmations,
     };
     const publishedBySku = new Map(published.map((product) => [product.sku, product.published]));
+    const publishedBySkuRow = new Map(published.map((product) => [product.sku, product]));
     const proposals: Proposal[] = results.map(r => {
       const prior = priorState.get(r.sku) ?? { state: 'published_in_stock' as InventoryWorkflowState, consecutiveOutOfStock: 0, consecutiveInStock: 0 };
       const tr = transitionInventoryState(prior, r.inventoryStatus, policy);
@@ -477,8 +496,46 @@ async function main(): Promise<void> {
         }
       }
 
+      // ── Standardized display fields, from the SAME shared projection the bridge uses ────────
+      // The scan reads a single channel and gets no quantity from `/price/v1`, so in practice it
+      // raises a product to `in_stock` and keeps the previous reliable number (rule E). It can
+      // never write a zero on its own: a zero needs two independent channels to agree.
+      let stdWriteAttempted = 0, stdWriteSucceeded = 0, stdSkippedNoChange = 0, stdSkippedUnreliable = 0;
+      const stdErrors: string[] = [];
+      for (const r of results) {
+        const product = publishedBySkuRow.get(r.sku);
+        if (!product?.xselfSku) continue;   // no XSelf SKU to match on exactly — never widen the filter
+        const projection = deriveStandardizedInventoryProjection({
+          channels: [{
+            channel: OPEN_API_SOURCE,
+            read_ok: isApiConfirmed(r.status),
+            available: r.available,
+            quantity: null,                 // the price endpoint carries no quantity, and none is invented
+            failure_reason: isApiConfirmed(r.status) ? null : r.status,
+          }],
+          currentInventoryStatus: product.inventoryStatus,
+          currentTotalAvailableQty: product.totalQty,
+          evidenceCheckedAt: checkedAt,
+        });
+        if (!projection.should_write) {
+          if (projection.reason === 'no_change') stdSkippedNoChange++; else stdSkippedUnreliable++;
+          continue;
+        }
+        stdWriteAttempted++;
+        const write = await applyStandardizedInventoryProjection(
+          sb as never, product.xselfSku, projection, product.inventoryStatus, product.totalQty,
+        );
+        if (write.standardized_inventory_write_succeeded) stdWriteSucceeded++;
+        else stdErrors.push(`std-inventory ${r.sku}: ${write.error ?? 'unknown'}`);
+      }
+
       console.log('\nLIVE_WRITE_SUMMARY');
       console.log(`audit_rows_written=${auditInserted}`);
+      console.log(`standardized_inventory_write_attempted=${stdWriteAttempted}`);
+      console.log(`standardized_inventory_write_succeeded=${stdWriteSucceeded}`);
+      console.log(`standardized_inventory_skipped_no_change=${stdSkippedNoChange}`);
+      console.log(`standardized_inventory_skipped_unreliable=${stdSkippedUnreliable}`);
+      for (const e of stdErrors.slice(0, 10)) console.log(`  standardized_inventory_error=${redactReason(e)}`);
       console.log(`current_rows_upserted=${currentUpserted}`);
       console.log(`current_unchanged_answer=${pt.unchanged}`);
       console.log(`failure_rows_annotated=${failureAnnotated}`);
