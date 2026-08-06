@@ -263,6 +263,70 @@ export function normalizeInventoryPayload(
   };
 }
 
+export interface AccountFavoritesListing {
+  role: SupplierAccountRole;
+  account_source: string;
+  /** Every identity the account has saved. Only trustworthy when `complete` is true. */
+  skus: string[];
+  pages_fetched: number;
+  /** False means the listing is partial — callers must treat it as UNKNOWN, never as "not saved". */
+  complete: boolean;
+  observed_at: string;
+}
+
+/**
+ * Page through one account's entire Favorites ("My Saved Items") list.
+ *
+ * Reuses the same config cascade, signed `post()` and pagination that `favoriteContains` uses —
+ * this is the list-shaped sibling of the membership check, not a second client. It exists here
+ * rather than in `gigaSavedItems.ts` because that module resolves credentials by mutating
+ * process-wide `SUPPLIER_*` env once per process, which makes reading a SECOND account in the same
+ * run impossible. `SupplierAccountConfig` is per-call, so pickup and dropship can both be read.
+ *
+ * Throws rather than returning a short list: a partial read must never look like a small Favorites.
+ */
+export async function listAccountFavorites(
+  role: SupplierAccountRole,
+  options: { repo?: string; fetcher?: FetchLike; config?: SupplierAccountConfig; maxPages?: number } = {},
+): Promise<AccountFavoritesListing> {
+  const config = options.config ?? loadSupplierAccountConfig(role, options.repo ?? process.cwd());
+  if (config.role !== role) {
+    throw new SupplierTargetedReadError(accountReadCode(role), '供应商账号配置与目标账号不匹配', role, 'favorites');
+  }
+  const fetcher = options.fetcher ?? fetch;
+  const maxPages = options.maxPages ?? 200;
+
+  const skus = new Set<string>();
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const payload = await post(config, 'favorites', { page, pageSize: 100 }, fetcher);
+    const rows = extractSupplierRows(payload);
+    if (!rows) {
+      throw new SupplierTargetedReadError(accountReadCode(role), `${role} Favorites 响应不可解析`, role, 'favorites');
+    }
+    for (const row of rows) {
+      const identity = String(row?.sku ?? '').trim();
+      if (identity) skus.add(identity);
+    }
+    totalPages = Math.max(1, Number(payload?.data?.pageInfo?.totalPage ?? 1) || 1);
+    page += 1;
+  } while (page <= totalPages && page <= maxPages);
+
+  const complete = page > totalPages;
+  if (!complete) {
+    throw new SupplierTargetedReadError(accountReadCode(role), `${role} Favorites 分页未读完`, role, 'favorites');
+  }
+  return {
+    role,
+    account_source: config.source,
+    skus: [...skus],
+    pages_fetched: page - 1,
+    complete: true,
+    observed_at: new Date().toISOString(),
+  };
+}
+
 async function favoriteContains(
   config: SupplierAccountConfig,
   lookupIdentity: string,

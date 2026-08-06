@@ -42,6 +42,7 @@ import {
   parseAllowlist,
   summarise,
   type FavoriteObservation,
+  type SupplierAccount,
   type FactRow,
 } from '../src/services/supplierFavoriteFacts';
 
@@ -70,8 +71,25 @@ function must<T extends { error: unknown }>(tag: string, res: T): T {
   return res;
 }
 
-/** Read the existing on-disk Saved Items snapshot (pickup account). */
+/**
+ * Which account this run observes. Facts are written per account and a run may only ever speak
+ * for the one it read — see `buildFactRows`, which stamps `supplier_account` on every row.
+ */
+const ACCOUNT: SupplierAccount = (() => {
+  const raw = (arg('account') ?? 'pickup').trim() || 'pickup';
+  if (raw !== 'pickup' && raw !== 'dropship') {
+    console.error(`[favFacts] FATAL: --account must be pickup or dropship (got ${raw})`);
+    process.exit(1);
+  }
+  return raw;
+})();
+
+/** Read the existing on-disk Saved Items snapshot (pickup account only — it is a pickup artefact). */
 function observationFromSnapshot(file: string, runId: string): FavoriteObservation {
+  if (ACCOUNT !== 'pickup') {
+    console.error('[favFacts] FATAL: --snapshot is a pickup-account artefact; use --live for dropship.');
+    process.exit(1);
+  }
   if (!fs.existsSync(file)) {
     console.error(`[favFacts] FATAL: snapshot not found: ${file}`);
     process.exit(1);
@@ -102,36 +120,45 @@ function observationFromSnapshot(file: string, runId: string): FavoriteObservati
   };
 }
 
-/** Live read via the EXISTING pickup reader. Any failure fails closed to UNKNOWN. */
+/**
+ * Live read for ONE account. Any failure fails closed to UNKNOWN.
+ *
+ * Uses `listAccountFavorites` from the existing per-account client rather than
+ * `gigaSavedItems.ts::fetchAllSavedItems`: that reader resolves credentials by mutating
+ * process-wide `SUPPLIER_*` env exactly once per process (`credsLoaded` cache), so it can never
+ * read a second account in the same run. `SupplierAccountConfig` is per-call, so pickup and
+ * dropship stay independent. Same endpoint, same pagination, same signing — one code path.
+ */
 async function observationFromLive(runId: string): Promise<FavoriteObservation> {
-  const { fetchAllSavedItems, GigaSavedItemsError } = await import('./lib/gigaSavedItems');
+  const { listAccountFavorites } = await import('./lib/gigaAccountReadClient');
   const observedAt = new Date().toISOString();
   try {
-    const res = await fetchAllSavedItems({ silenceClientLogs: true });
-    console.log(`  reader: creds=${res.credsSource} pages=${res.pagesFetched} endpoint=${res.endpointPath}`);
+    const res = await listAccountFavorites(ACCOUNT);
+    console.log(`  reader: account=${ACCOUNT} creds=${res.account_source} pages=${res.pages_fetched} skus=${res.skus.length}`);
     return {
-      supplierAccount: 'pickup',
+      supplierAccount: ACCOUNT,
       sourceRunId: runId,
       observedAt,
       syncStatus: 'ok',
       syncErrorCode: null,
-      skus: normaliseSkus(res.items.map(i => i.sku)),
-      reportedTotal: res.reportedTotal,
-      pagesFetched: res.pagesFetched,
+      skus: normaliseSkus(res.skus),
+      reportedTotal: res.skus.length,
+      pagesFetched: res.pages_fetched,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const isGiga = typeof GigaSavedItemsError === 'function' && err instanceof GigaSavedItemsError;
+    const code = (err as { code?: string })?.code ?? '';
     const status =
       /auth|login|401|403|B20003|permission/i.test(msg) ? 'auth_failed'
       : /captcha|challenge/i.test(msg) ? 'captcha_required'
       : /network|timeout|ECONN|ENOTFOUND/i.test(msg) ? 'network_failed'
-      : isGiga ? 'parse_failed'
+      : /不可解析|分页未读完|parse/i.test(msg) || code === 'favorites_not_synchronized' ? 'parse_failed'
       : 'supplier_unavailable';
-    console.warn(`  reader FAILED → ${status}: ${msg.slice(0, 140)}`);
+    console.warn(`  reader FAILED (${ACCOUNT}) → ${status}: ${msg.slice(0, 140)}`);
     // Fail closed: no SKUs observed, unknown total → nothing can be concluded removed.
+    // Critically, this records UNKNOWN for THIS account only; the sibling account's facts stand.
     return {
-      supplierAccount: 'pickup',
+      supplierAccount: ACCOUNT,
       sourceRunId: runId,
       observedAt,
       syncStatus: status as FavoriteObservation['syncStatus'],
@@ -193,7 +220,7 @@ async function main(): Promise<void> {
   const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
   // Existing facts for THIS account only — a sibling account's rows are never read or written.
-  let q = sb.from(WRITE_TABLE).select('supplier_product_id,is_saved,sync_status,version').eq('supplier_account', 'pickup');
+  let q = sb.from(WRITE_TABLE).select('supplier_product_id,is_saved,sync_status,version').eq('supplier_account', ACCOUNT);
   if (allowlist) q = q.in('supplier_product_id', allowlist);
   const existingRows = must('read existing', await q).data ?? [];
   const existing: Record<string, { is_saved?: boolean | null; sync_status?: string }> = {};
