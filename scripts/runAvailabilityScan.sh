@@ -9,6 +9,12 @@
 
 set -uo pipefail
 
+# launchd does not source an interactive shell, so the inherited PATH has no Node
+# toolchain and every `npx` below fails with exit 127. Set PATH explicitly instead of
+# depending on the login environment. Homebrew comes first because that is the runtime
+# the headless callers already pin (XOne's bridge uses /opt/homebrew/bin/node).
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || { echo "FATAL cannot cd to repo"; exit 1; }
 
@@ -16,7 +22,19 @@ LOG_DIR="$REPO/logs"
 mkdir -p "$LOG_DIR"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-echo "[$STAMP] availability-scan starting (dry-run, API-only, no browser)"
+echo "[$STAMP] availability-scan starting (API-only, no browser)"
+
+# Fail loudly and immediately if the toolchain is missing. Without this the failure
+# surfaces as a bare `npx: command not found` from inside a pipeline, the scan exits 127,
+# availability evidence stops being refreshed, and products silently age out of
+# sellable_products when the 72h grace window closes.
+for BIN in node npx; do
+  command -v "$BIN" >/dev/null 2>&1 || {
+    echo "[$STAMP] FATAL $BIN not found on PATH=$PATH — availability scan cannot start"
+    exit 1
+  }
+done
+echo "[$STAMP] runtime node $(node --version) ($(command -v node)), npx $(command -v npx)"
 
 # The alt account is the only one that can read the Open API product endpoints; .env.local supplies
 # the Supabase service-role key. dotenv never overrides already-set vars, so alt must come first.
