@@ -18,7 +18,7 @@ import {
   type SupplierAccountProductFacts,
 } from './lib/gigaAccountReadClient';
 import {
-  InventoryIdentityMappingError,
+  isResolvedInventoryLookupIdentity,
   resolveInventoryLookupIdentity,
   type ResolvedInventoryLookupIdentity,
 } from '../src/services/supplierInventoryLookupIdentity';
@@ -50,7 +50,23 @@ const LOCK_STALE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_ITEMS_LIMIT = 100;
 const MAX_RUNS_LIMIT = 50;
-const TARGETED_IDENTITY_REPAIR_SKU = 'XH-GH-HM-86617W';
+/**
+ * The window `sellable_products` accepts availability evidence within, via
+ * latest_product_availability.within_grace. Coverage must be measured against the SAME window
+ * the storefront enforces: evidence older than this is already invisible to customers, so
+ * counting it as "covered" reports health during an outage.
+ *
+ * 120h absorbs two missed 48h scan cycles. The previous 72h could not absorb even one
+ * (48 + 48 = 96 > 72), which is why a single failed scan emptied the storefront on 2026-08-05.
+ *
+ * KEEP IN SYNC: supabase/migrations/20260808_availability_grace_120h.sql
+ */
+const AVAILABILITY_GRACE_HOURS = 120;
+/**
+ * Targeted recheck works for any pending SKU. The restore write stays behind an
+ * explicit local switch so a read-only recheck can never publish by accident.
+ */
+const RESTORE_EXECUTION_ENABLED = process.env.XONE_INVENTORY_RESTORE_ENABLED === 'true';
 
 export type InventoryLifecycleBucket =
   | 'pending'
@@ -364,16 +380,59 @@ function latestReportSummary(report: Record<string, any> | null): Record<string,
   };
 }
 
+/**
+ * Coverage = published products whose availability evidence is still inside the grace window.
+ *
+ * The previous implementation counted any row that had ever been checked, so it reported 99.2%
+ * on 2026-08-05 while only 1 of 350 products was actually within grace and the storefront was
+ * empty. A monitor that reads green during a total outage is worse than no monitor.
+ *
+ * `now` is injectable so tests can pin time instead of drifting with the clock.
+ */
+export function computeAvailabilityCoverage(
+  availability: ReadonlyArray<{ checked_at?: string | null }>,
+  publishedCount: number,
+  now: Date = new Date(),
+): { published: number; covered: number; percent: number } {
+  const cutoff = now.getTime() - AVAILABILITY_GRACE_HOURS * 3_600_000;
+  const covered = availability.filter((row) => {
+    if (!row.checked_at) return false;
+    const checkedAt = Date.parse(row.checked_at);
+    return Number.isFinite(checkedAt) && checkedAt >= cutoff;
+  }).length;
+  const percent = publishedCount > 0 ? Number(((covered / publishedCount) * 100).toFixed(1)) : 0;
+  return { published: publishedCount, covered, percent };
+}
+
+/**
+ * Health for the XOne loop node. Coverage is part of it: evidence that has aged out of the
+ * grace window means products are already hidden from customers, which is never "healthy".
+ */
+export function deriveInventoryHealth(input: {
+  runLockActive: boolean;
+  schedulerLoaded: boolean;
+  errors: number;
+  coverageBelowMinimum: boolean;
+}): string {
+  if (input.runLockActive) return 'running';
+  if (!input.schedulerLoaded) return 'blocked';
+  if (input.errors > 0 || input.coverageBelowMinimum) return 'attention_required';
+  return 'healthy';
+}
+
 async function buildSummary(client: SupabaseClient): Promise<Record<string, unknown>> {
   const report = readLatestReport();
   const latestRunId = typeof report?.run_id === 'string' ? report.run_id : null;
-  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult] = await Promise.all([
+  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult, sellableResult] = await Promise.all([
     readCoreRows(client),
     loadInventoryConfigForScript(),
     client.from('publication_audit_log').select('supplier_product_id', { count: 'exact', head: true }).eq('action', 'relist'),
     latestRunId
       ? client.from('publication_audit_log').select('action').eq('run_id', latestRunId).limit(1_000)
       : Promise.resolve({ data: [], error: null }),
+    // Live storefront size. coverage.visible comes from the scan report and is measured BEFORE the
+    // scan refreshes evidence, so it cannot answer "how many products can a customer see right now".
+    client.from('sellable_products').select('supplier_product_id', { count: 'exact', head: true }),
   ]);
   if (relistAuditResult.error) throw new Error('READ_FAILED:relist_audit_count');
   if (latestAuditResult.error) throw new Error('READ_FAILED:latest_publication_audit');
@@ -401,21 +460,29 @@ async function buildSummary(client: SupabaseClient): Promise<Record<string, unkn
   const coverageReport = report;
   const published = Number(coverageReport?.counts?.published_targets ?? workflows.length);
   const visible = Number(coverageReport?.counts?.visible_now ?? 0);
-  const covered = availability.filter((row) => Boolean(row.checked_at)).length;
-  const coveragePercent = published > 0 ? Number(((covered / published) * 100).toFixed(1)) : 0;
-  const health = activeLock
-    ? 'running'
-    : !Boolean((scheduler as any).loaded)
-      ? 'blocked'
-      : errors > 0
-        ? 'attention_required'
-        : 'healthy';
+  const { covered, percent: coveragePercent } = computeAvailabilityCoverage(availability, published);
+  // Reuses the existing inventory_min_coverage_percent (default 95) rather than adding a knob.
+  const coverageBelowMinimum = published > 0 && coveragePercent < cfg.minCoveragePercent;
+  const health = deriveInventoryHealth({
+    runLockActive: Boolean(activeLock),
+    schedulerLoaded: Boolean((scheduler as any).loaded),
+    errors,
+    coverageBelowMinimum,
+  });
   return success('summary', {
     health,
     scheduler,
     run_lock: activeLock,
     latest_run: latestReport,
-    coverage: { published, visible, covered, percent: coveragePercent },
+    coverage: {
+      published,
+      visible,
+      covered,
+      percent: coveragePercent,
+      // Live count of what a customer can actually see. Null when the read failed, so XOne can
+      // tell "zero products visible" apart from "could not measure".
+      sellable_now: sellableResult.error ? null : (sellableResult.count ?? 0),
+    },
     counts: {
       healthy: stateCounts.published_in_stock ?? 0,
       pending: (stateCounts.pending_out_of_stock ?? 0) + (stateCounts.relist_pending ?? 0),
@@ -442,6 +509,8 @@ async function buildSummary(client: SupabaseClient): Promise<Record<string, unkn
       max_delist_per_run: cfg.maxDelistPerRun,
       max_delist_percent: cfg.maxDelistPercent,
       max_failure_percent: cfg.maxFailurePercent,
+      // Exposed so XOne can render "coverage below minimum" without hardcoding the threshold.
+      min_coverage_percent: cfg.minCoveragePercent,
       bulk_change_requires_approval: cfg.bulkChangeRequiresApproval,
       active_holds: holds.length,
     },
@@ -543,13 +612,84 @@ function itemFromFacts(
   };
 }
 
-async function runTargetedRecheck(
+/**
+ * Echo the resolved identity. Every supplier-facing lookup in this flow uses the
+ * one resolved `lookup_identity`, so all four capability fields report that same
+ * value by construction; they are not four independent resolutions.
+ */
+function identityEnvelope(identity: ResolvedInventoryLookupIdentity): Record<string, unknown> {
+  return {
+    xself_sku: identity.xself_sku,
+    legacy_supplier_product_id: identity.legacy_supplier_product_id,
+    lookup_identity: identity.lookup_identity,
+    identity_source: identity.identity_source,
+    identity_confidence: identity.identity_confidence,
+    identity_error: null,
+    favorites_lookup_identity: identity.lookup_identity,
+    product_detail_identity: identity.lookup_identity,
+    availability_lookup_identity: identity.lookup_identity,
+    inventory_lookup_identity: identity.lookup_identity,
+    website_search_identity: 'pending_verification',
+  };
+}
+
+/**
+ * Map a supplier read failure onto a per-step code so the operator can tell which
+ * capability failed on which account. None of these mean "out of stock".
+ */
+function supplierReadFailure(error: unknown): {
+  code: string;
+  message: string;
+  details: Record<string, unknown>;
+  retryable: boolean;
+} {
+  if (!(error instanceof SupplierTargetedReadError)) {
+    return {
+      code: 'product_detail_read_error',
+      message: '供应商账号定向读取失败',
+      details: {},
+      retryable: true,
+    };
+  }
+  const byCapability: Record<string, string> = {
+    favorites: error.account === 'pickup' ? 'pickup_favorites_read_error' : 'dropship_favorites_read_error',
+    product_detail: 'product_detail_read_error',
+    availability: 'availability_read_error',
+    inventory: 'inventory_read_error',
+  };
+  return {
+    code: byCapability[error.capability] ?? 'product_detail_read_error',
+    message: error.message,
+    details: {
+      account: error.account,
+      capability: error.capability,
+      supplier_error_code: error.code,
+    },
+    retryable: true,
+  };
+}
+
+export interface TargetedRecheckDeps {
+  /** Injected only by tests. Production always uses the real supplier read client. */
+  readAccountFacts?: (
+    role: 'pickup' | 'dropship',
+    lookupIdentity: string,
+  ) => Promise<SupplierAccountProductFacts>;
+}
+
+export async function runTargetedRecheck(
   request: Extract<InventoryLifecycleBridgeRequest, { operation: 'recheck-item' }>,
   client: SupabaseClient,
+  deps: TargetedRecheckDeps = {},
 ): Promise<Record<string, unknown>> {
+  const readAccountFacts = deps.readAccountFacts
+    ?? ((role: 'pickup' | 'dropship', lookupIdentity: string) =>
+      readSupplierAccountProductFacts(role, lookupIdentity, { repo: REPO }));
   const targetedFailure = (input: {
     code: string;
     message: string;
+    details?: Record<string, unknown>;
+    retryable?: boolean;
     product?: ProductRow | null;
     identity?: ResolvedInventoryLookupIdentity | null;
     pickup?: SupplierAccountProductFacts | null;
@@ -566,29 +706,23 @@ async function runTargetedRecheck(
     final_status: 'recheck_failed',
     checked_at: input.checkedAt ?? new Date().toISOString(),
     inventory_status: 'unknown',
+    restore_candidate: false,
     error_code: input.code,
     error_message: input.message,
+    // Structured error so XOne never has to slice a Chinese string to get a code.
+    error: {
+      code: input.code,
+      message: input.message,
+      details: input.details ?? {},
+      retryable: input.retryable ?? false,
+    },
     other_items_scanned: 0,
-    identity: input.identity ? {
-      ...input.identity,
-      favorites_lookup_identity: input.identity.lookup_identity,
-      product_detail_identity: input.identity.lookup_identity,
-      availability_lookup_identity: input.identity.lookup_identity,
-      inventory_lookup_identity: input.identity.lookup_identity,
-      website_search_identity: 'pending_verification',
-    } : null,
+    identity: input.identity ? identityEnvelope(input.identity) : null,
     accounts: {
       pickup: input.pickup ?? null,
       dropship: input.dropship ?? null,
     },
   });
-
-  if (request.sku !== TARGETED_IDENTITY_REPAIR_SKU) {
-    return targetedFailure({
-      code: 'target_scope_not_configured',
-      message: '本轮定向身份修复仅允许处理已批准的目标 SKU',
-    });
-  }
 
   const matchesResult = await client.from('standardized_products')
     .select('supplier_product_id,sku_custom,product_title,published,delist_reason,primary_image,selling_price,specifications_json,inventory_status,total_available_qty')
@@ -599,6 +733,7 @@ async function runTargetedRecheck(
     return targetedFailure({
       code: matches.length ? 'duplicate_sku' : 'sku_not_found',
       message: matches.length ? '该 SKU 对应多个商品，已拒绝单商品复核' : '未找到该 SKU',
+      details: { xself_sku: request.sku, matched_products: matches.length },
     });
   }
   const product = matches[0];
@@ -608,30 +743,52 @@ async function runTargetedRecheck(
     .limit(2);
   const relationshipRows = mustRows(relationshipResult as never, 'targeted_supplier_relationship') as SupplierRelationshipRow[];
   if (relationshipRows.length !== 1) {
-    return targetedFailure({ code: 'identity_mapping_error', message: '缺少唯一供应商商品关系', product });
+    return targetedFailure({
+      code: relationshipRows.length > 1 ? 'identity_mapping_conflict' : 'identity_mapping_missing',
+      message: relationshipRows.length > 1
+        ? '该商品存在多条供应商商品关系，已拒绝猜测查询身份'
+        : '该商品缺少供应商商品关系，无法解析查询身份',
+      details: { xself_sku: request.sku, supplier_relationship_rows: relationshipRows.length },
+      product,
+    });
   }
 
-  let identity: ResolvedInventoryLookupIdentity;
-  try {
-    identity = resolveInventoryLookupIdentity({
-      xselfSku: request.sku,
-      legacySupplierProductId: product.supplier_product_id,
-      associateProductList: relationshipRows[0].raw_payload?.associateProductList,
+  const identityResult = resolveInventoryLookupIdentity({
+    xselfSku: request.sku,
+    legacySupplierProductId: product.supplier_product_id,
+    associateProductList: relationshipRows[0].raw_payload?.associateProductList,
+  });
+  if (!isResolvedInventoryLookupIdentity(identityResult)) {
+    return targetedFailure({
+      code: identityResult.identity_error.code,
+      message: identityResult.identity_error.message,
+      details: identityResult.identity_error.details,
+      retryable: identityResult.identity_error.retryable,
+      product,
     });
-  } catch (error) {
-    const message = error instanceof InventoryIdentityMappingError ? error.message : '供应商查询身份解析失败';
-    return targetedFailure({ code: 'identity_mapping_error', message, product });
   }
+  const identity: ResolvedInventoryLookupIdentity = identityResult;
 
   let pickup: SupplierAccountProductFacts | null = null;
   let dropship: SupplierAccountProductFacts | null = null;
   try {
-    pickup = await readSupplierAccountProductFacts('pickup', identity.lookup_identity, { repo: REPO });
-    dropship = await readSupplierAccountProductFacts('dropship', identity.lookup_identity, { repo: REPO });
+    // Every supplier call uses the resolved lookup identity — never the XSelf SKU,
+    // never the legacy supplier_product_id.
+    pickup = await readAccountFacts('pickup', identity.lookup_identity);
+    dropship = await readAccountFacts('dropship', identity.lookup_identity);
   } catch (error) {
-    const code = error instanceof SupplierTargetedReadError ? error.code : 'inventory_read_error';
-    const message = error instanceof SupplierTargetedReadError ? error.message : '供应商账号定向读取失败';
-    return targetedFailure({ code, message, product, identity, pickup, dropship });
+    const mapped = supplierReadFailure(error);
+    // A read failure is a read failure. It is never reported as "out of stock".
+    return targetedFailure({
+      code: mapped.code,
+      message: mapped.message,
+      details: { ...mapped.details, lookup_identity: identity.lookup_identity },
+      retryable: mapped.retryable,
+      product,
+      identity,
+      pickup,
+      dropship,
+    });
   }
 
   const checkedAt = new Date().toISOString();
@@ -647,31 +804,88 @@ async function runTargetedRecheck(
       final_status: 'recheck_still_out_of_stock',
       checked_at: checkedAt,
       inventory_status: 'confirmed_out_of_stock',
+      restore_candidate: false,
       error_code: 'confirmed_out_of_stock',
       error_message: '至少一个已验证供应商账号明确返回当前商品不可售，未执行恢复',
-      other_items_scanned: 0,
-      identity: {
-        ...identity,
-        favorites_lookup_identity: identity.lookup_identity,
-        product_detail_identity: identity.lookup_identity,
-        availability_lookup_identity: identity.lookup_identity,
-        inventory_lookup_identity: identity.lookup_identity,
-        website_search_identity: 'pending_verification',
+      error: {
+        code: 'confirmed_out_of_stock',
+        message: '至少一个已验证供应商账号明确返回当前商品不可售，未执行恢复',
+        details: {
+          lookup_identity: identity.lookup_identity,
+          pickup_available: pickup.available,
+          dropship_available: dropship.available,
+        },
+        retryable: false,
       },
+      other_items_scanned: 0,
+      identity: identityEnvelope(identity),
       accounts: sourceFacts,
     });
   }
 
-  const pickupHasReliableStock = pickup.total_available_qty > 0;
-  if (!pickupHasReliableStock) {
+  // Available but with no trustworthy quantity is "unknown", never "out of stock".
+  const pickupQuantity = Number(pickup.total_available_qty);
+  if (!Number.isFinite(pickupQuantity) || pickupQuantity <= 0) {
     return targetedFailure({
-      code: 'restore_gate_blocked',
+      code: 'inventory_unknown',
       message: 'Pickup 可售状态存在，但未读取到生产规则认可的正库存数量',
+      details: {
+        lookup_identity: identity.lookup_identity,
+        pickup_total_available_qty: pickup.total_available_qty,
+      },
+      retryable: true,
       product,
       identity,
       pickup,
       dropship,
       checkedAt,
+    });
+  }
+
+  // Restore gate. Evaluated before any write so a blocked reason is always reportable.
+  const restoreGateBlocks: string[] = [];
+  if (!pickup.favorite) restoreGateBlocks.push('pickup_not_favorited');
+  if (!dropship.favorite) restoreGateBlocks.push('dropship_not_favorited');
+  if (!(Number(pickup.price) > 0)) restoreGateBlocks.push('pickup_price_unavailable');
+  if (!String(product.product_title ?? '').trim()) restoreGateBlocks.push('product_title_missing');
+  if (!String(product.primary_image ?? '').trim()) restoreGateBlocks.push('product_image_missing');
+  const restoreCandidate = restoreGateBlocks.length === 0;
+
+  if (!restoreCandidate) {
+    return targetedFailure({
+      code: 'restore_gate_blocked',
+      message: '已确认有货，但恢复门禁未通过',
+      details: { lookup_identity: identity.lookup_identity, blocks: restoreGateBlocks },
+      retryable: false,
+      product,
+      identity,
+      pickup,
+      dropship,
+      checkedAt,
+    });
+  }
+
+  if (!RESTORE_EXECUTION_ENABLED) {
+    // Read-only outcome: the item qualifies, but nothing is written from here.
+    return success('recheck-item', {
+      production_write_attempted: false,
+      sku: request.sku,
+      supplier_product_id: product.supplier_product_id,
+      targeted_recheck_attempted: true,
+      targeted_recheck_result: 'confirmed_in_stock',
+      resulting_action: 'restore_candidate_recorded',
+      final_status: 'manual_confirmed_in_stock',
+      checked_at: checkedAt,
+      inventory_status: 'confirmed_in_stock',
+      restore_candidate: true,
+      restore_gate_blocks: [],
+      restore_execution_enabled: false,
+      error_code: null,
+      error_message: null,
+      error: null,
+      other_items_scanned: 0,
+      identity: identityEnvelope(identity),
+      accounts: sourceFacts,
     });
   }
 
@@ -779,9 +993,13 @@ async function runTargetedRecheck(
       .upsert(plan.currentUpsert, { onConflict: 'supplier_product_id' });
     if (currentWrite.error) throw new Error('availability_current_write_failed');
   } catch (error) {
+    const stage = error instanceof Error ? error.message : 'restore_execution_failed';
+    const code = stage === 'workflow_write_failed' ? 'workflow_write_failed' : 'restore_execution_failed';
     return targetedFailure({
-      code: 'restore_execution_failed',
+      code,
       message: '真实有货读取成功，但现有生命周期写入未完整完成',
+      details: { lookup_identity: identity.lookup_identity, failed_stage: stage },
+      retryable: true,
       product,
       identity,
       pickup,
@@ -853,17 +1071,13 @@ async function runTargetedRecheck(
     final_status: readbackVerified ? 'restored_after_manual_review' : 'manual_confirmed_in_stock',
     checked_at: checkedAt,
     inventory_status: availabilityResult.inventoryStatus,
+    restore_candidate: true,
+    restore_gate_blocks: [],
+    restore_execution_enabled: true,
     relist_attempted: relistAttempted,
     relist_exit_code: relistExitCode,
     run_id: runId,
-    identity: {
-      ...identity,
-      favorites_lookup_identity: identity.lookup_identity,
-      product_detail_identity: identity.lookup_identity,
-      availability_lookup_identity: identity.lookup_identity,
-      inventory_lookup_identity: identity.lookup_identity,
-      website_search_identity: 'pending_verification',
-    },
+    identity: identityEnvelope(identity),
     accounts: sourceFacts,
     restore_result: readbackVerified ? 'restored_and_verified' : 'restore_readback_failed',
     readback: {
@@ -877,6 +1091,12 @@ async function runTargetedRecheck(
     },
     error_code: readbackVerified ? null : 'restore_readback_failed',
     error_message: readbackVerified ? null : '已确认有货，但现有恢复流程未通过全部回读验证',
+    error: readbackVerified ? null : {
+      code: 'restore_readback_failed',
+      message: '已确认有货，但现有恢复流程未通过全部回读验证',
+      details: { lookup_identity: identity.lookup_identity, relist_exit_code: relistExitCode },
+      retryable: true,
+    },
     other_items_scanned: 0,
   });
 }
