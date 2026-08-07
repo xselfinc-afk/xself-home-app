@@ -252,6 +252,19 @@ export interface ManualResolutionRecord {
   resolution: ManualResolution;
 }
 
+/** 一个账号在计划里的分项。preview 与 execute 共用同一份结构。 */
+export interface AccountPlanCounts {
+  current_favorites: number;
+  extra: number;
+  automatic_remove: number;
+  manual_keep: number;
+  manual_remove: number;
+  manual_remove_blocked: number;
+  manual_no_action: number;
+  unresolved_exception: number;
+  executable_remove: number;
+}
+
 export interface ManualPlanCounts {
   /** 自动规则算出的待取消（未被人工保留的部分）。 */
   auto_removals: number;
@@ -269,6 +282,8 @@ export interface ManualPlanCounts {
 
 export interface ResolvedCleanupPlan extends CleanupPlan {
   manual: ManualPlanCounts;
+  /** 同一份计划的分账号视图。两个账号彼此独立。 */
+  accounts: Record<SyncAccount, AccountPlanCounts>;
 }
 
 function resolutionKey(account: SyncAccount, sku: string): string {
@@ -304,27 +319,35 @@ export function applyManualResolutions(
     auto_removals: 0, manual_keep: 0, manual_remove: 0,
     manual_remove_blocked: 0, manual_no_action: 0, unresolved_exceptions: 0,
   };
+  const blank = (): AccountPlanCounts => ({
+    current_favorites: 0, extra: 0, automatic_remove: 0, manual_keep: 0, manual_remove: 0,
+    manual_remove_blocked: 0, manual_no_action: 0, unresolved_exception: 0, executable_remove: 0,
+  });
+  const accounts: Record<SyncAccount, AccountPlanCounts> = { pickup: blank(), dropship: blank() };
 
   for (const account of ['pickup', 'dropship'] as const) {
+    const acct = accounts[account];
+    acct.extra = plan.removals[account].length + plan.exceptions[account].length;
     // 自动待取消：人工保留的剔除，其余照常。
     for (const item of plan.removals[account]) {
       const verdict = decided.get(resolutionKey(account, item.supplier_product_id));
-      if (verdict === 'keep_favorite') { counts.manual_keep += 1; continue; }
-      if (verdict === 'no_action') { counts.manual_no_action += 1; continue; }
+      if (verdict === 'keep_favorite') { counts.manual_keep += 1; acct.manual_keep += 1; continue; }
+      if (verdict === 'no_action') { counts.manual_no_action += 1; acct.manual_no_action += 1; continue; }
       // 安全门 1：已上线商品永不取消（自动计划本就排除，这里是显式冗余防线）。
-      if (targetSet.has(item.supplier_product_id)) { counts.manual_keep += 1; continue; }
+      if (targetSet.has(item.supplier_product_id)) { counts.manual_keep += 1; acct.manual_keep += 1; continue; }
       removals[account].push(item);
       counts.auto_removals += 1;
+      acct.automatic_remove += 1;
     }
 
     // 异常：按裁决分流。
     for (const ex of plan.exceptions[account]) {
       const verdict = decided.get(resolutionKey(account, ex.supplier_product_id));
-      if (verdict === 'keep_favorite') { counts.manual_keep += 1; continue; }
-      if (verdict === 'no_action') { counts.manual_no_action += 1; continue; }
+      if (verdict === 'keep_favorite') { counts.manual_keep += 1; acct.manual_keep += 1; continue; }
+      if (verdict === 'no_action') { counts.manual_no_action += 1; acct.manual_no_action += 1; continue; }
       if (verdict === 'remove_favorite') {
         // 安全门 1：已上线商品即便被人工点了取消也不执行。
-        if (targetSet.has(ex.supplier_product_id)) { counts.manual_keep += 1; continue; }
+        if (targetSet.has(ex.supplier_product_id)) { counts.manual_keep += 1; acct.manual_keep += 1; continue; }
         // 安全门 2：身份不唯一就不进取消流程，留在异常里。
         const mapping = mappingFor(ex.supplier_product_id);
         if (mapping.status === 'unique' && mapping.product_id !== null && mapping.verified_sku === ex.supplier_product_id) {
@@ -335,19 +358,46 @@ export function applyManualResolutions(
             verified_sku: mapping.verified_sku,
           });
           counts.manual_remove += 1;
+          acct.manual_remove += 1;
         } else {
           exceptions[account].push({ supplier_product_id: ex.supplier_product_id, reason: ex.reason });
           counts.manual_remove_blocked += 1;
+          acct.manual_remove_blocked += 1;
         }
         continue;
       }
       // 未处理：保持异常，不猜、不删。
       exceptions[account].push(ex);
       counts.unresolved_exceptions += 1;
+      acct.unresolved_exception += 1;
     }
   }
 
-  return { ...plan, removals, exceptions, manual: counts };
+  for (const account of ['pickup', 'dropship'] as const) {
+    accounts[account].executable_remove = removals[account].length;
+  }
+  return { ...plan, removals, exceptions, manual: counts, accounts };
+}
+
+/**
+ * 唯一的计划入口。preview（XOne 确认页）与 execute（执行器）都必须调用它 ——
+ * 两条路径再也不会各算一套。
+ *
+ * `mappingFor` 由调用方注入：preview 只查已存的映射表（绝不打门户），execute 允许
+ * 现场解析。这个差异只可能把条目从 manual_remove_blocked 移向可执行，绝不会反过来
+ * 让 preview 显示得比实际更激进。
+ */
+export function buildFavoriteCleanupPlan(inputs: {
+  target: readonly string[];
+  favorites: { pickup: readonly string[]; dropship: readonly string[] };
+  resolutions: readonly ManualResolutionRecord[];
+  mappingFor: (sku: string) => ProductIdMapping;
+}): ResolvedCleanupPlan {
+  const auto = planFavoriteCleanup(inputs.target, inputs.favorites, inputs.mappingFor);
+  const resolved = applyManualResolutions(auto, inputs.resolutions, inputs.target, inputs.mappingFor);
+  resolved.accounts.pickup.current_favorites = inputs.favorites.pickup.length;
+  resolved.accounts.dropship.current_favorites = inputs.favorites.dropship.length;
+  return resolved;
 }
 
 // ── 续跑判定 ─────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import {
   applyManualResolutions,
+  buildFavoriteCleanupPlan,
   planFavoriteCleanup,
   type ManualResolutionRecord,
 } from '../services/supplierFavoriteCleanupExecutor';
@@ -209,6 +210,62 @@ function main(): void {
       manual_no_action: 1,       // NOOP-1
       unresolved_exceptions: 1,  // OPEN-1
     });
+  });
+
+
+  it('12. preview 与 execute 是同一个计划函数，同一 fixture 结果完全一致', () => {
+    const target = [PUBLISHED];
+    const favorites = { pickup: [PUBLISHED, 'KEEP-1', 'RM-OK', 'RM-BLOCKED'], dropship: [PUBLISHED, 'OPEN-1'] };
+    const unique = { 'RM-OK': 501 };
+    const resolutions: ManualResolutionRecord[] = [
+      { supplier_account: 'pickup', supplier_product_id: 'KEEP-1', resolution: 'keep_favorite' },
+      { supplier_account: 'pickup', supplier_product_id: 'RM-OK', resolution: 'remove_favorite' },
+      { supplier_account: 'pickup', supplier_product_id: 'RM-BLOCKED', resolution: 'remove_favorite' },
+    ];
+
+    // preview（XOne 确认页）与 execute（执行器）各自构建一次。
+    const preview = buildFavoriteCleanupPlan({ target, favorites, resolutions, mappingFor: mappingsFrom(unique) });
+    const execute = buildFavoriteCleanupPlan({ target, favorites, resolutions, mappingFor: mappingsFrom(unique) });
+
+    const shape = (p: typeof preview) => ({
+      target: p.target_count,
+      pickup: p.accounts.pickup,
+      dropship: p.accounts.dropship,
+      manual: p.manual,
+      executable: p.removals.pickup.length + p.removals.dropship.length,
+    });
+    assert.deepEqual(shape(preview), shape(execute), 'preview 与 execute 不得出现两套数字');
+
+    // 具体数字也要对：KEEP-1 保留、RM-OK 可执行、RM-BLOCKED 无身份被挡、OPEN-1 未处理。
+    assert.equal(preview.accounts.pickup.current_favorites, 4);
+    assert.equal(preview.accounts.pickup.manual_keep, 1);
+    // RM-OK 本来就有映射，属于自动待取消；manual_remove 只统计"从异常里被人工放行"的那些。
+    assert.equal(preview.accounts.pickup.automatic_remove, 1);
+    assert.equal(preview.accounts.pickup.manual_remove, 0);
+    assert.equal(preview.accounts.pickup.manual_remove_blocked, 1);
+    assert.equal(preview.accounts.pickup.executable_remove, 1);
+    // 账号隔离：dropship 的未处理不会算到 pickup 头上。
+    assert.equal(preview.accounts.dropship.unresolved_exception, 1);
+    assert.equal(preview.accounts.dropship.executable_remove, 0);
+    // extra 恒不大于当前收藏。
+    for (const a of ['pickup', 'dropship'] as const) {
+      assert.ok(preview.accounts[a].extra <= preview.accounts[a].current_favorites, `${a} extra 不得大于当前收藏`);
+    }
+  });
+
+  it('13. published=true 即便被裁决为取消，也不进入任何账号的可执行集合', () => {
+    const target = [PUBLISHED];
+    const favorites = { pickup: [PUBLISHED], dropship: [PUBLISHED] };
+    const plan = buildFavoriteCleanupPlan({
+      target, favorites,
+      resolutions: [
+        { supplier_account: 'pickup', supplier_product_id: PUBLISHED, resolution: 'remove_favorite' },
+        { supplier_account: 'dropship', supplier_product_id: PUBLISHED, resolution: 'remove_favorite' },
+      ],
+      mappingFor: mappingsFrom({ [PUBLISHED]: 999 }),
+    });
+    assert.equal(plan.accounts.pickup.executable_remove, 0);
+    assert.equal(plan.accounts.dropship.executable_remove, 0);
   });
 
   it('裁决只影响同步计划，不产生任何发布/下架语义', () => {

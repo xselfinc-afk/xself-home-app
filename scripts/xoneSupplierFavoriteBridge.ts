@@ -28,6 +28,7 @@ import { previewRemoval, previewSyncOperation } from '../src/services/supplierFa
 import { buildFavoriteSyncPlan, type AccountFavoritesState, type SyncAccount } from '../src/services/supplierFavoriteSync';
 import { resolveProductIdMapping, type ProductIdMapping } from '../src/services/supplierFavoriteProductId';
 import { isStale, isUsableMapping, toUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
+import { buildFavoriteCleanupPlan } from '../src/services/supplierFavoriteCleanupExecutor';
 // 兼容既有引用路径：解析逻辑已移到服务层，这里只转出。
 export { resolveProductIdMapping, type ProductIdMapping };
 
@@ -444,57 +445,60 @@ export async function executeFavoriteBridge(
     // TARGET 只认 published=true，不看 sellable_products、不看库存状态。
     // 临时缺货的商品仍然 published，因此仍应留在收藏夹里。
     const target = rows.products.filter((p) => p.published === true).map((p) => p.supplier_product_id);
-    const savedOf = (account: SyncAccount): AccountFavoritesState => ({
-      account,
-      saved: rows.memberships
-        .filter((r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true)
-        .map((r) => r.supplier_product_id),
-      authoritative: accountIsAuthoritative(rows.memberships, account),
-    });
+    const savedOf = (account: SyncAccount): string[] => rows.memberships
+      .filter((r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true)
+      .map((r) => r.supplier_product_id);
+    const favorites = { pickup: savedOf('pickup'), dropship: savedOf('dropship') };
 
-    // 网站身份只来自门户证明过的映射表。
+    // 网站身份只来自门户证明过的映射表 —— preview 绝不打门户。
     const mappings = await readAll<StoredPortalMapping>(
       client, 'supplier_portal_product_mappings',
       'supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at',
     );
-    const resolve = portalMappingResolver(mappings, new Date().toISOString());
+    const mappingFor = portalMappingResolver(mappings, new Date().toISOString());
 
-    const plan = buildFavoriteSyncPlan(target, [savedOf('pickup'), savedOf('dropship')], resolve);
+    // 人工裁决实时读取，不硬编码任何数量。表缺失时按「无裁决」处理。
+    const { data: resolutionRows } = await client
+      .from('supplier_favorite_exception_resolutions')
+      .select('supplier_product_id,supplier_account,resolution');
+    const resolutions = ((resolutionRows ?? []) as any[])
+      .filter((r) => r.supplier_account === 'pickup' || r.supplier_account === 'dropship')
+      .filter((r) => ['keep_favorite', 'remove_favorite', 'no_action'].includes(r.resolution))
+      .map((r) => ({
+        supplier_account: r.supplier_account as SyncAccount,
+        supplier_product_id: r.supplier_product_id as string,
+        resolution: r.resolution as 'keep_favorite' | 'remove_favorite' | 'no_action',
+      }));
 
-    // 每一件都过一次执行预览。开关默认关闭，所以这里永远只会得到「不会发送」。
-    const previewOne = (item: { supplier_product_id: string; operation: 'add' | 'remove'; product_id: number; verified_sku: string }) =>
-      previewSyncOperation({
-        supplier_product_id: item.supplier_product_id,
-        operation: item.operation,
-        product_id: item.product_id,
-        verified_sku_for_product_id: item.verified_sku,
-        session_present: false,
-      });
-    const samplePreview = plan.accounts
-      .flatMap((a) => [...a.missing, ...a.extra])
-      .slice(0, 1)
-      .map(previewOne)[0] ?? null;
+    // 与执行器调用同一个函数 —— 确认页看到的就是将要执行的那份计划。
+    const plan = buildFavoriteCleanupPlan({ target, favorites, resolutions, mappingFor });
+
+    // 结构性不变量：残留不可能多于当前收藏。不成立说明快照被拼接过。
+    const inconsistent = (['pickup', 'dropship'] as const)
+      .some((a) => plan.accounts[a].extra > plan.accounts[a].current_favorites);
+    if (inconsistent) {
+      return { ok: false, error_code: 'DATA_INCONSISTENT', error_message: '收藏事实快照自相矛盾，请先刷新数据' };
+    }
+
+    const totals = {
+      automatic_remove: plan.manual.auto_removals,
+      manual_keep: plan.manual.manual_keep,
+      manual_remove: plan.manual.manual_remove,
+      manual_remove_blocked: plan.manual.manual_remove_blocked,
+      manual_no_action: plan.manual.manual_no_action,
+      unresolved_exception: plan.manual.unresolved_exceptions,
+      executable_remove: plan.removals.pickup.length + plan.removals.dropship.length,
+    };
 
     return envelope('sync-plan', {
       target_count: plan.target_count,
-      total_operations: plan.total_operations,
-      unmappable_count: plan.unmappable_count,
-      executable: plan.executable,
-      accounts: plan.accounts.map((a) => ({
-        account: a.account,
-        authoritative: a.authoritative,
-        current_count: a.current_count,
-        missing_count: a.missing.length,
-        extra_count: a.extra.length,
-        exception_count: a.exceptions.length,
-        missing: a.missing.slice(0, 50),
-        extra: a.extra.slice(0, 50),
-        exceptions: a.exceptions.slice(0, 50),
-      })),
-      // 本轮的硬约束：确认按钮只生成预览。
-      sync_execution_enabled: samplePreview?.sync_enabled ?? false,
-      would_send_any: plan.accounts.some(() => false),
-      sample_preview: samplePreview,
+      // 本节点只做「清理未上线收藏」，不再计算新增方向。
+      direction: 'remove_only',
+      pickup: plan.accounts.pickup,
+      dropship: plan.accounts.dropship,
+      totals,
+      executable: totals.executable_remove > 0,
+      sync_execution_enabled: process.env.SUPPLIER_FAVORITE_REMOVAL_ENABLED === 'true',
     });
   }
 

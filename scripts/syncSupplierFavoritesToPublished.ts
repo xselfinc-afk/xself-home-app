@@ -30,7 +30,7 @@ import {
   planFavoriteCleanup,
   resolveExtraMappings,
   countResumable,
-  applyManualResolutions,
+  buildFavoriteCleanupPlan,
   type ManualResolutionRecord,
   withDeadline,
   type CleanupProgressEvent,
@@ -309,10 +309,14 @@ async function main(): Promise<void> {
   });
   const mappingLookup = (sku: string) =>
     resolved.usable.get(sku) ?? { product_id: null, verified_sku: null, status: 'not_mapped' as const };
-  const autoPlan = planFavoriteCleanup(target, favorites, mappingLookup);
-  // 人工裁决叠加在自动计划之上。安全门（published 永不删、身份必须唯一）在这一层强制，
-  // 用户点了「取消收藏」也绕不过去。
-  const plan = applyManualResolutions(autoPlan, manualResolutions, target, mappingLookup);
+  // 与 XOne 确认页调用的是同一个函数 —— preview 与 execute 不再各算一套。
+  // 安全门（published 永不删、身份必须唯一）在这一层强制，用户点了「取消收藏」也绕不过去。
+  const plan = buildFavoriteCleanupPlan({
+    target,
+    favorites,
+    resolutions: manualResolutions,
+    mappingFor: mappingLookup,
+  });
 
   const totalRemovals = plan.removals.pickup.length + plan.removals.dropship.length;
   const unmapped = extraSkus.length - resolved.usable.size;
