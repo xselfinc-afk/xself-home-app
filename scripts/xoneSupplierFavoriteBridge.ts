@@ -14,6 +14,7 @@
  * Nothing here removes a Favorite. Removal lives behind `supplierFavoriteRemoval.ts`, is disabled
  * by default, and the only operation exposed to the UI is a dry preview.
  */
+import { config as loadEnv } from 'dotenv';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
   buildSupplierFavoritePlan,
@@ -24,6 +25,12 @@ import {
   type SupplierFavoriteInput,
 } from '../src/services/supplierFavoriteCleanup';
 import { previewRemoval } from '../src/services/supplierFavoriteRemoval';
+
+// XOne 通过 Tauri 派生这个脚本，派生出的进程只继承 App 自己的环境变量，里面没有 Supabase
+// 凭据。库存桥接同样在模块顶层加载 .env.local —— 少了这两行，面板打开时拿到的永远是
+// NOT_CONFIGURED。Rust runner 以 xself-home-app 为工作目录，所以相对路径成立。
+loadEnv({ path: '.env.local' });
+loadEnv({ path: '.env' });
 
 const LOOP_ID = 'supplier-favorite-management';
 const SCHEMA_VERSION = '1.0' as const;
@@ -395,15 +402,22 @@ async function main(): Promise<void> {
   let response: Record<string, unknown>;
   try {
     const request = parseFavoriteBridgeRequest(await readStdin());
-    const url = process.env.SUPABASE_URL ?? '';
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+    const url = process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY ?? '';
+    // 这个分支只可能是数据库凭据缺失。面板打开走的是已同步事实，与 Pickup / Dropship
+    // 读取器配置无关，所以文案必须指向数据库，指向供应商侧会把排查引到错误方向。
     response = !url || !key
-      ? failure('NOT_CONFIGURED', '供应商收藏读取器尚未配置')
+      ? failure('DATABASE_NOT_CONFIGURED', '数据库连接未配置：缺少 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY')
       : await executeFavoriteBridge(request, createClient(url, key, { auth: { persistSession: false } }));
   } catch (error) {
-    const raw = error instanceof Error ? error.message.split(':')[0] : 'BRIDGE_FAILED';
+    const message = error instanceof Error ? error.message : String(error);
+    const raw = message.split(':')[0];
     const known = new Set(['INVALID_REQUEST', 'INVALID_SKU', 'FAVORITE_READ_FAILED']);
-    response = failure(known.has(raw) ? raw : 'BRIDGE_FAILED', '供应商收藏请求处理失败');
+    // 数据库读取失败要如实报出是哪张表、什么错，不能笼统成一句「请求处理失败」。
+    response = failure(
+      known.has(raw) ? raw : 'BRIDGE_FAILED',
+      raw === 'FAVORITE_READ_FAILED' ? `收藏事实读取失败：${message.slice('FAVORITE_READ_FAILED:'.length)}` : '供应商收藏请求处理失败',
+    );
     console.error(`[xone-supplier-favorite] ${raw}`);
   }
   process.stdout.write(`${JSON.stringify(response)}\n`);

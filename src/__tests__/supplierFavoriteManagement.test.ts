@@ -483,6 +483,33 @@ async function main(): Promise<void> {
     }
   });
 
+
+  it('20. 桥接自带数据库凭据加载，且不依赖任何供应商读取器', () => {
+    // XOne 通过 Tauri 派生这个脚本，子进程只继承 App 的环境变量，里面没有 Supabase 凭据。
+    // 少了顶层的 dotenv 加载，面板打开时永远拿到 NOT_CONFIGURED —— 这正是它一度全 0 的原因。
+    const src = fs.readFileSync('scripts/xoneSupplierFavoriteBridge.ts', 'utf8');
+    assert.ok(/from 'dotenv'/.test(src), '桥接必须自行加载 .env');
+    assert.ok(src.includes("loadEnv({ path: '.env.local' })"), '必须加载 .env.local');
+    assert.ok(src.includes("loadEnv({ path: '.env' })"), '必须加载 .env');
+
+    // 凭据缺失时的文案要指向数据库，不能甩锅给供应商读取器配置。
+    assert.ok(src.includes('DATABASE_NOT_CONFIGURED'));
+    assert.equal(src.includes('供应商收藏读取器尚未配置'), false, '误导性文案必须移除');
+
+    // 面板路径只读数据库：桥接不得引入任何供应商客户端。
+    for (const supplierModule of [
+      'gigaApiClient', 'gigaAccountReadClient', 'gigaSavedItems',
+      'listAccountFavorites', 'syncSupplierFavoriteFacts',
+    ]) {
+      assert.equal(
+        new RegExp(`(import|require)[^\\n]*${supplierModule}`).test(src), false,
+        `桥接不得引入 ${supplierModule} —— 打开面板不能触发供应商读取`,
+      );
+    }
+    // 也不得自己发网络请求。
+    assert.equal(/\bfetch\s*\(/.test(src), false, '桥接不得发起任何网络请求');
+  });
+
   console.log(`\n${passed} passed`);
 }
 
