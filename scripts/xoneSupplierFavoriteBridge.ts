@@ -27,7 +27,7 @@ import {
 import { previewRemoval, previewSyncOperation } from '../src/services/supplierFavoriteRemoval';
 import { buildFavoriteSyncPlan, type AccountFavoritesState, type SyncAccount } from '../src/services/supplierFavoriteSync';
 import { resolveProductIdMapping, type ProductIdMapping } from '../src/services/supplierFavoriteProductId';
-import { isStale, isUsableMapping, toUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
+import { isStale, isUsableMapping, toUsableMapping, verifyManualIdentity, PORTAL_MAPPING_SOURCE, PORTAL_MAPPING_CONFIDENCE, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
 import { buildFavoriteCleanupPlan } from '../src/services/supplierFavoriteCleanupExecutor';
 // 兼容既有引用路径：解析逻辑已移到服务层，这里只转出。
 export { resolveProductIdMapping, type ProductIdMapping };
@@ -65,6 +65,8 @@ export type FavoriteBridgeOperation =
   | 'exception-list'
   | 'resolve-exception'
   | 'resolve-exception-batch'
+  | 'verify-identity'
+  | 'save-identity'
   | 'summary'
   | 'pending-onboarding'
   | 'manual-action'
@@ -82,6 +84,8 @@ export interface FavoriteBridgeRequest {
   /** resolve-exception：keep_favorite | remove_favorite | no_action */
   resolution?: string;
   note?: string;
+  /** verify-identity / save-identity：用户给出的 website product_id。 */
+  website_product_id?: number;
   /** resolve-exception-batch：一次提交多条裁决。 */
   items?: Array<{ supplier_account?: string; supplier_product_id?: string; resolution?: string }>;
   /** pending-onboarding 分页：一次只返回一页，首屏不再拉满 140 条。 */
@@ -127,7 +131,7 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
   }
   const r = parsed as Partial<FavoriteBridgeRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
-  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan', 'exception-list', 'resolve-exception', 'resolve-exception-batch'];
+  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan', 'exception-list', 'resolve-exception', 'resolve-exception-batch', 'verify-identity', 'save-identity'];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
   // pending-onboarding 是列表操作，用 offset/limit 分页，不再需要 sku。
   const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding', 'exception-list', 'resolve-exception-batch']);
@@ -149,6 +153,8 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
       ? String(r.resolution) : undefined,
     note: String(r.note ?? '').trim().slice(0, 500) || undefined,
     items: Array.isArray(r.items) ? r.items.slice(0, BATCH_MAX) : undefined,
+    website_product_id: Number.isInteger(Number(r.website_product_id)) && Number(r.website_product_id) > 0
+      ? Number(r.website_product_id) : undefined,
     offset: clampInt(r.offset, 0, 100_000),
     limit: clampInt(r.limit, 20, PENDING_PAGE_MAX),
   };
@@ -308,6 +314,47 @@ function accountStates(rows: Rows): AccountReadState[] {
   });
 }
 
+
+/**
+ * 读一次门户详情页，拿到该 product_id 自报的 SKU 与商品名。
+ *
+ * 复用既有的 fetchGigaWarehouseInventoryFromXhr（同一个 session、同一套 HTTP 客户端），
+ * 不新建第二套门户抓取框架，也不用浏览器点页面。
+ */
+async function readPortalIdentity(productId: number): Promise<
+  | { ok: true; portal_sku: string | null; product_title: string | null }
+  | { ok: false; reason: 'session_expired' | 'unavailable' }
+> {
+  try {
+    const mod = await import('./fetchGigaWarehouseInventoryFromXhr');
+    const session = mod.loadSession();
+    const detail = await mod.fetchBaseInfos(String(productId), session as never);
+    const info = (detail as { data?: { product_info?: { sku?: string; product_name?: string } } } | null)?.data?.product_info;
+    return { ok: true, portal_sku: info?.sku ?? null, product_title: info?.product_name ?? null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // 技术错误串不外传，只归一成用户能看懂的两种情况。
+    if (/AUTH|401|403|CAPTCHA|login/i.test(message)) return { ok: false, reason: 'session_expired' };
+    return { ok: false, reason: 'unavailable' };
+  }
+}
+
+/** 查该 SKU 现有映射，以及该 product_id 是否已被别的 SKU 占用。 */
+async function readIdentityContext(client: SupabaseClient, sku: string, productId: number) {
+  const [mine, others] = await Promise.all([
+    client.from('supplier_portal_product_mappings')
+      .select('supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at')
+      .eq('supplier_product_id', sku).maybeSingle(),
+    client.from('supplier_portal_product_mappings')
+      .select('supplier_product_id').eq('website_product_id', productId),
+  ]);
+  return {
+    existing: (mine.data ?? null) as StoredPortalMapping | null,
+    otherSkusUsingId: ((others.data ?? []) as Array<{ supplier_product_id: string }>)
+      .map((r) => r.supplier_product_id).filter((s) => s !== sku),
+  };
+}
+
 export async function executeFavoriteBridge(
   request: FavoriteBridgeRequest,
   client: SupabaseClient,
@@ -317,6 +364,53 @@ export async function executeFavoriteBridge(
   const inputList = buildInputs(rows);
   const plan = buildSupplierFavoritePlan(inputList, accountStates(rows));
   const inputs = new Map(inputList.map((i) => [i.supplier_product_id, i]));
+
+  if (request.operation === 'verify-identity' || request.operation === 'save-identity') {
+    const sku = String(request.sku ?? '').trim();
+    const productId = request.website_product_id;
+    if (!sku) return { ok: false, error_message: '缺少 Supplier SKU' };
+    if (!productId) return { ok: false, error_message: 'Website Product ID 必须是正整数' };
+
+    // save 路径同样从这里开始：**不信任前端此前的验证结果**，重新读一次门户详情页。
+    const portal = await readPortalIdentity(productId);
+    if (portal.ok === false) {
+      return portal.reason === 'session_expired'
+        ? { ok: false, error_code: 'SESSION_EXPIRED', error_message: '供应商登录已失效，请重新登录' }
+        : { ok: false, error_code: 'PORTAL_UNAVAILABLE', error_message: '暂时无法读取供应商商品详情，请稍后重试' };
+    }
+
+    const ctx = await readIdentityContext(client, sku, productId);
+    const verdict = verifyManualIdentity({
+      supplier_product_id: sku,
+      website_product_id: productId,
+      portal_sku: portal.portal_sku,
+      product_title: portal.product_title,
+      existing: ctx.existing,
+      otherSkusUsingId: ctx.otherSkusUsingId,
+    });
+
+    if (request.operation === 'verify-identity') {
+      return envelope('verify-identity', { verdict });
+    }
+
+    // save-identity：只有服务端这一次刚刚验证通过才允许写。
+    if (!verdict.can_save) {
+      return { ok: false, error_code: 'IDENTITY_NOT_VERIFIED', error_message: verdict.detail ?? '身份未通过验证，禁止保存' };
+    }
+    const now = new Date().toISOString();
+    const { error } = await client.from('supplier_portal_product_mappings').upsert({
+      supplier_product_id: sku,
+      website_product_id: verdict.website_product_id,
+      portal_sku: verdict.portal_sku,
+      source: PORTAL_MAPPING_SOURCE,
+      confidence: PORTAL_MAPPING_CONFIDENCE,
+      resolved_at: now,
+      last_verified_at: now,
+      updated_at: now,
+    }, { onConflict: 'supplier_product_id' });
+    if (error) return { ok: false, error_message: error.message };
+    return envelope('save-identity', { verdict, saved: true });
+  }
 
   if (request.operation === 'exception-list') {
     // 异常 = 该账号当前收藏中不属于 TARGET、且没有唯一身份的条目，附上人工裁决。
