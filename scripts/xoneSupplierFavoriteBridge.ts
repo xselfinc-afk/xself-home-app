@@ -84,6 +84,8 @@ export interface FavoriteBridgeRequest {
   /** resolve-exception：keep_favorite | remove_favorite | no_action */
   resolution?: string;
   note?: string;
+  /** exception-list：只取未处理或已处理的一类。 */
+  only?: 'unresolved' | 'resolved';
   /** verify-identity / save-identity：用户给出的 website product_id。 */
   website_product_id?: number;
   /** resolve-exception-batch：一次提交多条裁决。 */
@@ -153,6 +155,7 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
       ? String(r.resolution) : undefined,
     note: String(r.note ?? '').trim().slice(0, 500) || undefined,
     items: Array.isArray(r.items) ? r.items.slice(0, BATCH_MAX) : undefined,
+    only: r.only === 'unresolved' || r.only === 'resolved' ? r.only : undefined,
     website_product_id: Number.isInteger(Number(r.website_product_id)) && Number(r.website_product_id) > 0
       ? Number(r.website_product_id) : undefined,
     offset: clampInt(r.offset, 0, 100_000),
@@ -455,9 +458,21 @@ export async function executeFavoriteBridge(
       }
     }
     const unresolved = items.filter((i) => i.resolution === 'unresolved').length;
+    // 分页：首页只给 20 条，用户点「加载更多」再取下一页，不一次渲染上百张卡片。
+    const wanted = request.only === 'resolved'
+      ? items.filter((i) => i.resolution !== 'unresolved')
+      : request.only === 'unresolved'
+        ? items.filter((i) => i.resolution === 'unresolved')
+        : items;
+    const offset = request.offset ?? 0;
+    const limit = request.limit ?? 20;
+    const page = wanted.slice(offset, offset + limit);
     return envelope('exception-list', {
-      items,
+      items: page,
       total: items.length,
+      filtered_total: wanted.length,
+      offset,
+      has_more: offset + page.length < wanted.length,
       unresolved_count: unresolved,
       resolved_count: items.length - unresolved,
     });
@@ -532,7 +547,27 @@ export async function executeFavoriteBridge(
   }
 
   if (request.operation === 'summary') {
-    return envelope('summary', { accounts: plan.accounts, counts: plan.counts });
+    // 首屏只需要两个数字，不需要异常明细。放在这里一并返回，省掉第二次 bridge 进程启动
+    // （每次启动光 tsx 就要 ~570ms）。明细走 exception-list，由用户点击时才加载。
+    const { count: resolvedCount } = await client
+      .from('supplier_favorite_exception_resolutions')
+      .select('*', { count: 'exact', head: true });
+    const decided = resolvedCount ?? 0;
+    const target = new Set(rows.products.filter((p) => p.published === true).map((p) => p.supplier_product_id));
+    let extraTotal = 0;
+    for (const account of ['pickup', 'dropship'] as const) {
+      extraTotal += rows.memberships.filter(
+        (r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true
+          && !target.has(r.supplier_product_id),
+      ).length;
+    }
+    return envelope('summary', {
+      accounts: plan.accounts,
+      counts: plan.counts,
+      // 未处理 = 当前残留里还没有人工裁决的部分。
+      unresolved_exception_count: Math.max(extraTotal - decided, 0),
+      resolved_decision_count: decided,
+    });
   }
 
   if (request.operation === 'sync-plan') {
