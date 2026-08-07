@@ -24,7 +24,11 @@ import {
   type SavedAssetState,
   type SupplierFavoriteInput,
 } from '../src/services/supplierFavoriteCleanup';
-import { previewRemoval } from '../src/services/supplierFavoriteRemoval';
+import { previewRemoval, previewSyncOperation } from '../src/services/supplierFavoriteRemoval';
+import { buildFavoriteSyncPlan, type AccountFavoritesState, type SyncAccount } from '../src/services/supplierFavoriteSync';
+import { resolveProductIdMapping, type ProductIdMapping } from '../src/services/supplierFavoriteProductId';
+// 兼容既有引用路径：解析逻辑已移到服务层，这里只转出。
+export { resolveProductIdMapping, type ProductIdMapping };
 
 // XOne 通过 Tauri 派生这个脚本，派生出的进程只继承 App 自己的环境变量，里面没有 Supabase
 // 凭据。库存桥接同样在模块顶层加载 .env.local —— 少了这两行，面板打开时拿到的永远是
@@ -39,7 +43,8 @@ export type FavoriteBridgeOperation =
   | 'summary'
   | 'pending-onboarding'
   | 'manual-action'
-  | 'removal-preview';
+  | 'removal-preview'
+  | 'sync-plan';
 
 export interface FavoriteBridgeRequest {
   schema_version: '1.0';
@@ -83,9 +88,10 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
   }
   const r = parsed as Partial<FavoriteBridgeRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
-  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview'];
+  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan'];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
-  if (r.operation !== 'summary' && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
+  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan']);
+  if (!skuless.has(r.operation) && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
   return {
     schema_version: SCHEMA_VERSION,
     operation: r.operation,
@@ -146,50 +152,6 @@ async function loadRows(client: SupabaseClient): Promise<Rows> {
  * all `ok` was read cleanly end to end — and for such an account the ABSENCE of a row is a real
  * answer ("this SKU is not in that account's Favorites"), not an unknown.
  */
-export interface ProductIdMapping {
-  product_id: number | null;
-  /** The SKU the product_id resolves back to. Null when the reverse lookup is not unique. */
-  verified_sku: string | null;
-  status: 'unique' | 'multiple_product_ids' | 'shared_product_id' | 'not_mapped';
-}
-
-/**
- * Resolve one supplier SKU to the website's numeric product_id, and verify it in REVERSE.
- *
- * Reuses `inventory_cache`, which already stores both identifiers side by side — no second product
- * identity model is introduced. READ ONLY: this chain never writes that table, and the isolation
- * test enforces it.
- *
- * The reverse check matters more than the forward one. Removing a Favorite is irreversible and the
- * request carries the product_id, not the SKU, so a product_id shared by two SKUs would remove the
- * wrong item. Anything short of a clean one-to-one match is reported for human review.
- */
-export function resolveProductIdMapping(
-  sku: string,
-  cache: ReadonlyArray<{ supplier_product_id: string | null; product_id: string | number | null }>,
-): ProductIdMapping {
-  const forward = new Set<string>();
-  const reverse = new Map<string, Set<string>>();
-  for (const row of cache) {
-    if (!row.supplier_product_id || row.product_id === null || row.product_id === undefined) continue;
-    const id = String(row.product_id);
-    if (row.supplier_product_id === sku) forward.add(id);
-    if (!reverse.has(id)) reverse.set(id, new Set());
-    reverse.get(id)!.add(row.supplier_product_id);
-  }
-  if (forward.size === 0) return { product_id: null, verified_sku: null, status: 'not_mapped' };
-  if (forward.size > 1) return { product_id: null, verified_sku: null, status: 'multiple_product_ids' };
-
-  const id = [...forward][0];
-  const owners = reverse.get(id) ?? new Set();
-  if (owners.size !== 1) return { product_id: null, verified_sku: null, status: 'shared_product_id' };
-  const numeric = Number(id);
-  if (!Number.isInteger(numeric) || numeric <= 0) {
-    return { product_id: null, verified_sku: null, status: 'not_mapped' };
-  }
-  return { product_id: numeric, verified_sku: [...owners][0], status: 'unique' };
-}
-
 function accountIsAuthoritative(memberships: Rows['memberships'], account: string): boolean {
   const rows = memberships.filter((r) => r.supplier_account === account);
   return rows.length > 0 && rows.every((r) => r.sync_status === 'ok');
@@ -292,6 +254,68 @@ export async function executeFavoriteBridge(
 
   if (request.operation === 'summary') {
     return envelope('summary', { accounts: plan.accounts, counts: plan.counts });
+  }
+
+  if (request.operation === 'sync-plan') {
+    // TARGET 只认 published=true，不看 sellable_products、不看库存状态。
+    // 临时缺货的商品仍然 published，因此仍应留在收藏夹里。
+    const target = rows.products.filter((p) => p.published === true).map((p) => p.supplier_product_id);
+    const savedOf = (account: SyncAccount): AccountFavoritesState => ({
+      account,
+      saved: rows.memberships
+        .filter((r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true)
+        .map((r) => r.supplier_product_id),
+      authoritative: accountIsAuthoritative(rows.memberships, account),
+    });
+
+    // 映射一次读全，逐 SKU 解析；解析不唯一的进 exception，绝不猜。
+    const cache = await readAll<{ supplier_product_id: string | null; product_id: string | number | null }>(
+      client, 'inventory_cache', 'supplier_product_id,product_id',
+    );
+    const mappingCache = new Map<string, ReturnType<typeof resolveProductIdMapping>>();
+    const resolve = (sku: string) => {
+      let hit = mappingCache.get(sku);
+      if (!hit) { hit = resolveProductIdMapping(sku, cache); mappingCache.set(sku, hit); }
+      return hit;
+    };
+
+    const plan = buildFavoriteSyncPlan(target, [savedOf('pickup'), savedOf('dropship')], resolve);
+
+    // 每一件都过一次执行预览。开关默认关闭，所以这里永远只会得到「不会发送」。
+    const previewOne = (item: { supplier_product_id: string; operation: 'add' | 'remove'; product_id: number; verified_sku: string }) =>
+      previewSyncOperation({
+        supplier_product_id: item.supplier_product_id,
+        operation: item.operation,
+        product_id: item.product_id,
+        verified_sku_for_product_id: item.verified_sku,
+        session_present: false,
+      });
+    const samplePreview = plan.accounts
+      .flatMap((a) => [...a.missing, ...a.extra])
+      .slice(0, 1)
+      .map(previewOne)[0] ?? null;
+
+    return envelope('sync-plan', {
+      target_count: plan.target_count,
+      total_operations: plan.total_operations,
+      unmappable_count: plan.unmappable_count,
+      executable: plan.executable,
+      accounts: plan.accounts.map((a) => ({
+        account: a.account,
+        authoritative: a.authoritative,
+        current_count: a.current_count,
+        missing_count: a.missing.length,
+        extra_count: a.extra.length,
+        exception_count: a.exceptions.length,
+        missing: a.missing.slice(0, 50),
+        extra: a.extra.slice(0, 50),
+        exceptions: a.exceptions.slice(0, 50),
+      })),
+      // 本轮的硬约束：确认按钮只生成预览。
+      sync_execution_enabled: samplePreview?.sync_enabled ?? false,
+      would_send_any: plan.accounts.some(() => false),
+      sample_preview: samplePreview,
+    });
   }
 
   if (request.operation === 'pending-onboarding') {

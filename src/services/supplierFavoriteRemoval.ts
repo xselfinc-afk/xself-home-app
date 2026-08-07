@@ -27,6 +27,20 @@
 export const REMOVAL_ENDPOINT =
   'https://www.gigab2b.com/index.php?route=account/wishlist/delProductsFromWish';
 
+/**
+ * Adding is the mirror of removing and rides the same gates. It is far less destructive — a stray
+ * add is undone by a remove — but it is still an outward-facing write against the supplier account,
+ * so it gets the same switch, the same single-item rule and the same reverse-verified identity.
+ */
+export const ADD_ENDPOINT =
+  'https://www.gigab2b.com/index.php?route=account/wishlist/addProductsToWish';
+
+export type WishlistOperation = 'add' | 'remove';
+
+export function endpointFor(operation: WishlistOperation): string {
+  return operation === 'add' ? ADD_ENDPOINT : REMOVAL_ENDPOINT;
+}
+
 /** The switch. Absent or anything other than the exact string 'true' means disabled. */
 export const REMOVAL_ENABLED_ENV = 'SUPPLIER_FAVORITE_REMOVAL_ENABLED';
 
@@ -206,5 +220,112 @@ export async function executeRemoval(
       response_code: null,
       error: error instanceof Error ? error.message : 'removal_request_failed',
     };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 收藏同步执行预览
+//
+// 同步走的是另一套授权模型：目标集合由 published 决定，不再要求每件单独的
+// REMOVABLE + founder approved 记录 —— 上架/下架这个决定本身就是授权。
+// 保留下来的门禁是那些防止「作用到错误商品」的：总开关、单件、反查一致的身份、登录会话。
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type SyncRejectionCode =
+  | 'sync_disabled'
+  | 'batch_request_rejected'
+  | 'product_id_invalid'
+  | 'sku_missing'
+  | 'identity_mismatch'
+  | 'session_missing';
+
+export interface SyncOperationRequest {
+  supplier_product_id: string;
+  operation: WishlistOperation;
+  product_id: unknown;
+  verified_sku_for_product_id: string | null;
+  session_present: boolean;
+}
+
+export interface SyncOperationPreview {
+  ok: boolean;
+  would_send: boolean;
+  operation: WishlistOperation;
+  endpoint: string;
+  method: 'POST';
+  payload: { product_ids: number } | null;
+  supplier_product_id: string;
+  product_id: number | null;
+  rejections: SyncRejectionCode[];
+  sync_enabled: boolean;
+}
+
+/** 评估一次同步操作，不联系任何东西。这是「确认同步」按钮本轮唯一会做的事。 */
+export function previewSyncOperation(
+  request: SyncOperationRequest,
+  env: Record<string, string | undefined> = process.env,
+): SyncOperationPreview {
+  const rejections: SyncRejectionCode[] = [];
+  const enabled = removalEnabled(env);
+
+  const { id, batch } = coerceSingleProductId(request.product_id);
+  if (batch) rejections.push('batch_request_rejected');
+  else if (id === null) rejections.push('product_id_invalid');
+
+  const sku = request.supplier_product_id.trim();
+  if (!sku) rejections.push('sku_missing');
+  if (!request.verified_sku_for_product_id || request.verified_sku_for_product_id.trim() !== sku || !sku) {
+    rejections.push('identity_mismatch');
+  }
+  if (!request.session_present) rejections.push('session_missing');
+
+  const gatesClear = rejections.length === 0;
+  if (!enabled) rejections.push('sync_disabled');
+
+  return {
+    ok: gatesClear,
+    would_send: gatesClear && enabled,
+    operation: request.operation,
+    endpoint: endpointFor(request.operation),
+    method: 'POST',
+    payload: gatesClear && id !== null ? { product_ids: id } : null,
+    supplier_product_id: sku,
+    product_id: id,
+    rejections,
+    sync_enabled: enabled,
+  };
+}
+
+/**
+ * 执行一次同步操作。只有 `previewSyncOperation` 全部通过且总开关开启才会发请求。
+ * 开关关闭时 fetcher 永远不会被调用 —— 这是「0 次 XHR 写请求」的结构性保证。
+ * 没有批量入口：调用方必须自己逐件循环。
+ */
+export async function executeSyncOperation(
+  request: SyncOperationRequest,
+  fetcher: RemovalFetcher,
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ attempted: boolean; succeeded: boolean; preview: SyncOperationPreview; response_code: number | null; error: string | null }> {
+  const preview = previewSyncOperation(request, env);
+  if (!preview.would_send || !preview.payload) {
+    return { attempted: false, succeeded: false, preview, response_code: null, error: null };
+  }
+  try {
+    const response = await fetcher(preview.endpoint, {
+      method: 'POST',
+      body: JSON.stringify(preview.payload),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const body = (await response.json()) as { code?: unknown } | null;
+    const code = Number((body as { code?: unknown })?.code ?? response.status);
+    return {
+      attempted: true,
+      succeeded: code === 200,
+      preview,
+      response_code: Number.isFinite(code) ? code : null,
+      error: code === 200 ? null : `supplier returned code ${code}`,
+    };
+  } catch (error) {
+    return { attempted: true, succeeded: false, preview, response_code: null, error: error instanceof Error ? error.message : 'sync_request_failed' };
   }
 }

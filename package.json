@@ -13,6 +13,7 @@
     "xone:supplier-favorite": "tsx scripts/xoneSupplierFavoriteBridge.ts",
     "favorites:sync": "tsx scripts/syncSupplierFavoriteFacts.ts",
     "test:supplier-favorites": "tsx src/__tests__/supplierFavoriteManagement.test.ts",
+    "test:supplier-favorite-sync": "tsx src/__tests__/supplierFavoriteSync.test.ts",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "inventory:save-session": "tsx scripts/saveGigaSession.ts",
