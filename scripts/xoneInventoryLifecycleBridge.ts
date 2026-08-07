@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { loadInventoryConfigForScript } from './lib/inventoryConfigClient';
+import { evaluatePublicationApproval, verifyPublicationOutcome } from '../src/services/inventoryPublicationApproval';
 import {
   readSupplierAccountProductFacts,
   SupplierTargetedReadError,
@@ -88,6 +89,14 @@ export type InventoryLifecycleBridgeRequest =
   | { schema_version: '1.0'; operation: 'items'; bucket: InventoryLifecycleBucket; limit?: number; cursor?: number; sku?: string }
   | { schema_version: '1.0'; operation: 'runs'; limit?: number; cursor?: number }
   | { schema_version: '1.0'; operation: 'recheck-item'; sku: string; operator: string }
+  | {
+    schema_version: '1.0';
+    operation: 'approve-publication';
+    sku: string;
+    action: 'delist' | 'relist';
+    approved_by: string;
+    source_run_id: string;
+  }
   | { schema_version: '1.0'; operation: 'run-now' };
 
 type WorkflowRow = {
@@ -211,6 +220,9 @@ export function parseInventoryLifecycleBridgeRequest(raw: string): InventoryLife
     items: new Set(['schema_version', 'operation', 'bucket', 'limit', 'cursor', 'sku']),
     runs: new Set(['schema_version', 'operation', 'limit', 'cursor']),
     'recheck-item': new Set(['schema_version', 'operation', 'sku', 'operator']),
+    // 前端只被允许说「谁、对哪个 SKU、批准了哪个方向、基于哪次 run」。
+    // eligible / evidence / safety_passed 这类结论一律不接受，由后台重新判断。
+    'approve-publication': new Set(['schema_version', 'operation', 'sku', 'action', 'approved_by', 'source_run_id']),
     'run-now': new Set(['schema_version', 'operation']),
   };
   if (typeof operation !== 'string' || !allowedByOperation[operation]) throw new Error('INVALID_REQUEST');
@@ -579,6 +591,9 @@ function itemFromFacts(
     specification_summary: specificationSummary(product?.specifications_json),
     workflow_state: workflow?.workflow_state ?? null,
     published: product?.published ?? null,
+    // 产生当前证据的那次 run。审批时必须原样带回：后台据此判断这条建议是否仍是最新的 ——
+    // 一旦有更新的扫描写入新证据，last_run_id 就会变，旧建议随之作废。
+    source_run_id: availability?.last_run_id ?? null,
     delist_reason: product?.delist_reason ?? null,
     inventory_status: availability?.status ?? workflow?.last_observed_inventory_status ?? 'unknown',
     available: availability?.available ?? null,
@@ -1534,6 +1549,120 @@ export async function executeInventoryLifecycleBridge(
   if (request.operation === 'summary') return buildSummary(client);
   if (request.operation === 'items') return buildItems(request, client);
   if (request.operation === 'runs') return buildRuns(request, client);
+
+  // ── 人工批准一次发布变更 ─────────────────────────────────────────────────
+  //
+  // 这是 published 的唯一入口。它不自己写发布状态：判定通过后调用既有的
+  // applyInventoryLifecycleActions.ts（精确单件 + --approve + 真人姓名），由它经
+  // set_publication_from_availability() 落库并写 publication_audit_log。
+  if (request.operation === 'approve-publication') {
+    const sku = String(request.sku ?? '').trim();
+    const action = request.action;
+    const approvedBy = String(request.approved_by ?? '').trim();
+    const sourceRunId = String(request.source_run_id ?? '').trim();
+    if (action !== 'delist' && action !== 'relist') return failure('INVALID_ACTION', '未知的发布动作');
+
+    // 后台重新读取最新事实 —— 前端传来的任何判断都不采信。
+    const [workflowRes, availabilityRes, productRes, publishedCountRes] = await Promise.all([
+      client.from('inventory_workflow_states')
+        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,source_run_id')
+        .eq('supplier_product_id', sku).maybeSingle(),
+      client.from('product_availability_current')
+        .select('supplier_product_id,available,checked_at,last_run_id')
+        .eq('supplier_product_id', sku).maybeSingle(),
+      client.from('standardized_products')
+        .select('supplier_product_id,published,product_title')
+        .eq('supplier_product_id', sku).maybeSingle(),
+      client.from('standardized_products').select('supplier_product_id', { count: 'exact', head: true }).eq('published', true),
+    ]);
+    const workflow = (workflowRes.data ?? null) as { workflow_state?: string; consecutive_out_of_stock?: number; consecutive_in_stock?: number } | null;
+    const availability = (availabilityRes.data ?? null) as { available?: boolean | null; checked_at?: string | null; last_run_id?: string | null } | null;
+    const product = (productRes.data ?? null) as { published?: boolean | null; product_title?: string | null } | null;
+    const cfgNow = await loadInventoryConfigForScript();
+
+    const verdict = evaluatePublicationApproval({
+      supplier_product_id: sku,
+      action,
+      approved_by: approvedBy,
+      source_run_id: sourceRunId,
+      facts: {
+        workflow_state: workflow?.workflow_state ?? null,
+        published: product?.published ?? null,
+        available: availability?.available ?? null,
+        checked_at: availability?.checked_at ?? null,
+        consecutive_out_of_stock: Number(workflow?.consecutive_out_of_stock ?? 0),
+        consecutive_in_stock: Number(workflow?.consecutive_in_stock ?? 0),
+        current_source_run_id: availability?.last_run_id ?? null,
+      },
+      config: cfgNow as never,
+      total_published: publishedCountRes.count ?? 0,
+    });
+
+    if (!verdict.allowed) {
+      return success('approve-publication', {
+        status: 'blocked',
+        supplier_product_id: sku,
+        action,
+        blocks: verdict.blocks,
+        safety_blocks: verdict.safety_blocks,
+        published_before: product?.published ?? null,
+        published_after: product?.published ?? null,
+        verified: false,
+      });
+    }
+
+    // 判定通过 → 调用既有执行器。精确单件，绝无 "all"。
+    const publishedBefore = product?.published ?? null;
+    const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
+    const apply = spawnSync('/opt/homebrew/bin/node', [
+      runtime,
+      path.join(REPO, 'scripts', 'applyInventoryLifecycleActions.ts'),
+      `--action=${action}`,
+      `--only=${sku}`,
+      '--approve',
+      `--approved-by=${approvedBy}`,
+    ], { cwd: REPO, encoding: 'utf8', timeout: 180_000, env: { ...process.env } });
+
+    // 执行器用退出码 4 表示锁被占用 —— 同一 SKU 正在执行时的第二次批准落在这里。
+    if (apply.status === 4) {
+      return success('approve-publication', {
+        status: 'already_running', supplier_product_id: sku, action,
+        blocks: [], safety_blocks: [], published_before: publishedBefore,
+        published_after: publishedBefore, verified: false,
+      });
+    }
+
+    // 执行器返回成功不等于真的变了：回读 published 与 App 可见集合。
+    const [afterRes, sellableRes] = await Promise.all([
+      client.from('standardized_products').select('published').eq('supplier_product_id', sku).maybeSingle(),
+      client.from('sellable_products').select('supplier_product_id').eq('supplier_product_id', sku).maybeSingle(),
+    ]);
+    const publishedAfter = ((afterRes.data ?? null) as { published?: boolean | null } | null)?.published ?? null;
+    const outcome = verifyPublicationOutcome({
+      action,
+      published_before: publishedBefore,
+      published_after: publishedAfter,
+      sellable_after: sellableRes.data ? true : false,
+    });
+
+    return success('approve-publication', {
+      status: apply.status === 0
+        ? (outcome.verified ? 'verified_completed' : 'verification_failed')
+        : 'failed',
+      supplier_product_id: sku,
+      action,
+      approved_by: approvedBy,
+      blocks: [],
+      safety_blocks: [],
+      executor_exit_code: apply.status,
+      published_before: publishedBefore,
+      published_after: publishedAfter,
+      verified: outcome.verified,
+      verification_reason: outcome.reason,
+      product_title: product?.product_title ?? null,
+    });
+  }
+
   if (request.operation === 'recheck-item') return runTargetedRecheck(request, client);
   return triggerRunNow();
 }

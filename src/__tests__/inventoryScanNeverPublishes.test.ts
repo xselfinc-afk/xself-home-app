@@ -94,10 +94,34 @@ function main(): void {
     assert.ok(/relist/.test(EXECUTOR) && /delist/.test(EXECUTOR));
   });
 
-  it('5. XOne 桥接没有任何直接发布写入口', () => {
+  it('5. 桥接调用执行器的地方，有且只有那个经过七道门的审批入口', () => {
     const bridge = code(BRIDGE, '//');
-    for (const forbidden of ['set_publication_from_availability', 'applyInventoryLifecycleActions']) {
-      assert.equal(bridge.includes(forbidden), false, `桥接不得调用 ${forbidden}`);
+    // 桥接自己永远不写发布状态。
+    assert.equal(bridge.includes('set_publication_from_availability'), false,
+      '桥接不得直接调用发布函数');
+
+    // 执行器只允许出现一次，且必须落在 approve-publication 处理器内部。
+    const calls = bridge.split('applyInventoryLifecycleActions').length - 1;
+    assert.equal(calls, 1, `执行器调用应当只有一处（人工审批），实际 ${calls} 处`);
+
+    const approvalStart = bridge.indexOf("request.operation === 'approve-publication'");
+    assert.ok(approvalStart > 0, 'approve-publication 处理器必须存在');
+    const approvalEnd = bridge.indexOf("request.operation === 'recheck-item'", approvalStart);
+    const approvalBlock = bridge.slice(approvalStart, approvalEnd > 0 ? approvalEnd : undefined);
+    assert.ok(approvalBlock.includes('applyInventoryLifecycleActions'),
+      '执行器必须在审批处理器内被调用');
+    // 审批处理器必须先跑判定，再谈执行。
+    assert.ok(approvalBlock.includes('evaluatePublicationApproval'), '执行前必须跑七道门');
+    assert.ok(approvalBlock.includes('verifyPublicationOutcome'), '执行后必须回读校验');
+    assert.ok(/--only=\$\{sku\}/.test(approvalBlock), '只允许精确单件');
+    assert.equal(/--only=all|--all\b/.test(approvalBlock), false, '永远不得使用 all');
+
+    // recheck-item 与 run-now 都不得触碰执行器。
+    const recheckStart = bridge.indexOf("request.operation === 'recheck-item'");
+    if (recheckStart > 0) {
+      const recheckBlock = bridge.slice(recheckStart, recheckStart + 6000);
+      assert.equal(recheckBlock.includes('applyInventoryLifecycleActions'), false,
+        'recheck-item 不得执行发布变更');
     }
     // run-now 只能启动扫描脚本。
     assert.ok(/SCHEDULER_SCRIPT/.test(bridge), 'run-now 只应启动扫描脚本');

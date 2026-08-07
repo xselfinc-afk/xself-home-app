@@ -199,9 +199,21 @@ function main(): void {
       const write = new RegExp(`from\\('${t}'\\)[\\s\\S]{0,120}?\\.(insert|update|upsert|delete)\\(`);
       assert.ok(!write.test(src), `scanner writes to forbidden table ${t}`);
     }
-    // And it never names a publication column in a payload.
+    // And it never names a publication column in a MUTATION payload.
+    //
+    // 只看真正的写入载荷。原来的正则是 /^\s*published:/m —— 任何以 `published:` 开头的
+    // 对象字段都会命中，包括 `published: Boolean(r.published)` 这种**读取映射**。读到
+    // published 是必要的（要判断当前发布状态），把它当成写入是误报，会让这条安全断言长期
+    // 常红，反而失去意义。
+    const mutationPayloads = [...src.matchAll(/\.(insert|update|upsert)\(([\s\S]{0,400}?)\)/g)]
+      .map((match) => match[2]);
     for (const c of FORBIDDEN_WRITE_COLUMNS) {
-      assert.ok(!new RegExp(`^\\s*${c}:`, 'm').test(src), `scanner sets forbidden column ${c}`);
+      for (const payload of mutationPayloads) {
+        assert.ok(
+          !new RegExp(`(^|[{,\\s])${c}\\s*:`).test(payload),
+          `scanner sets forbidden column ${c} in a mutation payload`,
+        );
+      }
     }
     // It must not call the publication authority either.
     assert.ok(!src.includes('refresh_product_inventory_status'), 'scanner must not invoke the publication writer');
