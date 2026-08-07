@@ -66,3 +66,6 @@ deno.lock
 
 # API availability scan reports — regenerated read-only analysis (not source)
 reports/inventory-availability/
+
+# Favorite cleanup checkpoint — local resume state, regenerated (not source)
+reports/favorite-cleanup/
