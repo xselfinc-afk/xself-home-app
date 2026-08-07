@@ -154,6 +154,18 @@ export function extraSkuSet(
 
 // ── 2. Mapping resolution (extra only) ───────────────────────────────────────
 
+/** Structured twin of a progress line, so callers can render state without parsing text. */
+export interface CleanupProgressEvent {
+  phase: 'resolve' | 'remove' | 'verify';
+  index: number;
+  total: number;
+  account?: SyncAccount;
+  supplier_product_id?: string;
+  outcome:
+    | 'started' | 'resolved' | 'exception' | 'timeout' | 'skipped_checkpoint'
+    | 'send_failed' | 'verified_removed' | 'verification_failed' | 'global_stop';
+}
+
 export interface ResolvedMappings {
   usable: Map<string, ProductIdMapping>;
   exceptions: Array<{ supplier_product_id: string; reason: string }>;
@@ -173,7 +185,7 @@ export async function resolveExtraMappings(
     portalResolve: (sku: string) => Promise<ProductIdMapping>;
     now: string;
     /** Live progress, so the probe phase is observable instead of silent for hours. */
-    onProgress?: (line: string) => void;
+    onProgress?: (line: string, event: CleanupProgressEvent) => void;
     /**
      * Watchdog for a single portal probe. A probe that blows it becomes an exception and the loop
      * moves on — one unresolvable SKU must never stall the whole resolution phase.
@@ -196,7 +208,9 @@ export async function resolveExtraMappings(
     // Missing / stale / unusable stored row → probe the portal on demand.
     probed.push(sku);
     const position = `[resolve ${index + 1}/${extraSkus.length}]`;
-    deps.onProgress?.(`${position} SKU ${sku} resolving...`);
+    const rev = (outcome: CleanupProgressEvent['outcome']): CleanupProgressEvent =>
+      ({ phase: 'resolve', index: index + 1, total: extraSkus.length, supplier_product_id: sku, outcome });
+    deps.onProgress?.(`${position} SKU ${sku} resolving...`, rev('started'));
     let resolved: ProductIdMapping;
     try {
       resolved = deps.perSkuTimeoutMs
@@ -206,16 +220,16 @@ export async function resolveExtraMappings(
       const msg = error instanceof Error ? error.message : String(error);
       // Auth / CAPTCHA must still bubble out as a global stop; only a stall is absorbed here.
       if (msg !== DEADLINE_EXCEEDED) throw error;
-      deps.onProgress?.(`${position} SKU ${sku} → timeout (probe watchdog)`);
+      deps.onProgress?.(`${position} SKU ${sku} → timeout (probe watchdog)`, rev('timeout'));
       exceptions.push({ supplier_product_id: sku, reason: 'timeout' });
       continue;
     }
     if (resolved.status === 'unique' && resolved.product_id !== null && resolved.verified_sku === sku) {
       usable.set(sku, resolved);
-      deps.onProgress?.(`${position} SKU ${sku} → product_id ${resolved.product_id}`);
+      deps.onProgress?.(`${position} SKU ${sku} → product_id ${resolved.product_id}`, rev('resolved'));
     } else {
       exceptions.push({ supplier_product_id: sku, reason: resolved.status });
-      deps.onProgress?.(`${position} SKU ${sku} → ${resolved.status}`);
+      deps.onProgress?.(`${position} SKU ${sku} → ${resolved.status}`, rev('exception'));
     }
   }
 
@@ -235,7 +249,7 @@ export interface ExecuteDeps {
   sessionPresent: (account: SyncAccount) => boolean;
   saveCheckpoint: (cp: CleanupCheckpoint) => void;
   /** Live per-item progress, so a long run is observable instead of silent. */
-  onProgress?: (line: string) => void;
+  onProgress?: (line: string, event: CleanupProgressEvent) => void;
   /** Awaited between sends — the rate guard lives here. Tests inject a no-op. */
   pace: () => Promise<void>;
   now: () => string;
@@ -323,22 +337,26 @@ export async function executeCleanup(
 
       for (const [indexInBatch, item] of batch.entries()) {
         const position = `[${start + indexInBatch + 1}/${removals.length}]`;
+        const ev = (outcome: CleanupProgressEvent['outcome']): CleanupProgressEvent => ({
+          phase: 'remove', index: start + indexInBatch + 1, total: removals.length,
+          account, supplier_product_id: item.supplier_product_id, outcome,
+        });
         const key = checkpointKey(account, item.supplier_product_id);
         const prior = checkpoint.items[key];
         if (prior?.status === 'verified_removed') {
           // Already proven gone on a previous run. Never re-send.
-          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} skipped_checkpoint`);
+          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} skipped_checkpoint`, ev('skipped_checkpoint'));
           record({ account, supplier_product_id: item.supplier_product_id, product_id: item.product_id, status: 'skipped_checkpoint', attempts: prior.attempts, last_error: null, verified_at: prior.verified_at });
           deps.saveCheckpoint(checkpoint);
           continue;
         }
 
-        deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} resolving...`);
+        deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} resolving...`, ev('started'));
 
         const mapping = mappings.get(item.supplier_product_id);
         // Belt and braces: a removal must carry a unique, reverse-verified id.
         if (!mapping || mapping.status !== 'unique' || mapping.product_id === null || mapping.verified_sku !== item.supplier_product_id) {
-          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} mapping_exception`);
+          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} mapping_exception`, ev('exception'));
           record({ account, supplier_product_id: item.supplier_product_id, product_id: null, status: 'exception', attempts: (prior?.attempts ?? 0), last_error: 'mapping_not_unique', verified_at: null });
           deps.saveCheckpoint(checkpoint);
           continue;
@@ -374,7 +392,7 @@ export async function executeCleanup(
           timedOut = error instanceof Error && error.message === DEADLINE_EXCEEDED;
           if (!timedOut) {
             // A thrown non-timeout error is still just this item's problem.
-            deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} send_failed`);
+            deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} send_failed`, ev('send_failed'));
             consecutiveFailures += 1;
             record({ account, supplier_product_id: item.supplier_product_id, product_id: mapping.product_id, status: 'send_failed', attempts, last_error: error instanceof Error ? error.message : 'send_threw', verified_at: null });
             deps.saveCheckpoint(checkpoint);
@@ -385,7 +403,7 @@ export async function executeCleanup(
 
         if (timedOut || !result) {
           // Timeout is an exception for THIS item only — record and move on.
-          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} timeout`);
+          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} timeout`, ev('timeout'));
           consecutiveFailures += 1;
           record({ account, supplier_product_id: item.supplier_product_id, product_id: mapping.product_id, status: 'timeout', attempts, last_error: `per-item timeout after ${options.perItemTimeoutMs}ms`, verified_at: null });
           deps.saveCheckpoint(checkpoint);
@@ -403,13 +421,13 @@ export async function executeCleanup(
         } else {
           const fatal = classifyFatal(result.error ?? '', result.response_code);
           if (fatal) {
-            deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} GLOBAL STOP: ${fatal}`);
+            deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} GLOBAL STOP: ${fatal}`, ev('global_stop'));
             globalStop = fatal;
             record({ account, supplier_product_id: item.supplier_product_id, product_id: mapping.product_id, status: 'global_stop', attempts, last_error: result.error, verified_at: null });
             deps.saveCheckpoint(checkpoint);
             break;
           }
-          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} send_failed`);
+          deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} send_failed`, ev('send_failed'));
           consecutiveFailures += 1;
           record({ account, supplier_product_id: item.supplier_product_id, product_id: mapping.product_id, status: 'send_failed', attempts, last_error: result.error, verified_at: null });
           if (consecutiveFailures >= options.maxConsecutiveFailures) {
@@ -428,10 +446,10 @@ export async function executeCleanup(
           // Bounded too — a hung favorites read would otherwise strand the whole batch.
           stillSaved = await withDeadline(deps.readFavorites(account), options.verifyTimeoutMs);
         } catch {
-          deps.onProgress?.(`${account} verification read timed out — items stay pending_verification`);
+          deps.onProgress?.(`${account} verification read timed out — items stay pending_verification`, { phase: 'verify', index: 0, total: sentThisBatch.length, account, outcome: 'timeout' });
         }
         if (stillSaved) {
-          for (const sent of sentThisBatch) {
+          for (const [verifyIndex, sent] of sentThisBatch.entries()) {
             const idx = items.findIndex((r) => r.account === account && r.supplier_product_id === sent.sku && r.status === 'verification_failed');
             const gone = !stillSaved.has(sent.sku);
             const rec = idx >= 0 ? items[idx] : null;
@@ -439,7 +457,11 @@ export async function executeCleanup(
               rec.status = gone ? 'verified_removed' : 'verification_failed';
               rec.last_error = gone ? null : 'still_favorited_after_removal';
               rec.verified_at = deps.now();
-              deps.onProgress?.(`${account} ${sent.sku} ${rec.status}`);
+              deps.onProgress?.(`${account} ${sent.sku} ${rec.status}`, {
+            phase: 'verify', index: verifyIndex + 1, total: sentThisBatch.length,
+            account, supplier_product_id: sent.sku,
+            outcome: rec.status === 'verified_removed' ? 'verified_removed' : 'verification_failed',
+          });
               checkpoint.items[checkpointKey(account, sent.sku)] = { ...checkpoint.items[checkpointKey(account, sent.sku)], status: rec.status, last_error: rec.last_error, verified_at: rec.verified_at };
             }
           }

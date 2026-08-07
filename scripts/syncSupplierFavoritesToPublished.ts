@@ -29,6 +29,7 @@ import {
   extraSkuSet,
   planFavoriteCleanup,
   resolveExtraMappings,
+  type CleanupProgressEvent,
   type CleanupCheckpoint,
 } from '../src/services/supplierFavoriteCleanupExecutor';
 import { resolvePortalMapping, PORTAL_MAPPING_CONFIDENCE, PORTAL_MAPPING_SOURCE, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
@@ -92,6 +93,41 @@ function saveCheckpoint(cp: CleanupCheckpoint): void {
   } catch (error) {
     console.error(`[favCleanup] checkpoint save failed: ${error instanceof Error ? error.message : error}`);
   }
+}
+
+
+// ── 机器可读进度 ─────────────────────────────────────────────────────────────
+// XOne 的后台任务读这一行来渲染阶段/进度，不解析人类日志。永远输出，与 --json 无关。
+let currentRunId = '';
+const progress = { processed: 0, total: 0, success: 0, exceptions: 0, timeouts: 0, verification_failed: 0 };
+
+function phaseLabel(ev: CleanupProgressEvent): string {
+  if (ev.phase === 'resolve') return 'resolving_identity';
+  if (ev.phase === 'verify') return 'verifying';
+  return ev.account === 'dropship' ? 'cleaning_dropship' : 'cleaning_pickup';
+}
+
+function emitProgress(line: string, ev: CleanupProgressEvent): void {
+  log(`  ${line}`);
+  if (ev.outcome === 'exception') progress.exceptions += 1;
+  else if (ev.outcome === 'timeout') progress.timeouts += 1;
+  else if (ev.outcome === 'verified_removed') progress.success += 1;
+  else if (ev.outcome === 'verification_failed') progress.verification_failed += 1;
+  if (ev.phase !== 'verify') { progress.processed = ev.index; progress.total = ev.total; }
+  process.stdout.write(`SYNC_PROGRESS ${JSON.stringify({
+    schema_version: '1.0',
+    run_id: currentRunId,
+    phase: phaseLabel(ev),
+    account: ev.account ?? null,
+    sku: ev.supplier_product_id ?? null,
+    outcome: ev.outcome,
+    processed: progress.processed,
+    total: progress.total,
+    success: progress.success,
+    exceptions: progress.exceptions,
+    timeouts: progress.timeouts,
+    verification_failed: progress.verification_failed,
+  })}\n`);
 }
 
 async function main(): Promise<void> {
@@ -217,7 +253,7 @@ async function main(): Promise<void> {
     storedMappings,
     portalResolve,
     now: now(),
-    onProgress: (line) => log(`  ${line}`),
+    onProgress: emitProgress,
     perSkuTimeoutMs: PER_SKU_RESOLVE_TIMEOUT_MS,
   });
   const plan = planFavoriteCleanup(target, favorites, (sku) =>
@@ -250,6 +286,7 @@ async function main(): Promise<void> {
 
   // ── Execute (gated) ────────────────────────────────────────────────────────
   const runId = `favclean-${now()}`;
+  currentRunId = runId;
   // Only --resume reuses a prior checkpoint. A fresh run starts empty so it never inherits stale
   // state, but still re-verifies rather than re-sending anything already verified_removed.
   const priorCheckpoint = loadCheckpoint(runId);
@@ -297,7 +334,7 @@ async function main(): Promise<void> {
     readFavorites,
     sessionPresent: () => EXECUTE,   // in dry run this is never consulted for a send
     saveCheckpoint,
-    onProgress: (line) => log(`  ${line}`),
+    onProgress: emitProgress,
     pace: async () => { await sleep(MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS))); },
     now,
     env: process.env,
