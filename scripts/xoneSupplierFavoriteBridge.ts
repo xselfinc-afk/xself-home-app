@@ -73,7 +73,12 @@ export interface FavoriteBridgeRequest {
   sku?: string;
   action?: FavoriteManualAction;
   operator?: string;
+  /** pending-onboarding 分页：一次只返回一页，首屏不再拉满 140 条。 */
+  offset?: number;
+  limit?: number;
 }
+
+const PENDING_PAGE_MAX = 50;
 
 function envelope(operation: string, extra: Record<string, unknown>): Record<string, unknown> {
   const now = new Date().toISOString();
@@ -111,14 +116,22 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
   const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan'];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
-  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan']);
+  // pending-onboarding 是列表操作，用 offset/limit 分页，不再需要 sku。
+  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding']);
   if (!skuless.has(r.operation) && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
+  const clampInt = (value: unknown, fallback: number, max: number): number => {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return Math.min(n, max);
+  };
   return {
     schema_version: SCHEMA_VERSION,
     operation: r.operation,
     sku: String(r.sku ?? '').trim() || undefined,
     action: r.action,
     operator: String(r.operator ?? '').trim() || undefined,
+    offset: clampInt(r.offset, 0, 100_000),
+    limit: clampInt(r.limit, 20, PENDING_PAGE_MAX),
   };
 }
 
@@ -270,8 +283,10 @@ export async function executeFavoriteBridge(
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   const rows = await loadRows(client);
-  const plan = buildSupplierFavoritePlan(buildInputs(rows), accountStates(rows));
-  const inputs = new Map(buildInputs(rows).map((i) => [i.supplier_product_id, i]));
+  // buildInputs 之前被调用了两次（一次给 plan，一次建索引），每次都要遍历上千行。算一次即可。
+  const inputList = buildInputs(rows);
+  const plan = buildSupplierFavoritePlan(inputList, accountStates(rows));
+  const inputs = new Map(inputList.map((i) => [i.supplier_product_id, i]));
 
   if (request.operation === 'summary') {
     return envelope('summary', { accounts: plan.accounts, counts: plan.counts });
@@ -336,9 +351,18 @@ export async function executeFavoriteBridge(
   }
 
   if (request.operation === 'pending-onboarding') {
+    // 一次只序列化一页，首屏不再把 140 条商品卡全推给前端。
+    const offset = request.offset ?? 0;
+    const limit = request.limit ?? 20;
+    const total = plan.pending_onboarding.length;
+    const page = plan.pending_onboarding.slice(offset, offset + limit);
     return envelope('pending-onboarding', {
       accounts: plan.accounts,
-      items: plan.pending_onboarding.map((d) => {
+      total,
+      offset,
+      limit,
+      has_more: offset + page.length < total,
+      items: page.map((d) => {
         const i = inputs.get(d.supplier_product_id);
         return {
           supplier_product_id: d.supplier_product_id,
