@@ -44,8 +44,13 @@ const has = (n: string) => argv.some((a) => a === `--${n}` || a.startsWith(`--${
 const val = (n: string) => argv.find((a) => a.startsWith(`--${n}=`))?.split('=').slice(1).join('=');
 
 const EXECUTE = has('execute');
+const RESUME = has('resume');
+// Machine-readable mode: emit exactly one `SYNC_RESULT {json}` line for the Tauri caller to parse.
+const JSON_OUT = has('json');
 const BATCH_SIZE = Math.max(1, Math.min(100, parseInt(val('batch') ?? '50', 10) || 50));
 const CHECKPOINT_PATH = path.join(process.cwd(), 'reports', 'favorite-cleanup', 'checkpoint.json');
+
+const log = (line: string) => { if (!JSON_OUT) console.log(line); };
 
 // Rate guard — same posture as the portal resolver.
 const MIN_DELAY_MS = 2500;
@@ -155,19 +160,25 @@ async function main(): Promise<void> {
 
   const totalRemovals = plan.removals.pickup.length + plan.removals.dropship.length;
   const unmapped = extraSkus.length - resolved.usable.size;
-  console.log('─── favorite cleanup ───');
-  console.log(`  mode                : ${EXECUTE && process.env.SUPPLIER_FAVORITE_REMOVAL_ENABLED === 'true' ? 'EXECUTE' : 'DRY RUN'}`);
-  console.log(`  TARGET (published)  : ${plan.target_count}`);
-  console.log(`  Pickup favorites    : ${favorites.pickup.length}  extra ${plan.removals.pickup.length + plan.exceptions.pickup.length}`);
-  console.log(`  Dropship favorites  : ${favorites.dropship.length}  extra ${plan.removals.dropship.length + plan.exceptions.dropship.length}`);
-  console.log(`  distinct extra      : ${extraSkus.length}`);
-  console.log(`  reused mappings     : ${resolved.usable.size} / stored ${storedMappings.length}`);
-  console.log(`  ${EXECUTE ? 'portal-probed' : 'needs resolution'}    : ${EXECUTE ? resolved.probed.length : unmapped}${EXECUTE ? '' : '（dry-run 不实际抓取门户）'}`);
-  console.log(`  executable removes  : ${totalRemovals}   distinct unmapped: ${unmapped}`);
+  log('─── favorite cleanup ───');
+  log(`  mode                : ${EXECUTE && process.env.SUPPLIER_FAVORITE_REMOVAL_ENABLED === 'true' ? 'EXECUTE' : 'DRY RUN'}`);
+  log(`  TARGET (published)  : ${plan.target_count}`);
+  log(`  Pickup favorites    : ${favorites.pickup.length}  extra ${plan.removals.pickup.length + plan.exceptions.pickup.length}`);
+  log(`  Dropship favorites  : ${favorites.dropship.length}  extra ${plan.removals.dropship.length + plan.exceptions.dropship.length}`);
+  log(`  distinct extra      : ${extraSkus.length}`);
+  log(`  reused mappings     : ${resolved.usable.size} / stored ${storedMappings.length}`);
+  log(`  ${EXECUTE ? 'portal-probed' : 'needs resolution'}    : ${EXECUTE ? resolved.probed.length : unmapped}${EXECUTE ? '' : '（dry-run 不实际抓取门户）'}`);
+  log(`  executable removes  : ${totalRemovals}   distinct unmapped: ${unmapped}`);
 
   // ── Execute (gated) ────────────────────────────────────────────────────────
   const runId = `favclean-${now()}`;
-  const checkpoint = loadCheckpoint(runId);
+  // Only --resume reuses a prior checkpoint. A fresh run starts empty so it never inherits stale
+  // state, but still re-verifies rather than re-sending anything already verified_removed.
+  const priorCheckpoint = loadCheckpoint(runId);
+  const resumableItems = Object.values(priorCheckpoint.items).filter(
+    (i) => i.status === 'send_failed' || i.status === 'verification_failed' || i.status === 'global_stop',
+  ).length;
+  const checkpoint = RESUME ? priorCheckpoint : { run_id: runId, items: {} };
 
   const fetcherFor = (account: SyncAccount): RemovalFetcher => async (targetUrl, init) => {
     // Real per-account website session send. Never reached in dry run.
@@ -207,17 +218,57 @@ async function main(): Promise<void> {
     env: process.env,
   }, { execute: EXECUTE, batchSize: BATCH_SIZE, maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES, runId }, checkpoint);
 
-  console.log('\n─── result ───');
-  console.log(`  dry_run           : ${result.dry_run}`);
-  console.log(`  xhr_sends         : ${result.xhr_sends}`);
-  console.log(`  planned (dry)     : ${result.planned}`);
-  console.log(`  verified_removed  : ${result.verified_removed}`);
-  console.log(`  verification_fail : ${result.verification_failed}`);
-  console.log(`  send_failed       : ${result.send_failed}`);
-  console.log(`  skipped (resume)  : ${result.skipped}`);
-  console.log(`  exceptions        : ${result.exceptions}`);
-  console.log(`  global_stop       : ${result.global_stop ?? 'no'}`);
-  if (result.dry_run) console.log('\n  DRY RUN — no wishlist request was sent. inventory chain untouched.');
+  log('\n─── result ───');
+  log(`  dry_run           : ${result.dry_run}`);
+  log(`  xhr_sends         : ${result.xhr_sends}`);
+  log(`  planned (dry)     : ${result.planned}`);
+  log(`  verified_removed  : ${result.verified_removed}`);
+  log(`  verification_fail : ${result.verification_failed}`);
+  log(`  send_failed       : ${result.send_failed}`);
+  log(`  skipped (resume)  : ${result.skipped}`);
+  log(`  exceptions        : ${result.exceptions}`);
+  log(`  global_stop       : ${result.global_stop ?? 'no'}`);
+  if (result.dry_run) log('\n  DRY RUN — no wishlist request was sent. inventory chain untouched.');
+
+  // Final extra after the run. In dry run nothing was removed, so it equals the current extra;
+  // in a real run, verified_removed items have left the account's favorites.
+  const removedByAccount = { pickup: 0, dropship: 0 };
+  for (const item of result.items) if (item.status === 'verified_removed') removedByAccount[item.account] += 1;
+  const pickupExtra = plan.removals.pickup.length + plan.exceptions.pickup.length;
+  const dropshipExtra = plan.removals.dropship.length + plan.exceptions.dropship.length;
+
+  // One machine-readable line for the Tauri caller. Everything else above is gated off in JSON mode.
+  const envelope = {
+    schema_version: '1.0',
+    run_id: result.run_id,
+    dry_run: result.dry_run,
+    // A terminal status the UI maps to its state labels.
+    status: result.global_stop ? 'stopped'
+      : result.dry_run ? 'planned'
+      : (result.verification_failed > 0 || result.send_failed > 0 || result.exceptions > 0) ? 'partial'
+      : 'completed',
+    global_stop: result.global_stop,
+    target_count: plan.target_count,
+    pickup_extra: pickupExtra,
+    dropship_extra: dropshipExtra,
+    distinct_extra: extraSkus.length,
+    reused_mappings: resolved.usable.size,
+    needs_resolution: unmapped,
+    executable_removes: totalRemovals,
+    planned: result.planned,
+    verified_removed: result.verified_removed,
+    verification_failed: result.verification_failed,
+    send_failed: result.send_failed,
+    mapping_exception: result.exceptions,
+    skipped: result.skipped,
+    xhr_sends: result.xhr_sends,
+    pickup_extra_final: pickupExtra - removedByAccount.pickup,
+    dropship_extra_final: dropshipExtra - removedByAccount.dropship,
+    resumable: resumableItems > 0,
+    resumable_count: resumableItems,
+    production_write_attempted: !result.dry_run && result.xhr_sends > 0,
+  };
+  process.stdout.write(`SYNC_RESULT ${JSON.stringify(envelope)}\n`);
 }
 
 void main();
