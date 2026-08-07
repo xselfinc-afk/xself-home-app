@@ -27,8 +27,29 @@ import {
 import { previewRemoval, previewSyncOperation } from '../src/services/supplierFavoriteRemoval';
 import { buildFavoriteSyncPlan, type AccountFavoritesState, type SyncAccount } from '../src/services/supplierFavoriteSync';
 import { resolveProductIdMapping, type ProductIdMapping } from '../src/services/supplierFavoriteProductId';
+import { isStale, isUsableMapping, toUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
 // 兼容既有引用路径：解析逻辑已移到服务层，这里只转出。
 export { resolveProductIdMapping, type ProductIdMapping };
+
+/**
+ * 从 `supplier_portal_product_mappings` 取网站身份，并在读取时重新校验每一道门禁。
+ *
+ * 绝不回退到 inventory_cache：那一列存的是 supplier_product_id 的副本，个别 SKU 全是数字，
+ * 会被当成网站 id 发出去，作用到别的商品上。存了也不等于可信，所以来源、confidence、
+ * 数字性、以及 portal_sku 的反查在每次读取时都重新验一遍。
+ */
+function portalMappingResolver(rows: readonly StoredPortalMapping[], nowIso: string) {
+  const bySku = new Map(rows.map((r) => [r.supplier_product_id, r]));
+  return (sku: string): ProductIdMapping => {
+    const row = bySku.get(sku);
+    if (!isUsableMapping(row)) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+    // 过期的映射不再直接采信，等待重新验证。
+    if (isStale(row, nowIso)) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+    const usable = toUsableMapping(row);
+    if (!usable) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+    return { product_id: usable.website_product_id, verified_sku: usable.portal_sku, status: 'unique' };
+  };
+}
 
 // XOne 通过 Tauri 派生这个脚本，派生出的进程只继承 App 自己的环境变量，里面没有 Supabase
 // 凭据。库存桥接同样在模块顶层加载 .env.local —— 少了这两行，面板打开时拿到的永远是
@@ -268,16 +289,12 @@ export async function executeFavoriteBridge(
       authoritative: accountIsAuthoritative(rows.memberships, account),
     });
 
-    // 映射一次读全，逐 SKU 解析；解析不唯一的进 exception，绝不猜。
-    const cache = await readAll<{ supplier_product_id: string | null; product_id: string | number | null }>(
-      client, 'inventory_cache', 'supplier_product_id,product_id',
+    // 网站身份只来自门户证明过的映射表。
+    const mappings = await readAll<StoredPortalMapping>(
+      client, 'supplier_portal_product_mappings',
+      'supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at',
     );
-    const mappingCache = new Map<string, ReturnType<typeof resolveProductIdMapping>>();
-    const resolve = (sku: string) => {
-      let hit = mappingCache.get(sku);
-      if (!hit) { hit = resolveProductIdMapping(sku, cache); mappingCache.set(sku, hit); }
-      return hit;
-    };
+    const resolve = portalMappingResolver(mappings, new Date().toISOString());
 
     const plan = buildFavoriteSyncPlan(target, [savedOf('pickup'), savedOf('dropship')], resolve);
 
@@ -387,12 +404,13 @@ export async function executeFavoriteBridge(
   }
 
   // removal-preview — never sends anything, whatever the switch says.
-  // Resolve the website product_id from the existing inventory_cache mapping and verify it in
-  // reverse. A non-unique mapping leaves product_id null, which the preview rejects.
-  const cache = await readAll<{ supplier_product_id: string | null; product_id: string | number | null }>(
-    client, 'inventory_cache', 'supplier_product_id,product_id',
+  // 网站身份只来自门户证明过的映射表，读取时逐条重验。没有可用映射时 product_id 为 null，
+  // 预览据此拒绝 —— 宁可报告缺口，也不拿来路不明的 id 去操作。
+  const mappings = await readAll<StoredPortalMapping>(
+    client, 'supplier_portal_product_mappings',
+    'supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at',
   );
-  const mapping = resolveProductIdMapping(target.supplier_product_id, cache);
+  const mapping = portalMappingResolver(mappings, new Date().toISOString())(target.supplier_product_id);
   const preview = previewRemoval({
     supplier_product_id: target.supplier_product_id,
     product_id: mapping.product_id,

@@ -70,7 +70,7 @@ interface SessionContext {
   deviceId: string | null;
 }
 
-function loadSession(): SessionContext {
+export function loadSession(): SessionContext {
   if (!fs.existsSync(SESSION_FILE)) {
     throw new Error(`Session file not found: ${SESSION_FILE} — run: npm run inventory:save-session`);
   }
@@ -170,7 +170,7 @@ async function callJson<T>(url: string, productIdForReferer: string, session: Se
   }
 }
 
-async function fetchBaseInfos(productId: string, session: SessionContext): Promise<BaseInfosResponse | null> {
+export async function fetchBaseInfos(productId: string, session: SessionContext): Promise<BaseInfosResponse | null> {
   const url = `https://www.gigab2b.com/index.php?route=/product/info/info/baseInfos&product_id=${productId}`;
   const { json } = await callJson<BaseInfosResponse>(url, productId, session);
   return json;
@@ -222,6 +222,39 @@ export function classifyWarehouseResponse(input: {
  * We previously used the HTML /product/search page, but that returns SPA-only
  * markup with no usable links. The XHR returns the numeric id directly.
  */
+/**
+ * 返回门户搜索的**全部**候选，而不是只取第一个。
+ *
+ * `searchForProductId` 取 `arr[0]` 对仓库查询是够用的（拿错了只是数字不准），但收藏增删是
+ * 对外写操作，取错就作用到别的商品上。需要判断「唯一」的调用方必须看到完整候选列表。
+ */
+export async function searchProductCandidates(sku: string, session: SessionContext): Promise<string[]> {
+  const url = 'https://www.gigab2b.com/index.php?route=/product/list/search';
+  const body = JSON.stringify({ page: 1, limit: 50, dimension_type: 1, scene: 1, search: sku, sort: '', order: '' });
+  const headers: Record<string, string> = {
+    'cookie': session.cookieHeader,
+    'user-agent': USER_AGENT,
+    'accept': 'application/json, text/javascript, */*; q=0.01',
+    'content-type': 'application/json;charset=UTF-8',
+    'x-requested-with': 'XMLHttpRequest',
+    'origin': 'https://www.gigab2b.com',
+    'referer': `https://www.gigab2b.com/index.php?route=product/search&search=${encodeURIComponent(sku)}`,
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'ori-status-in-response': 'code',
+  };
+  if (session.deviceId) headers['x-gmd-device-id'] = session.deviceId;
+
+  const res = await fetch(url, { method: 'POST', headers, body, redirect: 'follow' });
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) throw new Error(`AUTH_FAILED:${res.status}`);
+  if (/captcha|verify you are human|slider/i.test(text.slice(0, 500))) throw new Error('CAPTCHA_REQUIRED');
+  const j = JSON.parse(text) as { data?: { product_list?: unknown } };
+  const arr = j?.data?.product_list;
+  return Array.isArray(arr) ? arr.map((x) => String(x)) : [];
+}
+
 async function searchForProductId(sku: string, session: SessionContext): Promise<string | null> {
   const url = 'https://www.gigab2b.com/index.php?route=/product/list/search';
   const body = JSON.stringify({
