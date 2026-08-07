@@ -388,6 +388,35 @@ async function main(): Promise<void> {
     assert.equal(/return raw/.test(fn), false, '不得直接返回原始错误串');
   });
 
+
+  it('21. 事实刷新读取 existing 必须分页，否则 1000 行以外的收藏永远刷不掉', () => {
+    const facts = fs.readFileSync('scripts/syncSupplierFavoriteFacts.ts', 'utf8');
+    const block = facts.slice(facts.indexOf('const existingRows'), facts.indexOf('const rows = buildFactRows'));
+    // PostgREST 默认一次最多 1000 行；Dropship 有 1497 行事实，不分页时后面的行对 diff 不可见。
+    assert.ok(/\.range\(/.test(block), 'existing 读取必须分页');
+    assert.ok(/for \(let from = 0/.test(block), '必须循环取完所有页');
+    assert.ok(/page\.length < 1000/.test(block), '必须以「不足一页」作为终止条件');
+  });
+
+  it('22. resumable 反映执行之后的状态，不是执行之前的 checkpoint', () => {
+    const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
+    const after = cli.slice(cli.indexOf('const resumableAfterRun'), cli.indexOf('const envelope = {'));
+    // 必须从本轮的最终条目状态算，而不是 priorCheckpoint。
+    assert.ok(after.includes('result.items.filter'), 'resumable 必须由本轮最终状态算出');
+    assert.equal(/priorCheckpoint/.test(after), false, '不得用执行前的 checkpoint 判定待续跑');
+    // 只有可重试的终态才算待续跑；异常要人工处理，已验证/已跳过都不算。
+    for (const status of ['send_failed', 'verification_failed', 'global_stop']) {
+      assert.ok(after.includes(`'${status}'`), `${status} 应计入待续跑`);
+    }
+    for (const status of ['verified_removed', 'skipped_checkpoint', 'exception']) {
+      assert.equal(after.includes(`'${status}'`), false, `${status} 不得计入待续跑`);
+    }
+    // 信封必须用 after 版本。
+    const envelope = cli.slice(cli.indexOf('const envelope = {'));
+    assert.ok(envelope.includes('resumable: resumableAfterRun > 0'));
+    assert.ok(envelope.includes('resumable_count: resumableAfterRun'));
+  });
+
   it('成功判定不再有 HTTP 状态回退', () => {
     const src = fs.readFileSync('src/services/supplierFavoriteRemoval.ts', 'utf8');
     assert.equal(src.includes('?? response.status'), false, '不得再把 HTTP 状态当业务码回退');

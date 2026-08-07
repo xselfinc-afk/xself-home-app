@@ -315,6 +315,8 @@ async function main(): Promise<void> {
   // Only --resume reuses a prior checkpoint. A fresh run starts empty so it never inherits stale
   // state, but still re-verifies rather than re-sending anything already verified_removed.
   const priorCheckpoint = loadCheckpoint(runId);
+  // 注意：这是执行「之前」的待续跑数，只用于日志。信封里的 resumable 必须反映执行「之后」
+  // 的状态，否则跑完仍会报「上次同步未完成」。见下方 resumableAfterRun。
   const resumableItems = Object.values(priorCheckpoint.items).filter(
     (i) => i.status === 'send_failed' || i.status === 'verification_failed' || i.status === 'global_stop',
   ).length;
@@ -397,6 +399,12 @@ async function main(): Promise<void> {
     status: item.status,
   }));
 
+  // 真正尚未处理的数量 = 本轮结束后仍处于可重试终态的条目。
+  // verified_removed / skipped_checkpoint / exception 都不算待续跑：异常要人工处理，不是重跑能解决的。
+  const resumableAfterRun = result.items.filter(
+    (i) => i.status === 'send_failed' || i.status === 'verification_failed' || i.status === 'global_stop',
+  ).length;
+
   const envelope = {
     schema_version: '1.0',
     run_id: result.run_id,
@@ -423,8 +431,8 @@ async function main(): Promise<void> {
     xhr_sends: result.xhr_sends,
     pickup_extra_final: pickupExtra - removedByAccount.pickup,
     dropship_extra_final: dropshipExtra - removedByAccount.dropship,
-    resumable: resumableItems > 0,
-    resumable_count: resumableItems,
+    resumable: resumableAfterRun > 0,
+    resumable_count: resumableAfterRun,
     production_write_attempted: !result.dry_run && result.xhr_sends > 0,
     exceptions,
     exceptions_total: exceptionRecords.length,

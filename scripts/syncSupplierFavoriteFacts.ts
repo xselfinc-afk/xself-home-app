@@ -220,9 +220,18 @@ async function main(): Promise<void> {
   const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
   // Existing facts for THIS account only — a sibling account's rows are never read or written.
-  let q = sb.from(WRITE_TABLE).select('supplier_product_id,is_saved,sync_status,version').eq('supplier_account', ACCOUNT);
-  if (allowlist) q = q.in('supplier_product_id', allowlist);
-  const existingRows = must('read existing', await q).data ?? [];
+  //
+  // 必须分页：PostgREST 默认一次最多 1000 行。Dropship 有 1497 行事实，不分页时后 497 行
+  // 对 diff 不可见，于是那些已经取消收藏的 SKU 永远停留在 is_saved=true —— 这正是面板显示
+  // Dropship 540 而实时只有 73 的原因。
+  const existingRows: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    let q = sb.from(WRITE_TABLE).select('supplier_product_id,is_saved,sync_status,version').eq('supplier_account', ACCOUNT);
+    if (allowlist) q = q.in('supplier_product_id', allowlist);
+    const page = must('read existing', await q.range(from, from + 999)).data ?? [];
+    existingRows.push(...page);
+    if (page.length < 1000) break;
+  }
   const existing: Record<string, { is_saved?: boolean | null; sync_status?: string }> = {};
   for (const r of existingRows as any[]) existing[r.supplier_product_id] = r;
 

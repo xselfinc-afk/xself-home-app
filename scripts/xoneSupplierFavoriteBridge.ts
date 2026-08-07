@@ -262,16 +262,27 @@ export function buildInputs(rows: Rows): SupplierFavoriteInput[] {
 }
 
 function accountStates(rows: Rows): AccountReadState[] {
+  // TARGET 与收藏数必须来自同一次 loadRows —— 面板上的「当前收藏」和「未上线残留」因此
+  // 永远是同一个快照，不会一个新一个旧。
+  const target = new Set(
+    rows.products.filter((p) => p.published === true).map((p) => p.supplier_product_id),
+  );
   return (['pickup', 'dropship'] as const).map((account) => {
     const forAccount = rows.memberships.filter((r) => r.supplier_account === account);
     const failed = forAccount.filter((r) => r.sync_status !== 'ok');
     const observed = forAccount.map((r) => r.observed_at).filter(Boolean).sort();
+    const saved = forAccount.filter((r) => r.sync_status === 'ok' && r.is_saved === true);
+    const extra = saved.filter((r) => !target.has(r.supplier_product_id));
     return {
       account,
       // Same predicate that decides whether a missing row means "not saved" or "unknown", so the
       // panel's per-account status can never disagree with how the diff was computed.
       ok: accountIsAuthoritative(rows.memberships, account),
-      total: forAccount.filter((r) => r.sync_status === 'ok' && r.is_saved === true).length,
+      total: saved.length,
+      // 未上线残留 = 该账号当前收藏中不在 TARGET 里的部分，同一快照内算出。
+      extra_count: extra.length,
+      // 结构性不变量：残留不可能多于当前收藏。不成立说明快照被拼接过，宁可报错也不显示矛盾数字。
+      data_inconsistent: extra.length > saved.length,
       observed_at: observed[observed.length - 1] ?? null,
       error: forAccount.length === 0 ? 'never_synced' : failed.length ? failed[0].sync_status : null,
     };
