@@ -63,6 +63,7 @@ const SCHEMA_VERSION = '1.0' as const;
 export type FavoriteBridgeOperation =
   | 'exception-list'
   | 'resolve-exception'
+  | 'resolve-exception-batch'
   | 'summary'
   | 'pending-onboarding'
   | 'manual-action'
@@ -80,12 +81,16 @@ export interface FavoriteBridgeRequest {
   /** resolve-exception：keep_favorite | remove_favorite | no_action */
   resolution?: string;
   note?: string;
+  /** resolve-exception-batch：一次提交多条裁决。 */
+  items?: Array<{ supplier_account?: string; supplier_product_id?: string; resolution?: string }>;
   /** pending-onboarding 分页：一次只返回一页，首屏不再拉满 140 条。 */
   offset?: number;
   limit?: number;
 }
 
 const PENDING_PAGE_MAX = 50;
+/** 单批裁决上限，与 Rust 侧保持一致。 */
+const BATCH_MAX = 100;
 
 function envelope(operation: string, extra: Record<string, unknown>): Record<string, unknown> {
   const now = new Date().toISOString();
@@ -121,10 +126,10 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
   }
   const r = parsed as Partial<FavoriteBridgeRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
-  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan', 'exception-list', 'resolve-exception'];
+  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan', 'exception-list', 'resolve-exception', 'resolve-exception-batch'];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
   // pending-onboarding 是列表操作，用 offset/limit 分页，不再需要 sku。
-  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding', 'exception-list']);
+  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding', 'exception-list', 'resolve-exception-batch']);
   if (!skuless.has(r.operation) && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
   const clampInt = (value: unknown, fallback: number, max: number): number => {
     const n = Math.floor(Number(value));
@@ -142,6 +147,7 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
     resolution: ['keep_favorite', 'remove_favorite', 'no_action'].includes(String(r.resolution))
       ? String(r.resolution) : undefined,
     note: String(r.note ?? '').trim().slice(0, 500) || undefined,
+    items: Array.isArray(r.items) ? r.items.slice(0, BATCH_MAX) : undefined,
     offset: clampInt(r.offset, 0, 100_000),
     limit: clampInt(r.limit, 20, PENDING_PAGE_MAX),
   };
@@ -360,6 +366,49 @@ export async function executeFavoriteBridge(
       unresolved_count: unresolved,
       resolved_count: items.length - unresolved,
     });
+  }
+
+  if (request.operation === 'resolve-exception-batch') {
+    const items = request.items ?? [];
+    if (items.length === 0) return { ok: false, error_message: '没有需要保存的决定' };
+    if (items.length > BATCH_MAX) return { ok: false, error_message: `一次最多保存 ${BATCH_MAX} 条决定` };
+
+    // 逐条校验：任一非法 → 整批拒绝，绝不部分静默成功。
+    const seen = new Set<string>();
+    const now = new Date().toISOString();
+    const rowsToWrite: Array<Record<string, unknown>> = [];
+    for (const [index, item] of items.entries()) {
+      const position = index + 1;
+      const account = item.supplier_account;
+      const sku = String(item.supplier_product_id ?? '').trim();
+      const resolution = item.resolution;
+      if (account !== 'pickup' && account !== 'dropship') {
+        return { ok: false, error_message: `第 ${position} 条的账号无效，整批未保存` };
+      }
+      if (resolution !== 'keep_favorite' && resolution !== 'remove_favorite' && resolution !== 'no_action') {
+        return { ok: false, error_message: `第 ${position} 条的决定无效，整批未保存` };
+      }
+      if (!sku) return { ok: false, error_message: `第 ${position} 条缺少 SKU，整批未保存` };
+      if (seen.has(`${account}|${sku}`)) {
+        return { ok: false, error_message: `第 ${position} 条与批内其它条目重复，整批未保存` };
+      }
+      seen.add(`${account}|${sku}`);
+      rowsToWrite.push({
+        supplier_product_id: sku,
+        supplier_account: account,
+        resolution,
+        resolved_at: now,
+        resolved_by: request.operator ?? 'xone',
+        updated_at: now,
+      });
+    }
+
+    // 单次 upsert —— PostgREST 把整批当一条语句执行，要么全成要么全败。
+    const { error } = await client
+      .from('supplier_favorite_exception_resolutions')
+      .upsert(rowsToWrite, { onConflict: 'supplier_product_id,supplier_account' });
+    if (error) return { ok: false, error_message: error.message };
+    return envelope('resolve-exception-batch', { saved: rowsToWrite.length, resolved_at: now });
   }
 
   if (request.operation === 'resolve-exception') {
