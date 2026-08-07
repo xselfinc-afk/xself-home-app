@@ -360,6 +360,34 @@ async function main(): Promise<void> {
     );
   });
 
+
+  it('19. 异常明细不得泄露任何会话信息', () => {
+    const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
+    const mapBlock = cli.slice(cli.indexOf('const exceptions = exceptionRecords'), cli.indexOf('const envelope = {'));
+    // 明细只由这五个字段构成 —— 原始 last_error 绝不进信封。
+    for (const field of ['account:', 'sku:', 'reason:', 'product_id:', 'status:']) {
+      assert.ok(mapBlock.includes(field), `异常明细必须含 ${field}`);
+    }
+    assert.equal(/last_error\s*:/.test(mapBlock), false, '不得把原始 last_error 放进信封');
+    for (const secret of ['cookie', 'token', 'device', 'session', 'PHPSESSID']) {
+      assert.equal(mapBlock.toLowerCase().includes(secret.toLowerCase()), false, `异常明细不得出现 ${secret}`);
+    }
+    // 有上限，避免一次吐出上千行。
+    assert.ok(cli.includes('MAX_EXCEPTION_ROWS'), '异常明细必须有条数上限');
+    assert.ok(cli.includes('exceptions_total') && cli.includes('exceptions_truncated'), '截断时必须如实声明');
+  });
+
+  it('20. reason 归一到固定枚举，不回传任意错误串', () => {
+    const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
+    const fn = cli.slice(cli.indexOf('function normalizeReason'), cli.indexOf('async function main'));
+    for (const reason of ['not_mapped', 'multiple_product_ids', 'timeout', 'verification_failed', 'send_failed']) {
+      assert.ok(fn.includes(`'${reason}'`), `reason 必须支持 ${reason}`);
+    }
+    // 兜底分支必须回到固定值，而不是把 raw 直接返回。
+    assert.ok(/return 'not_mapped';\s*\n\}/.test(fn), 'reason 必须有固定兜底值');
+    assert.equal(/return raw/.test(fn), false, '不得直接返回原始错误串');
+  });
+
   it('成功判定不再有 HTTP 状态回退', () => {
     const src = fs.readFileSync('src/services/supplierFavoriteRemoval.ts', 'utf8');
     assert.equal(src.includes('?? response.status'), false, '不得再把 HTTP 状态当业务码回退');

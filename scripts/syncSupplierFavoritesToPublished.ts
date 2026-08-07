@@ -130,6 +130,31 @@ function emitProgress(line: string, ev: CleanupProgressEvent): void {
   })}\n`);
 }
 
+
+/**
+ * 需要人工处理的条目明细。
+ *
+ * 只输出四个字段 + 一个归一化后的 reason —— 绝不透传原始 last_error，因为那是网络层
+ * 错误串，可能带 URL、header 片段或其它会话痕迹。cookie / token / device id 在这里
+ * 结构性地不可能出现。
+ */
+type ExceptionReason =
+  | 'not_mapped' | 'multiple_product_ids' | 'timeout' | 'verification_failed' | 'send_failed';
+
+/** 单条上限：异常清单是给人看的，不是数据导出口。 */
+const MAX_EXCEPTION_ROWS = 500;
+
+function normalizeReason(record: { status: string; last_error: string | null }): ExceptionReason {
+  const raw = record.last_error ?? '';
+  if (record.status === 'timeout') return 'timeout';
+  if (record.status === 'verification_failed') return 'verification_failed';
+  if (record.status === 'send_failed') return 'send_failed';
+  if (raw.includes('multiple_product_ids')) return 'multiple_product_ids';
+  if (raw === 'timeout') return 'timeout';
+  // mapping_not_unique / not_mapped / 其它身份问题一律归到 not_mapped。
+  return 'not_mapped';
+}
+
 async function main(): Promise<void> {
   const url = process.env.SUPABASE_URL ?? '';
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
@@ -360,6 +385,18 @@ async function main(): Promise<void> {
   const dropshipExtra = plan.removals.dropship.length + plan.exceptions.dropship.length;
 
   // One machine-readable line for the Tauri caller. Everything else above is gated off in JSON mode.
+  // 需要人工处理的条目：既不是已验证取消，也不是续跑跳过的，都算。
+  const exceptionRecords = result.items.filter(
+    (item) => item.status !== 'verified_removed' && item.status !== 'skipped_checkpoint' && item.status !== 'planned',
+  );
+  const exceptions = exceptionRecords.slice(0, MAX_EXCEPTION_ROWS).map((item) => ({
+    account: item.account,
+    sku: item.supplier_product_id,
+    reason: normalizeReason(item),
+    product_id: item.product_id,
+    status: item.status,
+  }));
+
   const envelope = {
     schema_version: '1.0',
     run_id: result.run_id,
@@ -389,6 +426,9 @@ async function main(): Promise<void> {
     resumable: resumableItems > 0,
     resumable_count: resumableItems,
     production_write_attempted: !result.dry_run && result.xhr_sends > 0,
+    exceptions,
+    exceptions_total: exceptionRecords.length,
+    exceptions_truncated: exceptionRecords.length > exceptions.length,
   };
   process.stdout.write(`SYNC_RESULT ${JSON.stringify(envelope)}\n`);
 }
