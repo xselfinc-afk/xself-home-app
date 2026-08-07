@@ -156,6 +156,7 @@ export interface NormalizedRow {
 async function callJson<T>(url: string, productIdForReferer: string, session: SessionContext): Promise<{ status: number; json: T | null; text: string; networkError: boolean }> {
   try {
     const res = await fetch(url, {
+    signal: AbortSignal.timeout(25_000),
       method: 'GET',
       headers: xhrHeaders(productIdForReferer, session),
       redirect: 'follow',
@@ -246,7 +247,7 @@ export async function searchProductCandidates(sku: string, session: SessionConte
   };
   if (session.deviceId) headers['x-gmd-device-id'] = session.deviceId;
 
-  const res = await fetch(url, { method: 'POST', headers, body, redirect: 'follow' });
+  const res = await fetch(url, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25_000) });
   const text = await res.text();
   if (res.status === 401 || res.status === 403) throw new Error(`AUTH_FAILED:${res.status}`);
   if (/captcha|verify you are human|slider/i.test(text.slice(0, 500))) throw new Error('CAPTCHA_REQUIRED');
@@ -276,7 +277,7 @@ async function searchForProductId(sku: string, session: SessionContext): Promise
   };
   if (session.deviceId) headers['x-gmd-device-id'] = session.deviceId;
 
-  const res = await fetch(url, { method: 'POST', headers, body, redirect: 'follow' });
+  const res = await fetch(url, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25_000) });
   const text = await res.text();
   try {
     const j = JSON.parse(text) as { code?: number; data?: { product_list?: unknown } };

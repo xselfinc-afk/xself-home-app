@@ -16,8 +16,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { executeSyncOperation, type RemovalFetcher } from '../services/supplierFavoriteRemoval';
 import {
+  checkpointKey,
   executeCleanup,
   planFavoriteCleanup,
+  resolveExtraMappings,
   type ExecuteDeps,
 } from '../services/supplierFavoriteCleanupExecutor';
 import type { ProductIdMapping } from '../services/supplierFavoriteProductId';
@@ -163,7 +165,7 @@ async function main(): Promise<void> {
     env: ON,
     ...over,
   });
-  const opts = { execute: true, batchSize: 50, maxConsecutiveFailures: 5, runId: 'run-proto' };
+  const opts = { execute: true, batchSize: 50, maxConsecutiveFailures: 5, runId: 'run-proto', perItemTimeoutMs: 90_000, verifyTimeoutMs: 90_000 };
 
   await itAsync('7. 业务成功但 Favorites API 仍存在 → verification_failed', async () => {
     const { plan, mappings } = singlePlan();
@@ -237,6 +239,125 @@ async function main(): Promise<void> {
     assert.equal(live.dry_run, false);
     assert.equal(live.xhr_sends, 1);
     assert.equal(sends, 1);
+  });
+
+
+  // ── 卡死防护 ───────────────────────────────────────────────────────────────
+
+  await itAsync('13. 单件超时 → 记为 timeout 并继续下一件，不阻塞整批', async () => {
+    const mappings = new Map<string, ProductIdMapping>([
+      ['HANG-1', { product_id: 111, verified_sku: 'HANG-1', status: 'unique' }],
+      ['OK-1', { product_id: 222, verified_sku: 'OK-1', status: 'unique' }],
+    ]);
+    const plan = planFavoriteCleanup(['PUB-A'], { pickup: ['PUB-A', 'HANG-1', 'OK-1'], dropship: [] },
+      (s) => mappings.get(s) ?? { product_id: null, verified_sku: null, status: 'not_mapped' });
+
+    const progress: string[] = [];
+    const result = await executeCleanup(plan, mappings, deps({
+      // HANG-1 永远不 resolve —— 正是上一批卡死的形状。
+      fetcherFor: () => async (_url, init) => {
+        const id = JSON.parse(init.body).product_ids;
+        if (id === 111) return new Promise(() => {}) as never;
+        return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) };
+      },
+      onProgress: (l) => progress.push(l),
+    }), { ...opts, perItemTimeoutMs: 120, verifyTimeoutMs: 500 });
+
+    const hang = result.items.find((r) => r.supplier_product_id === 'HANG-1')!;
+    assert.equal(hang.status, 'timeout', '卡住的件必须记为 timeout');
+    assert.match(hang.last_error ?? '', /per-item timeout/);
+    // 关键：卡住一件之后，后面的件仍然被处理。
+    const ok = result.items.find((r) => r.supplier_product_id === 'OK-1')!;
+    assert.equal(ok.status, 'verified_removed', '超时不得阻塞后续 SKU');
+    assert.equal(result.timeout, 1);
+    assert.ok(progress.some((l) => l.includes('HANG-1') && l.includes('timeout')));
+    assert.ok(progress.some((l) => l.includes('resolving...')), '必须有实时进度输出');
+  });
+
+  await itAsync('14. 回读超时不会挂起整批，已发送项保持待验证', async () => {
+    const { plan, mappings } = singlePlan();
+    const result = await executeCleanup(plan, mappings, deps({
+      readFavorites: () => new Promise(() => {}) as never,   // 回读永不返回
+    }), { ...opts, perItemTimeoutMs: 2000, verifyTimeoutMs: 120 });
+    // 没有卡死：函数返回了，且该件保持 verification_failed（未被误判为已删除）。
+    const rec = result.items.find((r) => r.supplier_product_id === SKU)!;
+    assert.equal(rec.status, 'verification_failed');
+    assert.equal(result.verified_removed, 0);
+  });
+
+  await itAsync('15. resume 时 B091119898 不再发送第二次取消请求', async () => {
+    // 真实 checkpoint 形状：该件已在上一轮 verified_removed。
+    const sku = 'B091119898';
+    const mappings = new Map<string, ProductIdMapping>([[sku, { product_id: 581026, verified_sku: sku, status: 'unique' }]]);
+    const plan = planFavoriteCleanup(['PUB-A'], { pickup: [], dropship: ['PUB-A', sku] },
+      (s) => mappings.get(s) ?? { product_id: null, verified_sku: null, status: 'not_mapped' });
+
+    const checkpoint = {
+      run_id: 'prior',
+      items: {
+        [checkpointKey('dropship', sku)]: {
+          account: 'dropship' as const, supplier_product_id: sku, product_id: 581026,
+          status: 'verified_removed' as const, attempts: 1, last_error: null,
+          verified_at: '2026-08-07T06:05:00.000Z',
+        },
+      },
+    };
+
+    let sends = 0;
+    const result = await executeCleanup(plan, mappings, deps({
+      fetcherFor: () => async () => { sends += 1; return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }; },
+    }), opts, checkpoint);
+
+    assert.equal(sends, 0, 'B091119898 已 verified_removed，绝不得再次发送取消请求');
+    assert.equal(result.xhr_sends, 0);
+    const rec = result.items.find((r) => r.supplier_product_id === sku)!;
+    assert.equal(rec.status, 'skipped_checkpoint');
+    assert.equal(result.skipped, 1);
+  });
+
+  await itAsync('16. 每件结束立即写 checkpoint', async () => {
+    const mappings = new Map<string, ProductIdMapping>([
+      ['A-1', { product_id: 1, verified_sku: 'A-1', status: 'unique' }],
+      ['A-2', { product_id: 2, verified_sku: 'A-2', status: 'unique' }],
+    ]);
+    const plan = planFavoriteCleanup(['PUB-A'], { pickup: ['PUB-A', 'A-1', 'A-2'], dropship: [] },
+      (s) => mappings.get(s) ?? { product_id: null, verified_sku: null, status: 'not_mapped' });
+    let saves = 0;
+    await executeCleanup(plan, mappings, deps({ saveCheckpoint: () => { saves += 1; } }), opts);
+    // 2 件 + 批末回读 + 批末保存 → 明显多于一次（旧实现只在批末存一次）。
+    assert.ok(saves >= 3, `checkpoint 应逐件写入，实际 ${saves} 次`);
+  });
+
+
+  await itAsync('17. 单个 portal 探测卡住 → 记为 exception 并继续解析后续 SKU', async () => {
+    const progress: string[] = [];
+    const resolved = await resolveExtraMappings(['STALL-1', 'GOOD-1'], {
+      storedMappings: [],
+      portalResolve: async (sku) => {
+        if (sku === 'STALL-1') return new Promise(() => {}) as never;   // 永不返回
+        return { product_id: 777, verified_sku: 'GOOD-1', status: 'unique' };
+      },
+      now: '2026-08-07T00:00:00.000Z',
+      onProgress: (l) => progress.push(l),
+      perSkuTimeoutMs: 120,
+    });
+    // 卡住的那个没有拖垮整轮解析。
+    assert.equal(resolved.usable.get('GOOD-1')?.product_id, 777, '卡住的探测不得阻塞后续 SKU');
+    assert.deepEqual(resolved.exceptions, [{ supplier_product_id: 'STALL-1', reason: 'timeout' }]);
+    assert.ok(progress.some((l) => l.includes('STALL-1') && l.includes('timeout')));
+    assert.ok(progress.some((l) => l.includes('resolve 1/2')), '解析阶段必须有实时进度');
+  });
+
+  await itAsync('18. 解析阶段的 auth/CAPTCHA 仍然中止全局，不被 watchdog 吞掉', async () => {
+    await assert.rejects(
+      resolveExtraMappings(['X-1'], {
+        storedMappings: [],
+        portalResolve: async () => { throw new Error('AUTH_FAILED: session expired'); },
+        now: '2026-08-07T00:00:00.000Z',
+        perSkuTimeoutMs: 5000,
+      }),
+      /AUTH_FAILED/,
+    );
   });
 
   it('成功判定不再有 HTTP 状态回退', () => {

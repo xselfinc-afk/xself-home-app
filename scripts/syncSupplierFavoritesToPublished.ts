@@ -70,6 +70,11 @@ const log = (line: string) => { if (!JSON_OUT) console.log(line); };
 const MIN_DELAY_MS = 2500;
 const MAX_DELAY_MS = 3500;
 const MAX_CONSECUTIVE_FAILURES = 5;
+// Watchdogs: every fetch is already bounded; these guarantee no single item stalls the run.
+const PER_ITEM_TIMEOUT_MS = 90_000;
+// Portal probe = search + baseInfos, each bounded at 25s; 70s covers both plus retry slack.
+const PER_SKU_RESOLVE_TIMEOUT_MS = 70_000;
+const VERIFY_TIMEOUT_MS = 90_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function loadCheckpoint(runId: string): CleanupCheckpoint {
@@ -208,7 +213,13 @@ async function main(): Promise<void> {
     }
   };
 
-  const resolved = await resolveExtraMappings(extraSkus, { storedMappings, portalResolve, now: now() });
+  const resolved = await resolveExtraMappings(extraSkus, {
+    storedMappings,
+    portalResolve,
+    now: now(),
+    onProgress: (line) => log(`  ${line}`),
+    perSkuTimeoutMs: PER_SKU_RESOLVE_TIMEOUT_MS,
+  });
   const plan = planFavoriteCleanup(target, favorites, (sku) =>
     resolved.usable.get(sku) ?? { product_id: null, verified_sku: null, status: 'not_mapped' });
 
@@ -267,7 +278,8 @@ async function main(): Promise<void> {
     // Device binding — the header that was missing when a 200 did nothing.
     if (session.deviceId) headers['x-gmd-device-id'] = session.deviceId;
 
-    const res = await fetch(targetUrl, { method: init.method, body: init.body, headers });
+    // Bounded: a stalled wishlist POST must never hang the whole run.
+    const res = await fetch(targetUrl, { method: init.method, body: init.body, headers, signal: AbortSignal.timeout(25_000) });
     const text = await res.text();
     // Return the parsed body untouched (no code←status fallback); the caller decides success from
     // the real business code + data.totalNum.
@@ -285,10 +297,11 @@ async function main(): Promise<void> {
     readFavorites,
     sessionPresent: () => EXECUTE,   // in dry run this is never consulted for a send
     saveCheckpoint,
+    onProgress: (line) => log(`  ${line}`),
     pace: async () => { await sleep(MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS))); },
     now,
     env: process.env,
-  }, { execute: EXECUTE, batchSize: BATCH_SIZE, maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES, runId }, checkpoint);
+  }, { execute: EXECUTE, batchSize: BATCH_SIZE, maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES, runId, perItemTimeoutMs: PER_ITEM_TIMEOUT_MS, verifyTimeoutMs: VERIFY_TIMEOUT_MS }, checkpoint);
 
   log('\n─── result ───');
   log(`  dry_run           : ${result.dry_run}`);

@@ -60,7 +60,7 @@ function baseDeps(over: Partial<ExecuteDeps> = {}): ExecuteDeps {
 }
 
 const opts = (over: Partial<{ execute: boolean; batchSize: number; maxConsecutiveFailures: number; runId: string }> = {}) =>
-  ({ execute: true, batchSize: 50, maxConsecutiveFailures: 5, runId: 'run-1', ...over });
+  ({ execute: true, batchSize: 50, maxConsecutiveFailures: 5, runId: 'run-1', perItemTimeoutMs: 90_000, verifyTimeoutMs: 90_000, ...over });
 
 async function main(): Promise<void> {
   // ── 1–3: TARGET, extra, scope ──────────────────────────────────────────────
