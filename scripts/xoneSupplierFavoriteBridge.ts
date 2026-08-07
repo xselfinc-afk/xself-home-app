@@ -61,6 +61,8 @@ const LOOP_ID = 'supplier-favorite-management';
 const SCHEMA_VERSION = '1.0' as const;
 
 export type FavoriteBridgeOperation =
+  | 'exception-list'
+  | 'resolve-exception'
   | 'summary'
   | 'pending-onboarding'
   | 'manual-action'
@@ -73,6 +75,11 @@ export interface FavoriteBridgeRequest {
   sku?: string;
   action?: FavoriteManualAction;
   operator?: string;
+  /** resolve-exception：裁决落在哪个账号上。账号隔离由此保证。 */
+  account?: 'pickup' | 'dropship';
+  /** resolve-exception：keep_favorite | remove_favorite | no_action */
+  resolution?: string;
+  note?: string;
   /** pending-onboarding 分页：一次只返回一页，首屏不再拉满 140 条。 */
   offset?: number;
   limit?: number;
@@ -114,10 +121,10 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
   }
   const r = parsed as Partial<FavoriteBridgeRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
-  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan'];
+  const ops: FavoriteBridgeOperation[] = ['summary', 'pending-onboarding', 'manual-action', 'removal-preview', 'sync-plan', 'exception-list', 'resolve-exception'];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
   // pending-onboarding 是列表操作，用 offset/limit 分页，不再需要 sku。
-  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding']);
+  const skuless = new Set<FavoriteBridgeOperation>(['summary', 'sync-plan', 'pending-onboarding', 'exception-list']);
   if (!skuless.has(r.operation) && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
   const clampInt = (value: unknown, fallback: number, max: number): number => {
     const n = Math.floor(Number(value));
@@ -130,6 +137,11 @@ export function parseFavoriteBridgeRequest(raw: string): FavoriteBridgeRequest {
     sku: String(r.sku ?? '').trim() || undefined,
     action: r.action,
     operator: String(r.operator ?? '').trim() || undefined,
+    // 只接受两个字面量账号名，杜绝任意值落库。
+    account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
+    resolution: ['keep_favorite', 'remove_favorite', 'no_action'].includes(String(r.resolution))
+      ? String(r.resolution) : undefined,
+    note: String(r.note ?? '').trim().slice(0, 500) || undefined,
     offset: clampInt(r.offset, 0, 100_000),
     limit: clampInt(r.limit, 20, PENDING_PAGE_MAX),
   };
@@ -298,6 +310,82 @@ export async function executeFavoriteBridge(
   const inputList = buildInputs(rows);
   const plan = buildSupplierFavoritePlan(inputList, accountStates(rows));
   const inputs = new Map(inputList.map((i) => [i.supplier_product_id, i]));
+
+  if (request.operation === 'exception-list') {
+    // 异常 = 该账号当前收藏中不属于 TARGET、且没有唯一身份的条目，附上人工裁决。
+    const target = new Set(rows.products.filter((p) => p.published === true).map((p) => p.supplier_product_id));
+    const { data: resolutionRows } = await client
+      .from('supplier_favorite_exception_resolutions')
+      .select('supplier_product_id,supplier_account,resolution,resolved_at,resolved_by,note');
+    const decided = new Map<string, { resolution: string; resolved_at: string; resolved_by: string; note: string | null }>();
+    for (const r of (resolutionRows ?? []) as any[]) {
+      decided.set(`${r.supplier_account}|${r.supplier_product_id}`, r);
+    }
+    const { data: mappingRows } = await client
+      .from('supplier_portal_product_mappings')
+      .select('supplier_product_id,website_product_id,portal_sku');
+    const mapped = new Map<string, { website_product_id: number | null; portal_sku: string | null }>();
+    for (const m of (mappingRows ?? []) as any[]) mapped.set(m.supplier_product_id, m);
+
+    const items: Array<Record<string, unknown>> = [];
+    for (const account of ['pickup', 'dropship'] as const) {
+      const saved = rows.memberships.filter(
+        (r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true,
+      );
+      for (const row of saved) {
+        const sku = row.supplier_product_id;
+        if (target.has(sku)) continue;                       // 已上线：不是异常，也永不清理
+        const m = mapped.get(sku);
+        const identified = !!m && m.website_product_id !== null && m.portal_sku === sku;
+        const verdict = decided.get(`${account}|${sku}`);
+        // 身份已唯一且无人工裁决 → 自动就能处理，不算异常。
+        if (identified && !verdict) continue;
+        if (identified && verdict?.resolution === undefined) continue;
+        items.push({
+          account,
+          supplier_product_id: sku,
+          reason: identified ? 'resolved_identity' : (m ? 'multiple_product_ids' : 'not_mapped'),
+          product_id: m?.website_product_id ?? null,
+          resolution: verdict?.resolution ?? 'unresolved',
+          resolved_at: verdict?.resolved_at ?? null,
+          resolved_by: verdict?.resolved_by ?? null,
+          note: verdict?.note ?? null,
+        });
+      }
+    }
+    const unresolved = items.filter((i) => i.resolution === 'unresolved').length;
+    return envelope('exception-list', {
+      items,
+      total: items.length,
+      unresolved_count: unresolved,
+      resolved_count: items.length - unresolved,
+    });
+  }
+
+  if (request.operation === 'resolve-exception') {
+    if (!request.account || !request.resolution || !request.sku) {
+      return { ok: false, error_message: '裁决参数不完整' };
+    }
+    const now = new Date().toISOString();
+    const { error } = await client
+      .from('supplier_favorite_exception_resolutions')
+      .upsert({
+        supplier_product_id: request.sku,
+        supplier_account: request.account,
+        resolution: request.resolution,
+        resolved_at: now,
+        resolved_by: request.operator ?? 'xone',
+        note: request.note ?? null,
+        updated_at: now,
+      }, { onConflict: 'supplier_product_id,supplier_account' });
+    if (error) return { ok: false, error_message: error.message };
+    return envelope('resolve-exception', {
+      supplier_product_id: request.sku,
+      account: request.account,
+      resolution: request.resolution,
+      resolved_at: now,
+    });
+  }
 
   if (request.operation === 'summary') {
     return envelope('summary', { accounts: plan.accounts, counts: plan.counts });

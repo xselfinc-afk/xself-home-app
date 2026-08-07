@@ -237,6 +237,119 @@ export async function resolveExtraMappings(
 }
 
 
+
+// ── 人工裁决 ─────────────────────────────────────────────────────────────────
+
+/**
+ * 用户在 XOne 里对一条异常做出的裁决。这是「同步收藏夹时怎么处理这一条」，
+ * **绝不是**发布或下架决策 —— 它永远不会写 standardized_products.published。
+ */
+export type ManualResolution = 'keep_favorite' | 'remove_favorite' | 'no_action';
+
+export interface ManualResolutionRecord {
+  supplier_account: SyncAccount;
+  supplier_product_id: string;
+  resolution: ManualResolution;
+}
+
+export interface ManualPlanCounts {
+  /** 自动规则算出的待取消（未被人工保留的部分）。 */
+  auto_removals: number;
+  /** 人工保留：本次不取消。 */
+  manual_keep: number;
+  /** 人工指定取消且通过唯一 product_id 安全门，真正进入取消流程。 */
+  manual_remove: number;
+  /** 人工指定取消但身份仍不唯一 —— 不猜着删，留在异常里。 */
+  manual_remove_blocked: number;
+  /** 已确认无需操作：不再算作未处理异常，也不发请求。 */
+  manual_no_action: number;
+  /** 仍未处理的异常。 */
+  unresolved_exceptions: number;
+}
+
+export interface ResolvedCleanupPlan extends CleanupPlan {
+  manual: ManualPlanCounts;
+}
+
+function resolutionKey(account: SyncAccount, sku: string): string {
+  return `${account}|${sku}`;
+}
+
+/**
+ * 把人工裁决叠加到自动计划上。
+ *
+ * 两道安全门，人工裁决都绕不过：
+ *
+ *   1. **published=true 永远保留。** TARGET 里的 SKU 不可能出现在 removals 里 —— 自动计划
+ *      按定义就排除了它们，这里再显式拦一次：即便有人给一个已上线商品写了 remove_favorite，
+ *      也不会被放进取消流程。
+ *   2. **身份必须唯一。** remove_favorite 只是"允许进入取消流程"，不是"可以猜着删"。没有
+ *      唯一且反查确认的 website product_id，它仍然留在异常里（manual_remove_blocked）。
+ *
+ * 账号隔离：裁决按 account|sku 索引，同一个 SKU 在两个账号可以有完全不同的裁决。
+ */
+export function applyManualResolutions(
+  plan: CleanupPlan,
+  resolutions: readonly ManualResolutionRecord[],
+  target: readonly string[],
+  mappingFor: (sku: string) => ProductIdMapping,
+): ResolvedCleanupPlan {
+  const targetSet = new Set(target);
+  const decided = new Map<string, ManualResolution>();
+  for (const r of resolutions) decided.set(resolutionKey(r.supplier_account, r.supplier_product_id), r.resolution);
+
+  const removals: Record<SyncAccount, FavoriteSyncItem[]> = { pickup: [], dropship: [] };
+  const exceptions: Record<SyncAccount, Array<{ supplier_product_id: string; reason: string }>> = { pickup: [], dropship: [] };
+  const counts: ManualPlanCounts = {
+    auto_removals: 0, manual_keep: 0, manual_remove: 0,
+    manual_remove_blocked: 0, manual_no_action: 0, unresolved_exceptions: 0,
+  };
+
+  for (const account of ['pickup', 'dropship'] as const) {
+    // 自动待取消：人工保留的剔除，其余照常。
+    for (const item of plan.removals[account]) {
+      const verdict = decided.get(resolutionKey(account, item.supplier_product_id));
+      if (verdict === 'keep_favorite') { counts.manual_keep += 1; continue; }
+      if (verdict === 'no_action') { counts.manual_no_action += 1; continue; }
+      // 安全门 1：已上线商品永不取消（自动计划本就排除，这里是显式冗余防线）。
+      if (targetSet.has(item.supplier_product_id)) { counts.manual_keep += 1; continue; }
+      removals[account].push(item);
+      counts.auto_removals += 1;
+    }
+
+    // 异常：按裁决分流。
+    for (const ex of plan.exceptions[account]) {
+      const verdict = decided.get(resolutionKey(account, ex.supplier_product_id));
+      if (verdict === 'keep_favorite') { counts.manual_keep += 1; continue; }
+      if (verdict === 'no_action') { counts.manual_no_action += 1; continue; }
+      if (verdict === 'remove_favorite') {
+        // 安全门 1：已上线商品即便被人工点了取消也不执行。
+        if (targetSet.has(ex.supplier_product_id)) { counts.manual_keep += 1; continue; }
+        // 安全门 2：身份不唯一就不进取消流程，留在异常里。
+        const mapping = mappingFor(ex.supplier_product_id);
+        if (mapping.status === 'unique' && mapping.product_id !== null && mapping.verified_sku === ex.supplier_product_id) {
+          removals[account].push({
+            supplier_product_id: ex.supplier_product_id,
+            operation: 'remove',
+            product_id: mapping.product_id,
+            verified_sku: mapping.verified_sku,
+          });
+          counts.manual_remove += 1;
+        } else {
+          exceptions[account].push({ supplier_product_id: ex.supplier_product_id, reason: ex.reason });
+          counts.manual_remove_blocked += 1;
+        }
+        continue;
+      }
+      // 未处理：保持异常，不猜、不删。
+      exceptions[account].push(ex);
+      counts.unresolved_exceptions += 1;
+    }
+  }
+
+  return { ...plan, removals, exceptions, manual: counts };
+}
+
 // ── 续跑判定 ─────────────────────────────────────────────────────────────────
 
 /**

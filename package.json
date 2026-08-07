@@ -15,6 +15,7 @@
     "test:supplier-favorites": "tsx src/__tests__/supplierFavoriteManagement.test.ts",
     "test:supplier-favorite-sync": "tsx src/__tests__/supplierFavoriteSync.test.ts",
     "test:supplier-portal-mapping": "tsx src/__tests__/supplierPortalMapping.test.ts",
+    "test:supplier-favorite-manual": "tsx src/__tests__/supplierFavoriteManualResolution.test.ts",
     "test:supplier-favorite-cleanup": "tsx src/__tests__/supplierFavoriteCleanupExecutor.test.ts",
     "test:supplier-wishlist-protocol": "tsx src/__tests__/supplierWishlistProtocol.test.ts",
     "favorites:cleanup": "tsx scripts/syncSupplierFavoritesToPublished.ts",

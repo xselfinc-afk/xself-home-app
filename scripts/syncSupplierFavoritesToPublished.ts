@@ -30,6 +30,8 @@ import {
   planFavoriteCleanup,
   resolveExtraMappings,
   countResumable,
+  applyManualResolutions,
+  type ManualResolutionRecord,
   withDeadline,
   type CleanupProgressEvent,
   type CleanupCheckpoint,
@@ -179,6 +181,28 @@ async function main(): Promise<void> {
   const target = products.filter((p) => p.published === true).map((p) => p.supplier_product_id);
   const memberships = await readAll<{ supplier_product_id: string; supplier_account: string; is_saved: boolean | null; sync_status: string }>(
     'supplier_favorite_memberships', 'supplier_product_id,supplier_account,is_saved,sync_status');
+  // 人工裁决：用户在 XOne 里对异常做的决定。表不存在时按「无裁决」处理，不影响既有流程。
+  type ResolutionRow = { supplier_product_id: string; supplier_account: string; resolution: string };
+  let resolutionRows: ResolutionRow[] = [];
+  {
+    const { data, error } = await sb
+      .from('supplier_favorite_exception_resolutions')
+      .select('supplier_product_id,supplier_account,resolution');
+    if (error) {
+      log(`  人工裁决读取失败（按无裁决处理）：${error.message}`);
+    } else {
+      resolutionRows = (data ?? []) as ResolutionRow[];
+    }
+  }
+  const manualResolutions: ManualResolutionRecord[] = resolutionRows
+    .filter((r) => r.supplier_account === 'pickup' || r.supplier_account === 'dropship')
+    .filter((r) => r.resolution === 'keep_favorite' || r.resolution === 'remove_favorite' || r.resolution === 'no_action')
+    .map((r) => ({
+      supplier_account: r.supplier_account as SyncAccount,
+      supplier_product_id: r.supplier_product_id,
+      resolution: r.resolution as ManualResolutionRecord['resolution'],
+    }));
+
   const savedOf = (account: string) => memberships
     .filter((r) => r.supplier_account === account && r.sync_status === 'ok' && r.is_saved === true)
     .map((r) => r.supplier_product_id);
@@ -283,8 +307,12 @@ async function main(): Promise<void> {
     onProgress: emitProgress,
     perSkuTimeoutMs: PER_SKU_RESOLVE_TIMEOUT_MS,
   });
-  const plan = planFavoriteCleanup(target, favorites, (sku) =>
-    resolved.usable.get(sku) ?? { product_id: null, verified_sku: null, status: 'not_mapped' });
+  const mappingLookup = (sku: string) =>
+    resolved.usable.get(sku) ?? { product_id: null, verified_sku: null, status: 'not_mapped' as const };
+  const autoPlan = planFavoriteCleanup(target, favorites, mappingLookup);
+  // 人工裁决叠加在自动计划之上。安全门（published 永不删、身份必须唯一）在这一层强制，
+  // 用户点了「取消收藏」也绕不过去。
+  const plan = applyManualResolutions(autoPlan, manualResolutions, target, mappingLookup);
 
   const totalRemovals = plan.removals.pickup.length + plan.removals.dropship.length;
   const unmapped = extraSkus.length - resolved.usable.size;
@@ -450,6 +478,7 @@ async function main(): Promise<void> {
     resumable: resumableAfterRun > 0,
     resumable_count: resumableAfterRun,
     production_write_attempted: !result.dry_run && result.xhr_sends > 0,
+    manual: plan.manual,
     exceptions,
     exceptions_total: exceptionRecords.length,
     exceptions_truncated: exceptionRecords.length > exceptions.length,
