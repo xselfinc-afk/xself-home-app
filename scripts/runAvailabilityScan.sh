@@ -55,11 +55,19 @@ NODE_PATH="$REPO/node_modules" npx dotenv -e .env.giga-alt.local -e .env.local -
   npx tsx scripts/scanPublishedAvailability.ts --limit=400 --live 2>&1 | grep -v '^\[GIGA\]'
 
 code=${PIPESTATUS[0]}
-# ── 2. Lifecycle actions — only for SKUs the state machine already marked eligible ───────────
-# Runs ONLY when the scan succeeded: acting on a failed or aborted scan would decide on partial
-# evidence. Eligibility requires two confirmations >= 36h apart, so the first cycle produces none.
-# Each SKU is passed explicitly through --only; there is no "all" mode. Publication changes still
-# require inventory_auto_delist_enabled / inventory_auto_relist_enabled, which ship OFF.
+# ── 2. Report what became eligible — PROPOSALS ONLY, never applied here ──────────────────────
+#
+# This stage used to run the publication executor with a hardcoded
+# `--approve --approved-by=scheduler`. That forged the executor's one human-intent gate: the
+# 48h scheduler and the XOne "刷新库存证据" button both reach this script, so publication could
+# change with no person in the loop — while the UI told the user "资格变更等待批准".
+#
+# Scanning stays fully automatic. Deciding does not. The scan may refresh evidence, advance the
+# workflow state and raise proposals; turning a proposal into a published change now requires a
+# human to run the executor explicitly with --approve --approved-by=<name> --only=<SKUs>.
+#
+# The count caps (maxDelistPerRun etc.) are unchanged and still apply on top of that approval —
+# they are a second layer, not a substitute for it.
 if [ "$code" -eq 0 ]; then
   for ACTION in delist relist; do
     STATE=$([ "$ACTION" = "delist" ] && echo eligible_for_delist || echo eligible_for_relist)
@@ -69,11 +77,8 @@ if [ "$code" -eq 0 ]; then
       (async()=>{const r=await sb.from('inventory_workflow_states').select('supplier_product_id').eq('workflow_state','$STATE').limit(50);
       process.stdout.write((r.data||[]).map(x=>x.supplier_product_id).join(','));})();" 2>/dev/null)
     if [ -n "$SKUS" ]; then
-      echo "[$STAMP] $ACTION candidates ($STATE): $(echo "$SKUS" | tr ',' '\n' | wc -l | tr -d ' ')"
-      NODE_PATH="$REPO/node_modules" npx dotenv -e .env.giga-alt.local -e .env.local -- \
-        npx tsx scripts/applyInventoryLifecycleActions.ts --action="$ACTION" --only="$SKUS" \
-        --approve --approved-by=scheduler 2>&1 | grep -vE '^\[GIGA\]'
-      echo "[$STAMP] $ACTION exit=$?"
+      COUNT=$(echo "$SKUS" | tr ',' '\n' | wc -l | tr -d ' ')
+      echo "[$STAMP] $ACTION proposals ($STATE): $COUNT — awaiting human approval, nothing applied"
     else
       echo "[$STAMP] no $STATE candidates this cycle"
     fi

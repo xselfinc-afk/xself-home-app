@@ -15,6 +15,7 @@
     "test:supplier-favorites": "tsx src/__tests__/supplierFavoriteManagement.test.ts",
     "test:supplier-favorite-sync": "tsx src/__tests__/supplierFavoriteSync.test.ts",
     "test:supplier-portal-mapping": "tsx src/__tests__/supplierPortalMapping.test.ts",
+    "test:inventory-scan-safety": "tsx src/__tests__/inventoryScanNeverPublishes.test.ts",
     "test:supplier-manual-identity": "tsx src/__tests__/supplierManualIdentity.test.ts",
     "test:supplier-favorite-manual": "tsx src/__tests__/supplierFavoriteManualResolution.test.ts",
     "test:supplier-favorite-cleanup": "tsx src/__tests__/supplierFavoriteCleanupExecutor.test.ts",

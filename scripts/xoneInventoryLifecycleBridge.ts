@@ -1070,26 +1070,17 @@ export async function runTargetedRecheck(
     product.total_available_qty == null ? null : Number(product.total_available_qty),
   );
 
-  let relistAttempted = false;
-  let relistExitCode: number | null = null;
-  if (product.published === false && transition.next.state === 'eligible_for_relist') {
-    relistAttempted = true;
-    const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
-    const apply = spawnSync('/opt/homebrew/bin/node', [
-      runtime,
-      path.join(REPO, 'scripts', 'applyInventoryLifecycleActions.ts'),
-      '--action=relist',
-      `--only=${product.supplier_product_id}`,
-      '--approve',
-      `--approved-by=${request.operator.trim()}`,
-    ], {
-      cwd: REPO,
-      encoding: 'utf8',
-      timeout: 120_000,
-      env: { ...process.env },
-    });
-    relistExitCode = apply.status;
-  }
+  // 复核只刷新证据并推进状态，**不再**顺手把商品重新上架。
+  //
+  // 这里原本在判定为 eligible_for_relist 时直接调用发布执行器，并用发起复核的操作者名字
+  // 充当批准人。操作者确实是真人，但他批准的是「重新检测这一件」，不是「把它重新上架」——
+  // 那是拿一次点击的授权去做另一件事。恢复上架现在与下架同一条规则：必须是明确的批准动作。
+  //
+  // 复核结果照常体现在 workflow state 上，该 SKU 因此进入工作队列的「建议恢复」等待批准。
+  const relistAttempted = false;
+  const relistExitCode: number | null = null;
+  const relistProposed = product.published === false
+    && transition.next.state === 'eligible_for_relist';
 
   const readbackResult = await client.from('standardized_products')
     .select('supplier_product_id,published,inventory_status,total_available_qty')
@@ -1138,6 +1129,8 @@ export async function runTargetedRecheck(
     restore_execution_enabled: true,
     relist_attempted: relistAttempted,
     relist_exit_code: relistExitCode,
+    // 复核只提建议：为 true 表示该 SKU 现在进入「建议恢复」，等待人工批准后才会上架。
+    relist_proposed: relistProposed,
     run_id: runId,
     identity: identityEnvelope(identity),
     accounts: sourceFacts,

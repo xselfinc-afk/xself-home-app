@@ -132,18 +132,29 @@ function main(): void {
     const scanner = read(SCANNER);
     assert.match(scanner, /const LIVE = has\('--live'\)/);
     assert.match(scanner, /const DRY = !LIVE/);
-    // Publication changes go only through the separate executor, and only for eligible SKUs.
-    assert.match(runner, /applyInventoryLifecycleActions\.ts --action="\$ACTION" --only="\$SKUS"/);
+    // 调度器只扫描、只提建议。它曾经在这里直接调用发布执行器并硬编码批准参数，
+    // 等于替用户签字 —— 现在整段已移除。
+    // 断言只看代码：注释里保留了这段历史说明，不应被当成实际调用。
+    const runnerCode = runner.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    assert.ok(!/applyInventoryLifecycleActions/.test(runnerCode),
+      'the scheduler must never invoke the publication executor');
+    assert.ok(!/--approve\b/.test(runnerCode), 'the scheduler must never forge approval');
+    assert.ok(!/approved-by/.test(runnerCode), 'the scheduler must never name itself the approver');
     assert.ok(!/--only=all|--all\b/.test(runner), 'the scheduler must never use an "all" mode');
   });
 
-  it('9b. lifecycle actions run ONLY after a successful scan', () => {
+  it('9b. 候选统计只在扫描成功后进行，且仍然不执行任何发布变更', () => {
     const runner = read(RUNNER);
-    // Acting on a failed or aborted scan would decide publication on partial evidence.
+    // 失败或中止的扫描只有部分证据，连"建议"都不该基于它统计。
     assert.match(runner, /if \[ "\$code" -eq 0 \]; then/);
-    const guarded = runner.slice(runner.indexOf('if [ "$code" -eq 0 ]; then'));
-    assert.ok(guarded.includes('applyInventoryLifecycleActions.ts'),
-      'the executor must sit inside the success guard');
+    const runnerCode = runner.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    const guarded = runnerCode.slice(runnerCode.indexOf('if [ "$code" -eq 0 ]; then'));
+    assert.ok(/eligible_for_delist|eligible_for_relist/.test(guarded),
+      '成功后应统计候选，供人工审批');
+    assert.ok(/awaiting human approval/.test(guarded),
+      '必须明确声明在等待人工批准');
+    assert.ok(!guarded.includes('applyInventoryLifecycleActions.ts'),
+      '成功守卫内同样不得执行发布变更');
   });
 
   it('10. overlapping runs are prevented by a self-healing lock', () => {
