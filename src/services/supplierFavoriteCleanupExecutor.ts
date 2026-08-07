@@ -236,6 +236,52 @@ export async function resolveExtraMappings(
   return { usable, exceptions, probed };
 }
 
+
+// ── 续跑判定 ─────────────────────────────────────────────────────────────────
+
+/**
+ * 一条 checkpoint 记录是否真的还需要重跑。
+ *
+ * 只看 status 是不够的：一条 send_failed 可能是对「早已取消收藏的商品」重复发请求造成的
+ * 空操作失败 —— 目标其实已经达成，重跑没有意义。因此必须拿当前事实核对：
+ *
+ *   1. status 属于可重试失败（send_failed / verification_failed / timeout / global_stop）
+ *   2. 且该 SKU 当前仍在对应账号的 Favorites 里
+ *   3. 且该 SKU 仍不属于 TARGET（published=true 的商品永远不清理）
+ *
+ * 三条同时成立才算待续跑。异常（exception，即身份无法唯一确定）永远不算 —— 那要人工处理，
+ * 重跑解决不了。
+ */
+export type ResumableVerdict =
+  | 'resumable'
+  | 'not_retryable'        // 状态本身不可重试（已验证取消 / 异常 / 跳过 / 计划中）
+  | 'no_longer_favourited' // 目标已达成：当前已不在收藏里
+  | 'now_published';       // 已上线，属于 TARGET，绝不清理
+
+const RETRYABLE_STATUSES: readonly CleanupItemStatus[] = [
+  'send_failed', 'verification_failed', 'timeout', 'global_stop',
+];
+
+export function resumableVerdict(
+  item: { account: SyncAccount; supplier_product_id: string; status: CleanupItemStatus },
+  currentFavorites: Readonly<Record<SyncAccount, ReadonlySet<string>>>,
+  target: ReadonlySet<string>,
+): ResumableVerdict {
+  if (!RETRYABLE_STATUSES.includes(item.status)) return 'not_retryable';
+  if (target.has(item.supplier_product_id)) return 'now_published';
+  if (!currentFavorites[item.account]?.has(item.supplier_product_id)) return 'no_longer_favourited';
+  return 'resumable';
+}
+
+/** 真正还需要重跑的条目数。历史 checkpoint 不因此被改写——这只是派生判断。 */
+export function countResumable(
+  items: readonly { account: SyncAccount; supplier_product_id: string; status: CleanupItemStatus }[],
+  currentFavorites: Readonly<Record<SyncAccount, ReadonlySet<string>>>,
+  target: ReadonlySet<string>,
+): number {
+  return items.filter((i) => resumableVerdict(i, currentFavorites, target) === 'resumable').length;
+}
+
 // ── 3. Execution ─────────────────────────────────────────────────────────────
 
 export const REMOVAL_ENABLED_ENV = 'SUPPLIER_FAVORITE_REMOVAL_ENABLED';

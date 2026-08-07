@@ -29,6 +29,8 @@ import {
   extraSkuSet,
   planFavoriteCleanup,
   resolveExtraMappings,
+  countResumable,
+  withDeadline,
   type CleanupProgressEvent,
   type CleanupCheckpoint,
 } from '../src/services/supplierFavoriteCleanupExecutor';
@@ -399,11 +401,25 @@ async function main(): Promise<void> {
     status: item.status,
   }));
 
-  // 真正尚未处理的数量 = 本轮结束后仍处于可重试终态的条目。
-  // verified_removed / skipped_checkpoint / exception 都不算待续跑：异常要人工处理，不是重跑能解决的。
-  const resumableAfterRun = result.items.filter(
-    (i) => i.status === 'send_failed' || i.status === 'verification_failed' || i.status === 'global_stop',
-  ).length;
+  // 真正尚未处理的数量。只看 status 不够 —— 一条 send_failed 可能是对早已取消收藏的商品
+  // 重复发请求造成的空操作失败，目标其实已达成。因此拿「当前」事实核对：仍在收藏里、且仍
+  // 不属于 TARGET，才算待续跑。历史 checkpoint 不因此改写，这只是派生判断。
+  //
+  // 这里刻意重新做一次实时回读，而不是复用执行开始时的 memberships 快照：跑完之后收藏已经
+  // 变了，用旧快照会把已经达成的条目继续算成待续跑。
+  const currentFavorites: Record<SyncAccount, ReadonlySet<string>> = { pickup: new Set(), dropship: new Set() };
+  for (const account of ['pickup', 'dropship'] as const) {
+    try {
+      currentFavorites[account] = await withDeadline(readFavorites(account), VERIFY_TIMEOUT_MS);
+    } catch {
+      // 回读不到就保守处理：宁可把条目留在待续跑里，也不要谎称目标已达成。
+      currentFavorites[account] = new Set(
+        result.items.filter((i) => i.account === account).map((i) => i.supplier_product_id),
+      );
+    }
+  }
+  const targetSet = new Set(target);
+  const resumableAfterRun = countResumable(result.items, currentFavorites, targetSet);
 
   const envelope = {
     schema_version: '1.0',

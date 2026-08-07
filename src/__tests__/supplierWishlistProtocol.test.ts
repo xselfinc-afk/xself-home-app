@@ -20,6 +20,8 @@ import {
   executeCleanup,
   planFavoriteCleanup,
   resolveExtraMappings,
+  resumableVerdict,
+  countResumable,
   type ExecuteDeps,
 } from '../services/supplierFavoriteCleanupExecutor';
 import type { ProductIdMapping } from '../services/supplierFavoriteProductId';
@@ -400,21 +402,102 @@ async function main(): Promise<void> {
 
   it('22. resumable 反映执行之后的状态，不是执行之前的 checkpoint', () => {
     const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
-    const after = cli.slice(cli.indexOf('const resumableAfterRun'), cli.indexOf('const envelope = {'));
+    const after = cli.slice(cli.indexOf('const currentFavorites'), cli.indexOf('const envelope = {'));
     // 必须从本轮的最终条目状态算，而不是 priorCheckpoint。
-    assert.ok(after.includes('result.items.filter'), 'resumable 必须由本轮最终状态算出');
+    assert.ok(after.includes('countResumable(result.items'), 'resumable 必须由本轮最终条目算出');
     assert.equal(/priorCheckpoint/.test(after), false, '不得用执行前的 checkpoint 判定待续跑');
-    // 只有可重试的终态才算待续跑；异常要人工处理，已验证/已跳过都不算。
-    for (const status of ['send_failed', 'verification_failed', 'global_stop']) {
-      assert.ok(after.includes(`'${status}'`), `${status} 应计入待续跑`);
-    }
-    for (const status of ['verified_removed', 'skipped_checkpoint', 'exception']) {
-      assert.equal(after.includes(`'${status}'`), false, `${status} 不得计入待续跑`);
-    }
     // 信封必须用 after 版本。
     const envelope = cli.slice(cli.indexOf('const envelope = {'));
     assert.ok(envelope.includes('resumable: resumableAfterRun > 0'));
     assert.ok(envelope.includes('resumable_count: resumableAfterRun'));
+    // 可重试状态的白名单集中在 executor 里，CLI 不再各写一份。
+    const exec = fs.readFileSync('src/services/supplierFavoriteCleanupExecutor.ts', 'utf8');
+    const list = exec.slice(exec.indexOf('const RETRYABLE_STATUSES'), exec.indexOf('export function resumableVerdict'));
+    for (const status of ['send_failed', 'verification_failed', 'timeout', 'global_stop']) {
+      assert.ok(list.includes(`'${status}'`), `${status} 应计入待续跑`);
+    }
+    for (const status of ['verified_removed', 'skipped_checkpoint', 'exception']) {
+      assert.equal(list.includes(`'${status}'`), false, `${status} 不得计入待续跑`);
+    }
+  });
+
+  it('23. 续跑判定必须核对当前收藏，而不是只看 checkpoint 状态', () => {
+    const target = new Set(['PUB-A']);
+    const favorites = {
+      pickup: new Set(['STILL-P', 'PUB-A']),
+      dropship: new Set(['STILL-D']),
+    } as Record<'pickup' | 'dropship', ReadonlySet<string>>;
+    const v = (account: 'pickup' | 'dropship', sku: string, status: any) =>
+      resumableVerdict({ account, supplier_product_id: sku, status }, favorites, target);
+
+    // 1. send_failed + 仍在收藏 + 非 TARGET → 待续跑
+    assert.equal(v('pickup', 'STILL-P', 'send_failed'), 'resumable');
+    // 2. send_failed + 已不在收藏 → 目标已达成
+    assert.equal(v('pickup', 'GONE-P', 'send_failed'), 'no_longer_favourited');
+    // 3. verification_failed + 仍在收藏 → 待续跑
+    assert.equal(v('dropship', 'STILL-D', 'verification_failed'), 'resumable');
+    // 4. timeout + 已不在收藏 → 不待续跑
+    assert.equal(v('dropship', 'GONE-D', 'timeout'), 'no_longer_favourited');
+    // 5. verified_removed 永远不待续跑
+    assert.equal(v('pickup', 'STILL-P', 'verified_removed'), 'not_retryable');
+    // 6. 身份异常要人工处理，重跑解决不了
+    assert.equal(v('pickup', 'STILL-P', 'exception'), 'not_retryable');
+    assert.equal(v('pickup', 'STILL-P', 'skipped_checkpoint'), 'not_retryable');
+    // 7. 已进入 TARGET 的商品绝不清理，即便还在收藏里
+    assert.equal(v('pickup', 'PUB-A', 'send_failed'), 'now_published');
+    // global_stop 属于可重试
+    assert.equal(v('dropship', 'STILL-D', 'global_stop'), 'resumable');
+    // 账号不串：pickup 的收藏不能替 dropship 作证
+    assert.equal(v('dropship', 'STILL-P', 'send_failed'), 'no_longer_favourited');
+  });
+
+  it('24. 生产现况：B091119898 / W640P483728 都不再算待续跑，count = 0', () => {
+    // 当前真实事实：两者都已不在各自账号的 Favorites 里（本轮只读验收确认过）。
+    const target = new Set<string>();
+    const favorites = {
+      pickup: new Set<string>(),      // W640P483728 已不在
+      dropship: new Set<string>(),    // B091119898 已不在
+    } as Record<'pickup' | 'dropship', ReadonlySet<string>>;
+    const items = [
+      { account: 'dropship' as const, supplier_product_id: 'B091119898', status: 'send_failed' as const },
+      { account: 'pickup' as const, supplier_product_id: 'W640P483728', status: 'send_failed' as const },
+      // 38 条身份异常同样不算待续跑。
+      ...Array.from({ length: 38 }, (_, i) => ({
+        account: 'dropship' as const, supplier_product_id: `EXC-${i}`, status: 'exception' as const,
+      })),
+      // 1796 条已验证取消同样不算。
+      ...Array.from({ length: 5 }, (_, i) => ({
+        account: 'dropship' as const, supplier_product_id: `OK-${i}`, status: 'verified_removed' as const,
+      })),
+    ];
+    assert.equal(resumableVerdict(items[0], favorites, target), 'no_longer_favourited');
+    assert.equal(resumableVerdict(items[1], favorites, target), 'no_longer_favourited');
+    assert.equal(countResumable(items, favorites, target), 0, '当前生产事实下待续跑必须为 0');
+  });
+
+  it('25. 异常与待续跑是两件事，不得混为一谈', () => {
+    const target = new Set<string>();
+    const favorites = {
+      pickup: new Set(['E1', 'E2']),
+      dropship: new Set(['E3']),
+    } as Record<'pickup' | 'dropship', ReadonlySet<string>>;
+    // 全是异常，且都还在收藏里 —— 依然不算待续跑。
+    const items = [
+      { account: 'pickup' as const, supplier_product_id: 'E1', status: 'exception' as const },
+      { account: 'pickup' as const, supplier_product_id: 'E2', status: 'exception' as const },
+      { account: 'dropship' as const, supplier_product_id: 'E3', status: 'exception' as const },
+    ];
+    assert.equal(countResumable(items, favorites, target), 0);
+  });
+
+  it('26. CLI 用实时回读而不是执行前快照来判定续跑', () => {
+    const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
+    const block = cli.slice(cli.indexOf('const currentFavorites'), cli.indexOf('const envelope = {'));
+    assert.ok(block.includes('readFavorites('), '必须重新实时回读当前收藏');
+    assert.ok(block.includes('countResumable('), '必须走统一的续跑判定');
+    // 回读失败时保守：宁可留在待续跑，也不要谎称已达成。
+    assert.ok(block.includes('catch'), '回读失败必须有兜底');
+    assert.ok(/resumable: resumableAfterRun > 0/.test(cli));
   });
 
   it('成功判定不再有 HTTP 状态回退', () => {
