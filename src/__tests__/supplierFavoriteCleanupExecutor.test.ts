@@ -48,7 +48,7 @@ function planWith(pickupExtra: string[], dropshipExtra: string[]): { plan: Clean
 
 function baseDeps(over: Partial<ExecuteDeps> = {}): ExecuteDeps {
   return {
-    fetcherFor: () => async () => ({ status: 200, json: async () => ({ code: 200 }) }),
+    fetcherFor: () => async () => ({ status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }),
     readFavorites: async () => new Set<string>(),   // everything gone → verified
     sessionPresent: () => true,
     saveCheckpoint: () => {},
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     const result = await executeCleanup(plan, mappings, baseDeps({
       fetcherFor: (account) => async (_url, init) => {
         sends.push({ account, body: JSON.parse(init.body) });
-        return { status: 200, json: async () => ({ code: 200 }) };
+        return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) };
       },
     }), opts());
 
@@ -202,7 +202,7 @@ async function main(): Promise<void> {
         const id = JSON.parse(init.body).product_ids;
         // P-2 的 send 返回业务失败码，其余成功。
         const failId = mappings.get('P-2')!.product_id;
-        return { status: 200, json: async () => ({ code: id === failId ? 500 : 200 }) };
+        return { status: 200, json: async () => (id === failId ? { code: 500 } : { code: 200, data: { totalNum: 1 } }) };
       },
     }), opts());
     assert.equal(result.send_failed, 1);
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
     // 续跑：喂回 checkpoint，已完成的 P-1/P-2 应被跳过，不再发送。
     let sends = 0;
     const resumed = await executeCleanup(plan, mappings, baseDeps({
-      fetcherFor: () => async () => { sends += 1; return { status: 200, json: async () => ({ code: 200 }) }; },
+      fetcherFor: () => async () => { sends += 1; return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }; },
     }), opts(), cp);
     assert.equal(sends, 0, '已 verified_removed 的 SKU 不得重复发送');
     assert.equal(resumed.skipped, 2);
@@ -257,7 +257,7 @@ async function main(): Promise<void> {
   await itAsync('16. 默认门禁关闭 → 0 个真实 XHR', async () => {
     const { plan, mappings } = planWith(['P-1', 'P-2'], ['D-1']);
     let sends = 0;
-    const fetcherFor = () => async () => { sends += 1; return { status: 200, json: async () => ({ code: 200 }) }; };
+    const fetcherFor = () => async () => { sends += 1; return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }; };
 
     // env 关：即便 --execute 也不发。
     const envOff = await executeCleanup(plan, mappings, baseDeps({ env: OFF, fetcherFor }), opts({ execute: true }));

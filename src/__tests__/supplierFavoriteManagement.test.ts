@@ -216,7 +216,7 @@ async function main(): Promise<void> {
 
   await itAsync('12. with the gate closed, no request is EVER sent', async () => {
     let calls = 0;
-    const fetcher = async () => { calls++; return { status: 200, json: async () => ({ code: 200 }) }; };
+    const fetcher = async () => { calls++; return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }; };
     const perfect = {
       supplier_product_id: 'N999P100001', product_id: 667968,
       verified_sku_for_product_id: 'N999P100001', approval, session_present: true,
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
 
     // Both gates open → exactly one request, to the confirmed endpoint.
     const sent: string[] = [];
-    const recording = async (url: string) => { sent.push(url); return { status: 200, json: async () => ({ code: 200 }) }; };
+    const recording = async (url: string) => { sent.push(url); return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) }; };
     const done = await executeRemoval(perfect, recording, ON);
     assert.equal(done.attempted, true);
     assert.equal(done.succeeded, true);

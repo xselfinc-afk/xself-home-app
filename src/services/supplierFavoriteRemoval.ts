@@ -201,16 +201,29 @@ export async function executeRemoval(
     const response = await fetcher(REMOVAL_ENDPOINT, {
       method: 'POST',
       body: JSON.stringify(preview.payload),
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
     });
-    const body = (await response.json()) as { code?: unknown } | null;
-    const code = Number((body as { code?: unknown })?.code ?? response.status);
+    const body = (await response.json()) as { code?: unknown; data?: unknown } | null;
+
+    // Same rule as the sync path: HTTP 200 is not success. Only a real business code 200 carrying
+    // data.totalNum means the wishlist actually changed.
+    const businessCode = Number((body as { code?: unknown } | null)?.code);
+    const data = (body as { data?: { totalNum?: unknown } } | null)?.data;
+    const totalNum = data ? Number((data as { totalNum?: unknown }).totalNum) : NaN;
+    const httpOk = response.status >= 200 && response.status < 300;
+    const succeeded = httpOk && businessCode === 200 && !!data && Number.isFinite(totalNum);
+
     return {
       attempted: true,
-      succeeded: code === 200,
+      succeeded,
       preview,
-      response_code: Number.isFinite(code) ? code : null,
-      error: code === 200 ? null : `supplier returned code ${code}`,
+      response_code: Number.isFinite(businessCode) ? businessCode : null,
+      error: succeeded
+        ? null
+        : !httpOk ? `http ${response.status}`
+        : !Number.isFinite(businessCode) ? 'no business code in response (likely device/session not bound)'
+        : businessCode !== 200 ? `supplier returned code ${businessCode}`
+        : 'response has code 200 but no data.totalNum',
     };
   } catch (error) {
     return {
@@ -314,16 +327,31 @@ export async function executeSyncOperation(
     const response = await fetcher(preview.endpoint, {
       method: 'POST',
       body: JSON.stringify(preview.payload),
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
     });
-    const body = (await response.json()) as { code?: unknown } | null;
-    const code = Number((body as { code?: unknown })?.code ?? response.status);
+    const body = (await response.json()) as { code?: unknown; data?: unknown } | null;
+
+    // A HTTP 200 is not success. The site's own client only treats a wishlist mutation as done when
+    // the BUSINESS code is 200 AND the response carries data.totalNum (the new wishlist count). Our
+    // earlier fallback from the business code to the transport status turned a device-unbound
+    // no-op 200 into a false success — never fall back to the HTTP status again.
+    const businessCode = Number((body as { code?: unknown } | null)?.code);
+    const data = (body as { data?: { totalNum?: unknown } } | null)?.data;
+    const totalNum = data ? Number((data as { totalNum?: unknown }).totalNum) : NaN;
+    const httpOk = response.status >= 200 && response.status < 300;
+    const succeeded = httpOk && businessCode === 200 && !!data && Number.isFinite(totalNum);
+
     return {
       attempted: true,
-      succeeded: code === 200,
+      succeeded,
       preview,
-      response_code: Number.isFinite(code) ? code : null,
-      error: code === 200 ? null : `supplier returned code ${code}`,
+      response_code: Number.isFinite(businessCode) ? businessCode : null,
+      error: succeeded
+        ? null
+        : !httpOk ? `http ${response.status}`
+        : !Number.isFinite(businessCode) ? 'no business code in response (likely device/session not bound)'
+        : businessCode !== 200 ? `supplier returned code ${businessCode}`
+        : 'response has code 200 but no data.totalNum',
     };
   } catch (error) {
     return { attempted: true, succeeded: false, preview, response_code: null, error: error instanceof Error ? error.message : 'sync_request_failed' };

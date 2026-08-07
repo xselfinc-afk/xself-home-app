@@ -50,6 +50,20 @@ const JSON_OUT = has('json');
 const BATCH_SIZE = Math.max(1, Math.min(100, parseInt(val('batch') ?? '50', 10) || 50));
 const CHECKPOINT_PATH = path.join(process.cwd(), 'reports', 'favorite-cleanup', 'checkpoint.json');
 
+// Single-item targeting. When --sku is given, ONLY that SKU on ONE account is processed — no
+// scanning, no second item. --account bounds which side's session is used and verified.
+const ONLY_SKU = (val('sku') ?? '').trim() || null;
+const ONLY_ACCOUNT: 'pickup' | 'dropship' | null = (() => {
+  const raw = (val('account') ?? '').trim();
+  if (!raw) return null;
+  if (raw !== 'pickup' && raw !== 'dropship') {
+    console.error(`[favCleanup] --account 必须是 pickup 或 dropship（收到 ${raw}）`);
+    process.exit(1);
+  }
+  return raw;
+})();
+if (ONLY_SKU && !ONLY_ACCOUNT) { console.error('[favCleanup] --sku 必须配合 --account 使用'); process.exit(1); }
+
 const log = (line: string) => { if (!JSON_OUT) console.log(line); };
 
 // Rate guard — same posture as the portal resolver.
@@ -102,21 +116,61 @@ async function main(): Promise<void> {
     .map((r) => r.supplier_product_id);
   const favorites = { pickup: savedOf('pickup'), dropship: savedOf('dropship') };
 
-  const extraSkus = extraSkuSet(target, favorites);
+  const allExtraSkus = extraSkuSet(target, favorites);
+
+  // Single-item mode: narrow to exactly one SKU on one account, but keep every gate. The SKU must
+  // still be genuinely extra (it is, only if it survives extraSkuSet) and still be favourited on
+  // the account we were told to act on — otherwise there is nothing legitimate to do.
+  if (ONLY_SKU) {
+    if (!allExtraSkus.includes(ONLY_SKU)) {
+      console.error(`[favCleanup] ${ONLY_SKU} 不属于 extra（可能是 published=true 或不在收藏中），拒绝处理`);
+      process.exit(1);
+    }
+    if (!favorites[ONLY_ACCOUNT!].includes(ONLY_SKU)) {
+      console.error(`[favCleanup] ${ONLY_SKU} 不在 ${ONLY_ACCOUNT} 收藏中，拒绝处理`);
+      process.exit(1);
+    }
+    // Blank the other account entirely so no plan, no mapping probe and no fetcher can touch it.
+    const other: SyncAccount = ONLY_ACCOUNT === 'pickup' ? 'dropship' : 'pickup';
+    favorites[other] = [];
+    favorites[ONLY_ACCOUNT!] = [ONLY_SKU];
+  }
+  const extraSkus = ONLY_SKU ? [ONLY_SKU] : allExtraSkus;
 
   // ── Resolve mappings for the EXTRA set only ────────────────────────────────
   const storedMappings = await readAll<StoredPortalMapping>('supplier_portal_product_mappings',
     'supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at');
+
+  // Load one account's website session: full cookie header + the gmd_device_id needed for the
+  // x-gmd-device-id header. Pickup and Dropship read their OWN files — device ids never cross.
+  const sessionFileFor = (account: SyncAccount): string => account === 'pickup'
+    ? (process.env.GIGA_PICKUP_SESSION_FILE ?? 'scripts/.giga-session-pickup.json')
+    : (process.env.GIGA_DROPSHIP_SESSION_FILE ?? 'scripts/.giga-session-dropship.json');
+
+  const loadAccountSession = (account: SyncAccount): { cookieHeader: string; deviceId: string | null } => {
+    const state = JSON.parse(fs.readFileSync(sessionFileFor(account), 'utf8')) as { cookies?: Array<{ name: string; value: string }> };
+    const cookies = state.cookies ?? [];
+    return {
+      cookieHeader: cookies.map((c) => `${c.name}=${c.value}`).join('; '),
+      // The site's own HTTP client injects x-gmd-device-id from this cookie; without it the backend
+      // returns 200 but no-ops the wishlist mutation. Same extraction the proven warehouse XHR uses.
+      deviceId: cookies.find((c) => c.name === 'gmd_device_id')?.value ?? null,
+    };
+  };
 
   // Portal resolution reuses the existing XHR client. Loaded lazily so a dry run with everything
   // already mapped never even touches the portal module.
   let portalDeps: { session: unknown; search: (sku: string, s: unknown) => Promise<string[]>; base: (id: string, s: unknown) => Promise<{ data?: { product_info?: { sku?: string } } } | null> } | null = null;
   const now = () => new Date().toISOString();
   const portalResolve = async (sku: string): Promise<ProductIdMapping> => {
-    // A dry run never scrapes the portal (that would be ~2 calls × every unmapped extra SKU). It
-    // reports unmapped SKUs as "needs resolution" instead. Live probing belongs to execution.
-    if (!EXECUTE) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+    // A full dry run never scrapes the portal (that would be ~2 calls × every unmapped extra SKU);
+    // unmapped SKUs are reported as "needs resolution" instead. Single-item mode is the exception:
+    // two read-only calls, and resolving the identity is the whole point of the dry run there.
+    if (!EXECUTE && !ONLY_SKU) return { product_id: null, verified_sku: null, status: 'not_mapped' };
     if (!portalDeps) {
+      // In single-item mode the probe must run under the SAME account we will act on, so point the
+      // reader at that account's session file rather than the default one.
+      if (ONLY_ACCOUNT) process.env.GIGA_SESSION_FILE = sessionFileFor(ONLY_ACCOUNT);
       const mod = await import('./fetchGigaWarehouseInventoryFromXhr');
       portalDeps = { session: mod.loadSession(), search: mod.searchProductCandidates as never, base: mod.fetchBaseInfos as never };
     }
@@ -166,9 +220,22 @@ async function main(): Promise<void> {
   log(`  Pickup favorites    : ${favorites.pickup.length}  extra ${plan.removals.pickup.length + plan.exceptions.pickup.length}`);
   log(`  Dropship favorites  : ${favorites.dropship.length}  extra ${plan.removals.dropship.length + plan.exceptions.dropship.length}`);
   log(`  distinct extra      : ${extraSkus.length}`);
-  log(`  reused mappings     : ${resolved.usable.size} / stored ${storedMappings.length}`);
-  log(`  ${EXECUTE ? 'portal-probed' : 'needs resolution'}    : ${EXECUTE ? resolved.probed.length : unmapped}${EXECUTE ? '' : '（dry-run 不实际抓取门户）'}`);
+  log(`  usable mappings     : ${resolved.usable.size} / stored ${storedMappings.length}`);
+  const probesRan = EXECUTE || !!ONLY_SKU;   // single-item dry runs do probe (2 read-only calls)
+  log(`  ${probesRan ? 'portal-probed' : 'needs resolution'}    : ${probesRan ? resolved.probed.length : unmapped}${probesRan ? '' : '（dry-run 不抓取门户）'}`);
   log(`  executable removes  : ${totalRemovals}   distinct unmapped: ${unmapped}`);
+  if (ONLY_SKU) {
+    // Single-item mode reports exactly what the L4 run will act on, including whether the device
+    // binding header can actually be produced from that account's session.
+    const mapped = resolved.usable.get(ONLY_SKU);
+    let deviceOk = false;
+    try { deviceOk = loadAccountSession(ONLY_ACCOUNT!).deviceId !== null; } catch { deviceOk = false; }
+    log(`  ── 单件模式 ──`);
+    log(`  target SKU          : ${ONLY_SKU}`);
+    log(`  target account      : ${ONLY_ACCOUNT}`);
+    log(`  website product_id  : ${mapped?.product_id ?? '未解析'}  (portal_sku 反查: ${mapped?.verified_sku ?? 'n/a'})`);
+    log(`  x-gmd-device-id     : ${deviceOk ? '可从 session 解析 ✓' : '无法解析 ✗（会导致 200 假成功）'}`);
+  }
 
   // ── Execute (gated) ────────────────────────────────────────────────────────
   const runId = `favclean-${now()}`;
@@ -182,24 +249,29 @@ async function main(): Promise<void> {
 
   const fetcherFor = (account: SyncAccount): RemovalFetcher => async (targetUrl, init) => {
     // Real per-account website session send. Never reached in dry run.
-    const sessionFile = account === 'pickup'
-      ? (process.env.GIGA_PICKUP_SESSION_FILE ?? 'scripts/.giga-session.pickup.json')
-      : (process.env.GIGA_DROPSHIP_SESSION_FILE ?? 'scripts/.giga-session.dropship.json');
-    const state = JSON.parse(fs.readFileSync(sessionFile, 'utf8')) as { cookies?: Array<{ name: string; value: string }> };
-    const cookie = (state.cookies ?? []).map((c) => `${c.name}=${c.value}`).join('; ');
-    const res = await fetch(targetUrl, {
-      method: init.method,
-      body: init.body,
-      headers: {
-        ...init.headers,
-        cookie,
-        'user-agent': 'Mozilla/5.0',
-        'x-requested-with': 'XMLHttpRequest',
-        origin: 'https://www.gigab2b.com',
-        referer: endpointFor('remove'),
-      },
-    });
-    return { status: res.status, json: async () => { try { return JSON.parse(await res.text()); } catch { return { code: res.status }; } } };
+    const session = loadAccountSession(account);
+    const headers: Record<string, string> = {
+      ...init.headers,
+      cookie: session.cookieHeader,
+      accept: 'application/json, text/javascript, */*; q=0.01',
+      'content-type': 'application/json;charset=UTF-8',
+      'user-agent': 'Mozilla/5.0',
+      'x-requested-with': 'XMLHttpRequest',
+      'ori-status-in-response': 'code',
+      origin: 'https://www.gigab2b.com',
+      referer: 'https://www.gigab2b.com/index.php?route=account/wishlist',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+    };
+    // Device binding — the header that was missing when a 200 did nothing.
+    if (session.deviceId) headers['x-gmd-device-id'] = session.deviceId;
+
+    const res = await fetch(targetUrl, { method: init.method, body: init.body, headers });
+    const text = await res.text();
+    // Return the parsed body untouched (no code←status fallback); the caller decides success from
+    // the real business code + data.totalNum.
+    return { status: res.status, json: async () => { try { return JSON.parse(text); } catch { return null; } } };
   };
 
   const readFavorites = async (account: SyncAccount): Promise<Set<string>> => {
