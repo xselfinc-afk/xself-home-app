@@ -296,6 +296,60 @@ function appendAudit(entry: Record<string, unknown>): void {
  */
 const SUPPLIER_CRED_KEYS = ['SUPPLIER_CLIENT_ID', 'SUPPLIER_CLIENT_SECRET', 'SUPPLIER_API_BASE_URL'];
 
+/**
+ * 给子进程一条能找到 node 工具链的 PATH。
+ *
+ * 这是 2026-08-08 首次真实批量上架 3/3 失败的根因。既有的 runGigaAutoPublish 用裸
+ * `npx tsx <script>` 起每一个阶段脚本 —— 在终端里 PATH 含 nvm / homebrew 所以没问题；
+ * 而 XOne 是 GUI 启动的 .app，PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，`npx` 直接
+ * ENOENT。spawnSync 于是返回 status=null、stdout/stderr 全空，runner 只判 `status !== 0`，
+ * 报成 `normalize: script_exit_nonzero`。
+ *
+ * 修在这一层而不是 runner：runner 是 Golden Path，终端那条链靠它保底，一个字都不能动。
+ * 仓库里已有同样的先例 —— runAvailabilityScan.sh 也是显式 export PATH 解决的。
+ *
+ * 取值优先用当前进程自己的 node 所在目录（process.execPath），这样 nvm 换版本也不会失效，
+ * 再补上 homebrew 与系统标准目录。
+ */
+export function toolchainPath(execPath: string, currentPath: string | undefined): string {
+  const nodeBin = path.dirname(execPath);
+  const wanted = [nodeBin, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  const existing = (currentPath ?? '').split(':').filter(Boolean);
+  const seen = new Set<string>();
+  return [...wanted, ...existing].filter((dir) => {
+    if (!dir || seen.has(dir)) return false;
+    seen.add(dir);
+    return true;
+  }).join(':');
+}
+
+/**
+ * 起子进程之前先确认工具链真的可用。
+ *
+ * 上一次失败之所以代价大，是因为 runGigaAutoPublish 的 Stage 1 先把
+ * supplier_products.published 翻成 true，Stage 2 才因为找不到 npx 死掉 —— 留下三件
+ * 「批准位已翻、什么都没生成」的半成品。先探一次，探不到就根本不启动执行器。
+ */
+export function preflightToolchain(env: NodeJS.ProcessEnv): { ok: boolean; reason: string | null } {
+  const probe = spawnSync('npx', ['--version'], { env, encoding: 'utf8', timeout: 60_000 });
+  if (probe.status === 0) return { ok: true, reason: null };
+  return {
+    ok: false,
+    reason: probe.status === null
+      ? '运行环境里找不到 node 工具链（npx），上架流水线无法启动'
+      : `node 工具链自检失败（npx --version 退出码 ${probe.status}）`,
+  };
+}
+
+function childEnv(extraEnv: Record<string, string>, options: { letScriptChooseSupplierAccount?: boolean }): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
+  env.PATH = toolchainPath(process.execPath, process.env.PATH);
+  if (options.letScriptChooseSupplierAccount) {
+    for (const key of SUPPLIER_CRED_KEYS) delete env[key];
+  }
+  return env;
+}
+
 function runScript(
   relative: string,
   args: string[],
@@ -304,12 +358,8 @@ function runScript(
   options: { letScriptChooseSupplierAccount?: boolean } = {},
 ) {
   const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
-  const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
-  if (options.letScriptChooseSupplierAccount) {
-    for (const key of SUPPLIER_CRED_KEYS) delete env[key];
-  }
   return spawnSync('/opt/homebrew/bin/node', [runtime, path.join(REPO, relative), ...args], {
-    cwd: REPO, encoding: 'utf8', timeout: timeoutMs, env,
+    cwd: REPO, encoding: 'utf8', timeout: timeoutMs, env: childEnv(extraEnv, options),
   });
 }
 
@@ -714,11 +764,52 @@ function readCachedPreview(): Record<string, unknown> {
  * 不可能是两套名单。runGigaAutoPublish 只吃 plan.proposed_batch，且拒绝非 SAFE 桶，所以
  * blocked 商品天然被排除。CLI 原样调用。
  */
+/** 执行器的阶段名 → 运营看得懂的失败原因。技术细节留在报告里。 */
+const STAGE_FAILURE_LABELS: Record<string, string> = {
+  guardrail: '安全门拦截：计划里含有不允许自动上架的商品',
+  publish: '发布批准位写入失败',
+  normalize: '商品资料整理阶段失败',
+  title: '标题生成阶段失败',
+  pricing: '定价阶段失败',
+  mirror: '图片转存阶段失败',
+  blurhash: '图片占位图生成阶段失败',
+  inventory: '库存阶段失败',
+  reviews: '评价初始化阶段失败',
+};
+
+/**
+ * 从执行器自己的报告里读出「死在第几阶段、为什么」。
+ *
+ * 之前只会说一句「上架流水线未完成」，用户没法判断该做什么。报告里其实一直有
+ * reached_stage 与 stage_failures，只是没人读。
+ */
+export function describeApplyFailure(report: Record<string, any> | null): { stage: string | null; reason: string | null } {
+  if (!report) return { stage: null, reason: null };
+  const failures = (report.stage_failures ?? {}) as Record<string, string>;
+  const stage = Object.keys(failures)[0] ?? (typeof report.reached_stage === 'string' ? report.reached_stage : null);
+  if (!stage) return { stage: null, reason: null };
+  const label = STAGE_FAILURE_LABELS[stage] ?? `${stage} 阶段失败`;
+  const detail = failures[stage];
+  // script_exit_nonzero 且没有任何输出，几乎总是子进程没起来（找不到 node 工具链）。
+  if (detail === 'script_exit_nonzero') {
+    const log = Array.isArray(report.log) ? report.log.join('\n') : '';
+    if (/exit=null[\s\S]*--- stdout ---\s*\n\s*--- stderr ---\s*$/m.test(log) || /exit=null/.test(log)) {
+      return { stage, reason: `${label}：脚本没有启动，通常是运行环境缺少 node 工具链` };
+    }
+  }
+  return { stage, reason: detail ? `${label}（${detail}）` : label };
+}
+
 async function runBatchPublish(
   request: OnboardingRequest,
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   if (!isHumanApprover(request.approved_by)) return failure('APPROVER_MISSING', '批量上架必须记录批准人');
+
+  // 先确认工具链可用，再谈执行。执行器的 Stage 1 会先翻发布批准位，如果 Stage 2 才发现
+  // 起不了进程，就会留下一批「已批准、什么都没生成」的半成品 —— 2026-08-08 那次就是这样。
+  const preflight = preflightToolchain(childEnv({}, {}));
+  if (!preflight.ok) return failure('TOOLCHAIN_UNAVAILABLE', `无法开始批量上架：${preflight.reason}`);
 
   let planJson: Record<string, any>;
   try { planJson = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); }
@@ -739,6 +830,10 @@ async function runBatchPublish(
     1_800_000,
   );
   const after = await readPublishState(client, readySkus);
+  // 死在哪一阶段、为什么 —— 执行器自己的报告里有，读出来给人看。
+  let applyReport: Record<string, any> | null = null;
+  try { applyReport = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, 'latest-apply.json'), 'utf8')); } catch { /* 没有报告就退回通用文案 */ }
+  const applyFailure = describeApplyFailure(applyReport);
 
   const results = readySkus.map((sku) => {
     const wasPublished = before.published.get(sku) === true;
@@ -752,7 +847,7 @@ async function runBatchPublish(
         reason: wasPublished ? '该商品此前已发布，但仍未进入 App 可售视图' : '已发布，但尚未满足 App 可见条件（资料、库存或价格仍在生成中）',
       };
     }
-    return { sku, outcome: 'pipeline_failed', reason: '上架流水线未完成，商品未发布' };
+    return { sku, outcome: 'pipeline_failed', reason: applyFailure.reason ?? '上架流水线未完成，商品未发布' };
   });
 
   // 验证成功的才释放系统保护；失败的继续保护。用户手工裁决永不触碰。
@@ -770,12 +865,15 @@ async function runBatchPublish(
   appendAudit({
     event: 'batch_publish', approved_by: request.approved_by, exit_code: run.status,
     requested: readySkus.length, ...counts,
+    failed_stage: applyFailure.stage, failure_reason: applyFailure.reason,
   });
   return envelope('onboarding-batch-publish', {
     production_write_attempted: true,
     approved_by: request.approved_by,
     requested: readySkus.length,
     exit_code: run.status,
+    failed_stage: applyFailure.stage,
+    failure_reason: applyFailure.reason,
     counts,
     results,
     protection_released: protectionReleased,

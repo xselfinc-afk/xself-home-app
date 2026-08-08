@@ -1,0 +1,35 @@
+{
+  "note": "APPLY run. No rollback in v1 — see reached_stage / stage_failures.",
+  "plan_file": "reports/giga-auto-publish/xone-onboarding-plan.json",
+  "reached_stage": "normalize",
+  "requested": {
+    "skus": 3,
+    "cards": 1
+  },
+  "results": {
+    "published": 3,
+    "normalized": 0,
+    "titled": 0,
+    "priced": 0,
+    "mirrored": 0,
+    "blurhashed": 0,
+    "inventory_in_stock": 0,
+    "reviews_added": 0
+  },
+  "stage_failures": {
+    "normalize": "script_exit_nonzero"
+  },
+  "catalog": {
+    "sellable_before": 312,
+    "sellable_after": 312,
+    "reviews_before": 2301,
+    "reviews_after": 2301,
+    "std_before": 463,
+    "std_after": 463
+  },
+  "log": [
+    "### publish\nupdated=3 now_published=3/3",
+    "### scripts/normalizeProducts.ts\nexit=null\n--- stdout ---\n\n--- stderr ---\n",
+    "### STOPPED at normalize\nnormalize:script_exit_nonzero"
+  ]
+}

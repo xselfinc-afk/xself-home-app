@@ -475,6 +475,70 @@ function main(): void {
     assert.match(rows.find((r: any) => r.supplier_product_id === 'B1').blocked_reason, /无库存/);
   });
 
+  it('故障 1. GUI 最小 PATH 起不了工具链；注入后可用', () => {
+    const { toolchainPath, preflightToolchain } = require('../../scripts/xoneProductOnboardingBridge');
+    // XOne 是 GUI 启动的 .app，PATH 只有这四个目录 —— npx（在 nvm 下）根本看不到。
+    const guiPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+    assert.equal(preflightToolchain({ ...process.env, PATH: guiPath }).ok, false, 'GUI 最小 PATH 必须探测失败');
+
+    const fixed = toolchainPath(process.execPath, guiPath);
+    // 当前进程自己的 node 目录排在最前 —— nvm 换版本也不会失效。
+    assert.equal(fixed.split(':')[0], require('node:path').dirname(process.execPath));
+    assert.ok(fixed.includes('/opt/homebrew/bin'));
+    assert.equal(preflightToolchain({ ...process.env, PATH: fixed }).ok, true, '注入后必须能起工具链');
+    // 不重复、不丢原有目录。
+    const parts = fixed.split(':');
+    assert.equal(new Set(parts).size, parts.length, 'PATH 不得有重复项');
+    for (const dir of guiPath.split(':')) assert.ok(parts.includes(dir));
+  });
+
+  it('故障 1. 执行器启动前先自检工具链，避免留下半成品', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    // 自检必须排在读取计划快照与启动执行器之前。
+    assert.ok(/preflightToolchain/.test(block), '批量上架前必须自检工具链');
+    assert.ok(block.indexOf('preflightToolchain') < block.indexOf('runGigaAutoPublish'), '自检必须在执行器之前');
+    assert.ok(/TOOLCHAIN_UNAVAILABLE/.test(block));
+    // 子进程环境必须带上工具链 PATH。
+    assert.ok(/env\.PATH = toolchainPath/.test(bridge), '子进程必须拿到工具链 PATH');
+  });
+
+  it('故障 2. 用真实失败报告还原「死在哪一阶段、为什么」', () => {
+    const { describeApplyFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    // 2026-08-08 首次真实批量上架 3/3 失败的原始报告（已脱敏）。
+    const report = JSON.parse(fs.readFileSync('src/__tests__/fixtures/xone-batch-failure-2026-08-08.json', 'utf8'));
+    const described = describeApplyFailure(report);
+    assert.equal(described.stage, 'normalize');
+    assert.match(described.reason, /资料整理阶段失败/);
+    // 关键：必须说清是「脚本没起来」，而不是笼统的一句流水线未完成。
+    assert.match(described.reason, /脚本没有启动/);
+    assert.equal(/上架流水线未完成/.test(described.reason), false);
+
+    // 这份报告同时证明 Stage 1 已经翻了发布批准位 —— 半成品的来源。
+    assert.equal(report.results.published, 3);
+    assert.equal(report.results.normalized, 0);
+    // 而顾客侧毫无影响：sellable 前后一致。
+    assert.equal(report.catalog.sellable_before, report.catalog.sellable_after);
+  });
+
+  it('故障 2. 其它阶段失败也各有各的业务说法', () => {
+    const { describeApplyFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    const cases: Array<[string, RegExp]> = [
+      ['pricing', /定价阶段失败/],
+      ['inventory', /库存阶段失败/],
+      ['mirror', /图片转存阶段失败/],
+      ['guardrail', /安全门拦截/],
+      ['reviews', /评价初始化阶段失败/],
+    ];
+    for (const [stage, expected] of cases) {
+      const r = describeApplyFailure({ reached_stage: stage, stage_failures: { [stage]: 'boom' }, log: [] });
+      assert.equal(r.stage, stage);
+      assert.match(r.reason, expected);
+    }
+    assert.deepEqual(describeApplyFailure(null), { stage: null, reason: null });
+  });
+
   it('凭据键只按名字摘除，从不读取或打印其值', () => {
     const source = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
     assert.ok(/delete env\[key\]/.test(source), '必须摘除继承来的默认账号凭据');
