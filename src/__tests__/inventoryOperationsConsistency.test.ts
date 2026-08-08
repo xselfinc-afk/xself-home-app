@@ -818,6 +818,15 @@ function main(): void {
     assert.ok(/"apply_protection", "import_drafts", "refresh_saved"/.test(rust));
   });
 
+  it('现场. 请求白名单必须把 refresh_saved 带过去，否则刷新是空转的', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 解析器是白名单：没被显式拷贝的字段等于没传。上一轮加了字段却漏了这一行，
+    // 于是 Rust 送来 refresh_saved:true，桥接读到的却是 undefined，预览照出、收藏不刷新。
+    assert.ok(/refresh_saved: r\.refresh_saved === true/.test(bridge), '解析器必须拷贝 refresh_saved');
+    // 判定处与解析处必须是同一个字段名。
+    assert.ok(/if \(request\.refresh_saved\)/.test(bridge));
+  });
+
   it('现场. taxonomy 门禁必须接到真实分类器，而不是恒为 false', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
     // 仓库里唯一的分类器就是 classifyCommerce，planGigaSavedItems 用的也是它。

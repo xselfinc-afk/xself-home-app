@@ -127,6 +127,9 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     limit: clamp(r.limit, 20, PAGE_MAX),
     apply_protection: r.apply_protection === true,
     import_drafts: r.import_drafts === true,
+    // 这里是白名单：没被显式拷贝的字段就等于没传。上一轮加了 refresh_saved 却漏了这一行，
+    // 于是「先刷新收藏再预览」整段是空转的 —— 界面照常出预览，收藏快照却还停在十小时前。
+    refresh_saved: r.refresh_saved === true,
     expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
     account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
     skus: Array.isArray(r.skus)
