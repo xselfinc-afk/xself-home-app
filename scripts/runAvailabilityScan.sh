@@ -47,6 +47,33 @@ if [ ! -f "$REPO/.env.local" ]; then
   exit 1
 fi
 
+# ── 0. Cadence guard ──────────────────────────────────────────────────────────────────────────
+#
+# launchd's StartInterval counts from load, and agents are reloaded on every boot. With
+# RunAtLoad=false a Mac that reboots more often than 48h restarts the countdown before it ever
+# fires, so the job sits loaded at `runs = 0` forever — which is exactly what it was doing.
+#
+# The fix is RunAtLoad=true, and this guard is what makes that safe: firing at each boot no
+# longer means scanning at each boot. If the last FULL scan finished less than the interval ago
+# we exit 0 without touching the supplier or the database.
+#
+# Set AVAILABILITY_SCAN_FORCE=1 to bypass (a human asking for a scan now).
+MIN_INTERVAL_HOURS="${AVAILABILITY_SCAN_MIN_INTERVAL_HOURS:-48}"
+if [ "${AVAILABILITY_SCAN_FORCE:-0}" != "1" ]; then
+  SINCE=$(node -e "
+    const fs=require('fs');
+    try{
+      const r=JSON.parse(fs.readFileSync('$REPO/reports/inventory-availability/latest-availability-scan.json','utf8'));
+      if(r.is_full_scan!==true){process.stdout.write('');process.exit(0);}
+      const at=Date.parse(r.finished_at||'');
+      process.stdout.write(Number.isFinite(at)?String((Date.now()-at)/3600000):'');
+    }catch{process.stdout.write('');}" 2>/dev/null)
+  if [ -n "$SINCE" ] && [ "$(printf '%.0f' "$SINCE")" -lt "$MIN_INTERVAL_HOURS" ]; then
+    echo "[$STAMP] availability-scan skipped — last full scan was ${SINCE}h ago (< ${MIN_INTERVAL_HOURS}h)"
+    exit 0
+  fi
+fi
+
 # ── 1. Availability scan (LIVE): refresh evidence + advance the workflow ──────────────────────
 # --live persists evidence and lifecycle state. It CANNOT change publication: the scanner has no
 # publication write path, asserted by availabilityPersistence.test.ts. Every write remains gated by

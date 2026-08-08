@@ -117,10 +117,27 @@ function main(): void {
     }
   });
 
-  it('8. the agent does not run at load and is scheduled, not calendar-pinned', () => {
+  it('8. the agent is interval-scheduled, and a boot trigger cannot become a boot scan', () => {
     const src = read(INSTALLER);
-    assert.match(src, /<key>RunAtLoad<\/key><false\/>/);
     assert.ok(!/StartCalendarInterval/.test(src), 'interval scheduling only');
+
+    // RunAtLoad used to be false so that installing could never fire a run. That also meant the
+    // 48h StartInterval countdown restarted at every boot and, on a Mac that reboots roughly
+    // daily, never once reached 48h — the agent sat loaded at `runs = 0` having never scanned.
+    //
+    // The trigger is now every boot; the thing that keeps it from SCANNING every boot is the
+    // runner's own cadence guard. That is the property to assert: trigger often, scan on schedule.
+    assert.match(src, /<key>RunAtLoad<\/key><true\/>/);
+
+    const runner = read(RUNNER);
+    assert.ok(/MIN_INTERVAL_HOURS/.test(runner), 'the runner must carry its own cadence guard');
+    assert.ok(/availability-scan skipped/.test(runner), 'a guarded run must say it was skipped');
+    assert.ok(
+      runner.indexOf('MIN_INTERVAL_HOURS') < runner.indexOf('scanPublishedAvailability.ts'),
+      'the guard must be evaluated before the scan starts',
+    );
+    // A run that the guard turns away exits 0 without touching the supplier or the database.
+    assert.ok(/exit 0/.test(runner.slice(runner.indexOf('MIN_INTERVAL_HOURS'), runner.indexOf('scanPublishedAvailability.ts'))));
   });
 
   it('9. the scheduled run persists evidence but cannot change publication by itself', () => {

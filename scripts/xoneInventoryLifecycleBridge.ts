@@ -306,6 +306,108 @@ function readLatestReport(): Record<string, any> | null {
   }
 }
 
+/**
+ * Which run kinds count as a scan of the whole published catalogue.
+ *
+ * `latest-availability-scan.json` used to be overwritten by any run that wasn't flagged
+ * `--xone-targeted`, including a 1-SKU `--skus=` run. So the file alone cannot answer "was this a
+ * full scan" — a report must say so explicitly. Legacy reports written before `is_full_scan`
+ * existed are treated as unknown, never as full: claiming a full scan we cannot prove is exactly
+ * the failure this is here to stop.
+ */
+export function isFullScanReport(report: Record<string, any> | null): boolean {
+  if (!report) return false;
+  return report.is_full_scan === true && report.report_kind === 'scheduled_inventory_scan';
+}
+
+/** Human-facing run kind. Not every run is 「自动48小时循环」. */
+export function describeRunKind(report: Record<string, any> | null): {
+  kind: string;
+  label: string;
+} {
+  const raw = typeof report?.report_kind === 'string' ? report.report_kind : null;
+  switch (raw) {
+    case 'scheduled_inventory_scan':
+      return report?.is_full_scan === true
+        ? { kind: 'full_scan', label: '全量库存扫描' }
+        : { kind: 'unknown_scope_scan', label: '扫描（范围未记录）' };
+    case 'targeted_sku_scan':
+      return { kind: 'targeted_sku_scan', label: '指定 SKU 复检' };
+    case 'partial_limited_scan':
+      return { kind: 'partial_limited_scan', label: '限量抽样扫描' };
+    case 'xone_single_sku_recheck':
+      return { kind: 'single_sku_recheck', label: '单件复检' };
+    default:
+      return { kind: 'unknown', label: '未知类型' };
+  }
+}
+
+/**
+ * The last run that actually scanned the whole catalogue.
+ *
+ * Walks the report directory rather than trusting the `latest` filename, because narrowed runs
+ * used to overwrite it. Returns null when no report proves it was full — the overview then says
+ * so instead of showing a 1-SKU run as 「上次 48 小时扫描」.
+ */
+function readAllReports(): Record<string, any>[] {
+  let files: string[] = [];
+  try { files = fs.readdirSync(REPORT_DIR).filter((name) => name.endsWith('.json')); } catch { return []; }
+  const out: Record<string, any>[] = [];
+  for (const name of files) {
+    try { out.push(JSON.parse(fs.readFileSync(path.join(REPORT_DIR, name), 'utf8'))); } catch { /* 跳过损坏文件 */ }
+  }
+  return out;
+}
+
+function newestBy(reports: Record<string, any>[]): Record<string, any> | null {
+  let best: Record<string, any> | null = null;
+  let bestAt = -Infinity;
+  for (const report of reports) {
+    const at = Date.parse(String(report.finished_at ?? report.started_at ?? ''));
+    if (Number.isFinite(at) && at > bestAt) { bestAt = at; best = report; }
+  }
+  return best;
+}
+
+export function readLatestFullScanReport(): Record<string, any> | null {
+  return newestBy(readAllReports().filter(isFullScanReport));
+}
+
+/** 最近一次运行，不限类型 —— 用户做的单件复检也应该出现在「最近运行」里。 */
+function readMostRecentReport(): Record<string, any> | null {
+  return newestBy(readAllReports()) ?? readLatestReport();
+}
+
+/** run_id → 报告，供运行记录标注真实类型。 */
+function reportsByRunId(): Map<string, Record<string, any>> {
+  const map = new Map<string, Record<string, any>>();
+  for (const report of readAllReports()) {
+    if (typeof report.run_id === 'string') map.set(report.run_id, report);
+  }
+  return map;
+}
+
+/**
+ * Did the run actually succeed? A dry run where every probe failed is not 「上次成功扫描」.
+ *
+ * `failed` — nothing usable came back (all probes failed, or the failure-rate gate tripped).
+ * `partial` — some evidence landed but there were failures or a blocked gate.
+ * `success` — evidence for everything it looked at, no blocked gates.
+ */
+export function deriveRunTerminalStatus(report: Record<string, any> | null): string {
+  if (!report) return 'unknown';
+  const totals = report.totals ?? {};
+  const scanned = Number(totals.total ?? 0);
+  const failures = Number(totals.failures ?? 0);
+  const blocked = Object.values(report.gates ?? {}).some((gate) => (
+    gate && typeof gate === 'object' && (gate as { allowed?: boolean }).allowed === false
+  ));
+  if (scanned === 0) return 'failed';
+  if (failures >= scanned) return 'failed';
+  if (failures > 0 || blocked) return 'partial';
+  return 'success';
+}
+
 function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -323,15 +425,86 @@ function readActiveLock(file: string): { active: boolean; pid: number | null; at
   }
 }
 
+/** Pull the few facts we need out of `launchctl print`. Absent keys stay null, never guessed. */
+export function parseLaunchctlPrint(text: string): {
+  runs: number | null;
+  lastExitCode: number | null;
+  runAtLoad: boolean | null;
+  intervalSeconds: number | null;
+} {
+  const grab = (re: RegExp): string | null => text.match(re)?.[1]?.trim() ?? null;
+  const runs = grab(/^\s*runs\s*=\s*(\d+)\s*$/m);
+  const exit = grab(/^\s*last exit code\s*=\s*(\d+)\s*$/m);
+  const interval = grab(/^\s*run interval\s*=\s*(\d+)\s*seconds\s*$/m);
+  const runAtLoad = /^\s*runatload\s*=\s*(1|true)\s*$/im.test(text)
+    ? true
+    : /^\s*runatload\s*=\s*(0|false)\s*$/im.test(text) ? false : null;
+  return {
+    runs: runs === null ? null : Number(runs),
+    lastExitCode: exit === null ? null : Number(exit),
+    runAtLoad,
+    intervalSeconds: interval === null ? null : Number(interval),
+  };
+}
+
+/**
+ * Why a loaded 48h job can still never have run.
+ *
+ * `StartInterval` counts from load, and launchd reloads agents on every boot. With
+ * `RunAtLoad=false`, a Mac that reboots more often than the interval restarts the countdown
+ * before it ever reaches 48h — the job stays loaded, healthy-looking, and permanently at
+ * `runs = 0`. Reporting "已加载" without this is how the last audit found a scheduler that had
+ * never executed a single scan.
+ */
+export function diagnoseScheduler(input: {
+  installed: boolean;
+  loaded: boolean;
+  runs: number | null;
+  runAtLoad: boolean | null;
+  intervalSeconds: number | null;
+}): { status: string; reason: string | null } {
+  if (!input.installed) return { status: 'not_installed', reason: '调度器尚未安装' };
+  if (!input.loaded) return { status: 'not_loaded', reason: '调度器已安装但未加载到 launchd' };
+  if (input.runs === 0 && input.runAtLoad === false && (input.intervalSeconds ?? 0) > 0) {
+    return {
+      status: 'never_ran',
+      reason: '倒计时从加载时刻重新开始，而这台 Mac 的重启间隔短于扫描间隔，所以计时器从未走完',
+    };
+  }
+  if (input.runs === 0) return { status: 'never_ran', reason: '已加载，但至今没有执行过一次' };
+  return { status: 'active', reason: null };
+}
+
 export function readSchedulerFact(): Record<string, unknown> {
   const installed = Boolean(process.env.HOME) && fs.existsSync(SCHEDULER_PLIST);
   const target = `gui/${process.getuid?.() ?? 0}/${SCHEDULER_LABEL}`;
   const printed = spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 5_000 });
   const loaded = installed && printed.status === 0;
-  const report = readLatestReport();
-  const lastRunAt = typeof report?.finished_at === 'string' ? report.finished_at : null;
-  const expectedNextRunAt = lastRunAt
-    ? new Date(Date.parse(lastRunAt) + INTERVAL_SECONDS * 1000).toISOString()
+  const launchd = parseLaunchctlPrint(printed.stdout ?? '');
+  // `launchctl print` does not echo RunAtLoad, so read it from the plist we installed. Without it
+  // the diagnosis cannot tell "never fired because the countdown keeps resetting" apart from
+  // "never fired for some other reason", and the user gets a reason that does not help them.
+  let runAtLoad = launchd.runAtLoad;
+  if (runAtLoad === null && installed) {
+    try {
+      const plist = fs.readFileSync(SCHEDULER_PLIST, 'utf8');
+      if (/<key>RunAtLoad<\/key>\s*<true\s*\/>/.test(plist)) runAtLoad = true;
+      else if (/<key>RunAtLoad<\/key>\s*<false\s*\/>/.test(plist)) runAtLoad = false;
+    } catch { /* 读不到就保持未知，不猜 */ }
+  }
+  const diagnosis = diagnoseScheduler({
+    installed, loaded, runs: launchd.runs, runAtLoad, intervalSeconds: launchd.intervalSeconds,
+  });
+
+  // 「上次扫描」只能是真正的全量扫描，而且只有真的成功了才算成功。
+  const fullScan = readLatestFullScanReport();
+  const lastFullScanAt = typeof fullScan?.finished_at === 'string' ? fullScan.finished_at : null;
+  const lastFullScanStatus = fullScan ? deriveRunTerminalStatus(fullScan) : null;
+  const lastSuccessfulFullScanAt = lastFullScanStatus === 'success' ? lastFullScanAt : null;
+
+  // 只有真的跑过，才谈得上「下次」。而且这始终是我们自己按间隔推算的，launchd 不提供精确时间。
+  const estimatedNextRunAt = lastFullScanAt
+    ? new Date(Date.parse(lastFullScanAt) + INTERVAL_SECONDS * 1000).toISOString()
     : null;
   return {
     label: SCHEDULER_LABEL,
@@ -340,9 +513,19 @@ export function readSchedulerFact(): Record<string, unknown> {
     enabled: loaded,
     interval_seconds: INTERVAL_SECONDS,
     cadence_label: '每 48 小时',
-    last_run_at: lastRunAt,
-    expected_next_run_at: expectedNextRunAt,
-    next_run_is_estimated: Boolean(expectedNextRunAt),
+    // launchd 的真实执行记录，与报告文件无关。
+    launchd_runs: launchd.runs,
+    launchd_last_exit_code: launchd.lastExitCode,
+    launchd_run_at_load: runAtLoad,
+    launchd_interval_seconds: launchd.intervalSeconds,
+    status: diagnosis.status,
+    status_reason: diagnosis.reason,
+    last_full_scan_at: lastFullScanAt,
+    last_full_scan_status: lastFullScanStatus,
+    last_successful_full_scan_at: lastSuccessfulFullScanAt,
+    // 推算值，不是 launchd 给的时间；UI 必须标成「预计」。
+    estimated_next_run_at: estimatedNextRunAt,
+    next_run_is_estimated: true,
   };
 }
 
@@ -367,6 +550,27 @@ async function readCoreRows(client: SupabaseClient): Promise<{
   };
 }
 
+/**
+ * Every currently published product id.
+ *
+ * Paginated on purpose: PostgREST caps a plain select at 1000 rows, and an unpaginated read is
+ * how the supplier-favorite facts job silently missed 467 rows. A truncated denominator here
+ * would inflate coverage instead of reporting it.
+ */
+async function readPublishedIds(client: SupabaseClient): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const page = 1000;
+  for (let from = 0; ; from += page) {
+    const result = await client.from('standardized_products')
+      .select('supplier_product_id').eq('published', true).range(from, from + page - 1);
+    if (result.error) throw new Error('READ_FAILED:published_ids');
+    const rows = (result.data ?? []) as Array<{ supplier_product_id: string }>;
+    for (const row of rows) ids.add(row.supplier_product_id);
+    if (rows.length < page) break;
+  }
+  return ids;
+}
+
 function groupStateCounts(workflows: WorkflowRow[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const row of workflows) counts[row.workflow_state] = (counts[row.workflow_state] ?? 0) + 1;
@@ -383,6 +587,9 @@ function latestReportSummary(report: Record<string, any> | null): Record<string,
     started_at: report.started_at ?? null,
     finished_at: report.finished_at ?? null,
     mode: report.mode ?? null,
+    run_kind: describeRunKind(report).kind,
+    run_kind_label: describeRunKind(report).label,
+    is_full_scan: report.is_full_scan === true,
     scanned: report.totals?.total ?? 0,
     available: report.totals?.confirmedAvailable ?? 0,
     unavailable: report.totals?.confirmedOutOfStock ?? 0,
@@ -391,11 +598,9 @@ function latestReportSummary(report: Record<string, any> | null): Record<string,
     proposed_delist: report.counts?.second_strike_delist ?? 0,
     proposed_relist: report.counts?.relist_eligible ?? 0,
     gates: report.gates ?? {},
-    terminal_status: hasBlockedGate
-      ? 'completed_with_blocks'
-      : report.totals?.failures > 0
-        ? 'completed_with_errors'
-        : 'completed',
+    // 全失败的 dry run 不是「完成」。success / partial / failed 三态由实际结果决定。
+    terminal_status: deriveRunTerminalStatus(report),
+    has_blocked_gate: hasBlockedGate,
   };
 }
 
@@ -409,18 +614,24 @@ function latestReportSummary(report: Record<string, any> | null): Record<string,
  * `now` is injectable so tests can pin time instead of drifting with the clock.
  */
 export function computeAvailabilityCoverage(
-  availability: ReadonlyArray<{ checked_at?: string | null }>,
-  publishedCount: number,
+  availability: ReadonlyArray<{ supplier_product_id?: string; checked_at?: string | null }>,
+  published: ReadonlySet<string>,
   now: Date = new Date(),
 ): { published: number; covered: number; percent: number } {
   const cutoff = now.getTime() - AVAILABILITY_GRACE_HOURS * 3_600_000;
-  const covered = availability.filter((row) => {
-    if (!row.checked_at) return false;
+  // 分子只数当前已发布的商品。证据表里还留着早已下架商品的行，把它们算进来会让覆盖率超过
+  // 100% —— 分子分母必须是同一个集合的两种状态，不是两份互不相干的数据。
+  const seen = new Set<string>();
+  for (const row of availability) {
+    const id = row.supplier_product_id;
+    if (!id || !published.has(id) || seen.has(id)) continue;
+    if (!row.checked_at) continue;
     const checkedAt = Date.parse(row.checked_at);
-    return Number.isFinite(checkedAt) && checkedAt >= cutoff;
-  }).length;
-  const percent = publishedCount > 0 ? Number(((covered / publishedCount) * 100).toFixed(1)) : 0;
-  return { published: publishedCount, covered, percent };
+    if (Number.isFinite(checkedAt) && checkedAt >= cutoff) seen.add(id);
+  }
+  const publishedCount = published.size;
+  const percent = publishedCount > 0 ? Number(((seen.size / publishedCount) * 100).toFixed(1)) : 0;
+  return { published: publishedCount, covered: seen.size, percent };
 }
 
 /**
@@ -432,17 +643,22 @@ export function deriveInventoryHealth(input: {
   schedulerLoaded: boolean;
   errors: number;
   coverageBelowMinimum: boolean;
+  /** not_installed | not_loaded | never_ran | active。缺省时只看 schedulerLoaded。 */
+  schedulerStatus?: string;
 }): string {
   if (input.runLockActive) return 'running';
   if (!input.schedulerLoaded) return 'blocked';
+  // 一个加载着、却一次都没执行过的调度器不是「健康」—— 证据现在够新只是因为有人手动跑过，
+  // 不代表这套自动化在工作。它会在证据过期时毫无预警地让商品从店面消失。
+  if (input.schedulerStatus === 'never_ran') return 'attention_required';
   if (input.errors > 0 || input.coverageBelowMinimum) return 'attention_required';
   return 'healthy';
 }
 
 async function buildSummary(client: SupabaseClient): Promise<Record<string, unknown>> {
-  const report = readLatestReport();
+  const report = readMostRecentReport();
   const latestRunId = typeof report?.run_id === 'string' ? report.run_id : null;
-  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult, sellableResult] = await Promise.all([
+  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult, sellableResult, publishedIds] = await Promise.all([
     readCoreRows(client),
     loadInventoryConfigForScript(),
     client.from('publication_audit_log').select('supplier_product_id', { count: 'exact', head: true }).eq('action', 'relist'),
@@ -452,12 +668,18 @@ async function buildSummary(client: SupabaseClient): Promise<Record<string, unkn
     // Live storefront size. coverage.visible comes from the scan report and is measured BEFORE the
     // scan refreshes evidence, so it cannot answer "how many products can a customer see right now".
     client.from('sellable_products').select('supplier_product_id', { count: 'exact', head: true }),
+    // Live published set — the ONLY valid coverage denominator, and also the filter for the
+    // numerator. Reading it from the scan report is what produced 35200%: the numerator was live
+    // (352 rows in grace) while the denominator came from a 1-SKU targeted run that had
+    // overwritten latest-availability-scan.json.
+    readPublishedIds(client),
   ]);
   if (relistAuditResult.error) throw new Error('READ_FAILED:relist_audit_count');
   if (latestAuditResult.error) throw new Error('READ_FAILED:latest_publication_audit');
   const stateCounts = groupStateCounts(workflows);
-  const errors = Number(report?.totals?.failures
-    ?? availability.filter((row) => Number(row.consecutive_failures ?? 0) > 0).length);
+  // 「当前读取失败」必须来自实时证据表。用报告里的 failures 会让一次 1 件的 dry run 长期显示
+  // 「读取失败 1」，即使那件商品早已恢复正常 —— 报告数字属于「最近运行」，不属于「当前状态」。
+  const errors = availability.filter((row) => Number(row.consecutive_failures ?? 0) > 0).length;
   const eligibleDelist = stateCounts.eligible_for_delist ?? 0;
   const eligibleRelist = stateCounts.eligible_for_relist ?? 0;
   const blockedIds = new Set(holds.map((row) => row.supplier_product_id));
@@ -476,15 +698,15 @@ async function buildSummary(client: SupabaseClient): Promise<Record<string, unkn
   const scheduler = readSchedulerFact();
   const locks = [readActiveLock(SCAN_LOCK), readActiveLock(APPLY_LOCK)];
   const activeLock = locks.find((lock) => lock.active) ?? null;
-  const coverageReport = report;
-  const published = Number(coverageReport?.counts?.published_targets ?? workflows.length);
-  const visible = Number(coverageReport?.counts?.visible_now ?? 0);
-  const { covered, percent: coveragePercent } = computeAvailabilityCoverage(availability, published);
+  // 分子分母必须同源、同时刻：都取实时表。扫描报告的数字只出现在「最近运行」里。
+  const visible = sellableResult.error ? 0 : (sellableResult.count ?? 0);
+  const { published, covered, percent: coveragePercent } = computeAvailabilityCoverage(availability, publishedIds);
   // Reuses the existing inventory_min_coverage_percent (default 95) rather than adding a knob.
   const coverageBelowMinimum = published > 0 && coveragePercent < cfg.minCoveragePercent;
   const health = deriveInventoryHealth({
     runLockActive: Boolean(activeLock),
     schedulerLoaded: Boolean((scheduler as any).loaded),
+    schedulerStatus: String((scheduler as any).status ?? ''),
     errors,
     coverageBelowMinimum,
   });
@@ -1420,8 +1642,23 @@ async function buildRuns(
   for (const row of checks) if (!seen.has(row.run_id)) { seen.add(row.run_id); runIds.push(row.run_id); }
   for (const row of transitions) if (!seen.has(row.run_id)) { seen.add(row.run_id); runIds.push(row.run_id); }
   for (const row of audits) if (row.run_id && !seen.has(row.run_id)) { seen.add(row.run_id); runIds.push(row.run_id); }
-  const latest = readLatestReport();
-  if (latest?.run_id && !seen.has(String(latest.run_id))) runIds.unshift(String(latest.run_id));
+  const latest = readMostRecentReport();
+  const reportByRun = reportsByRunId();
+  // 每份报告都可能对应一次没有写任何数据库行的运行（dry run），也要出现在运行记录里。
+  for (const [runId, report] of reportByRun) {
+    if (seen.has(runId)) continue;
+    seen.add(runId);
+    const at = Date.parse(String(report.finished_at ?? ''));
+    if (Number.isFinite(at)) runIds.push(runId);
+  }
+  runIds.sort((a, b) => {
+    const at = (id: string) => Date.parse(String(reportByRun.get(id)?.finished_at ?? '')) || 0;
+    const fallback = (id: string) => {
+      const rows = checks.filter((row) => row.run_id === id).map((row) => Date.parse(row.checked_at));
+      return rows.length ? Math.max(...rows) : 0;
+    };
+    return (at(b) || fallback(b)) - (at(a) || fallback(a));
+  });
 
   const relevantIds = new Set<string>();
   for (const row of transitions) if (row.proposed_action || row.observed_exception) relevantIds.add(row.supplier_product_id);
@@ -1440,12 +1677,16 @@ async function buildRuns(
     const runTransitions = transitions.filter((row) => row.run_id === runId);
     const runAudits = audits.filter((row) => row.run_id === runId);
     const times = runChecks.map((row) => Date.parse(row.checked_at)).filter(Number.isFinite);
+    // 每次运行用它自己的报告，而不是只让「最近一次」享有报告。否则历史 run 全部退化成
+    // 数据库行统计，类型也只能靠猜。
+    const runReport = reportByRun.get(runId) ?? null;
     const isLatest = latest?.run_id === runId;
     const failures = runChecks.filter((row) => row.available === null).length;
-    const displayedFailures = isLatest ? latest.totals?.failures ?? failures : failures;
-    const hasBlockedGate = isLatest && Object.values(latest.gates ?? {}).some((gate) => (
+    const displayedFailures = runReport ? runReport.totals?.failures ?? failures : failures;
+    const hasBlockedGate = Boolean(runReport) && Object.values(runReport!.gates ?? {}).some((gate) => (
       gate && typeof gate === 'object' && (gate as { allowed?: boolean }).allowed === false
     ));
+    const runKind = describeRunKind(runReport);
     const proposedDelist = isLatest
       ? [...latestDelistProposalMap(latest).entries()].map(([id, proposal]) => ({
         supplier_product_id: id,
@@ -1482,33 +1723,40 @@ async function buildRuns(
     const blockedCount = hasBlockedGate ? proposedDelist.length : 0;
     return {
       run_id: runId,
-      source: 'automatic',
-      trigger_type: 'automatic_48h',
-      started_at: isLatest ? latest.started_at ?? null : times.length ? new Date(Math.min(...times)).toISOString() : null,
-      finished_at: isLatest ? latest.finished_at ?? null : times.length ? new Date(Math.max(...times)).toISOString() : null,
-      scanned: isLatest ? latest.totals?.total ?? runChecks.length : runChecks.length,
-      available: isLatest ? latest.totals?.confirmedAvailable ?? 0 : runChecks.filter((row) => row.available === true).length,
-      unavailable: isLatest ? latest.totals?.confirmedOutOfStock ?? 0 : runChecks.filter((row) => row.available === false).length,
+      // 单件复检是人点出来的，不是 48 小时循环。把两者都标成 automatic_48h 是误导。
+      source: runKind.kind === 'full_scan' ? 'automatic' : 'manual',
+      trigger_type: runKind.kind === 'full_scan' ? 'automatic_48h' : runKind.kind,
+      run_kind: runKind.kind,
+      run_kind_label: runKind.label,
+      is_full_scan: runReport?.is_full_scan === true,
+      started_at: runReport?.started_at ?? (times.length ? new Date(Math.min(...times)).toISOString() : null),
+      finished_at: runReport?.finished_at ?? (times.length ? new Date(Math.max(...times)).toISOString() : null),
+      scanned: runReport ? runReport.totals?.total ?? runChecks.length : runChecks.length,
+      available: runReport ? runReport.totals?.confirmedAvailable ?? 0 : runChecks.filter((row) => row.available === true).length,
+      unavailable: runReport ? runReport.totals?.confirmedOutOfStock ?? 0 : runChecks.filter((row) => row.available === false).length,
       failures: displayedFailures,
-      proposed_delist: isLatest ? latest.counts?.second_strike_delist ?? 0 : runTransitions.filter((row) => row.proposed_action === 'propose_delist').length,
-      proposed_relist: isLatest ? latest.counts?.relist_eligible ?? 0 : runTransitions.filter((row) => row.proposed_action === 'propose_relist').length,
+      proposed_delist: runReport ? runReport.counts?.second_strike_delist ?? 0 : runTransitions.filter((row) => row.proposed_action === 'propose_delist').length,
+      proposed_relist: runReport ? runReport.counts?.relist_eligible ?? 0 : runTransitions.filter((row) => row.proposed_action === 'propose_relist').length,
       applied_delist: runAudits.filter((row) => row.action === 'delist').length,
       applied_relist: runAudits.filter((row) => row.action === 'relist').length,
       blocked_count: blockedCount,
-      gates: isLatest ? latest.gates ?? {} : null,
+      gates: runReport?.gates ?? null,
       steps: [
-        { id: 'read_targets', label: '读取在售商品', status: 'completed', count: isLatest ? latest.totals?.total ?? runChecks.length : runChecks.length },
+        { id: 'read_targets', label: '读取在售商品', status: 'completed', count: runReport ? runReport.totals?.total ?? runChecks.length : runChecks.length },
         { id: 'check_inventory', label: '检查库存', status: displayedFailures > 0 ? 'completed_with_errors' : 'completed', count: runChecks.length },
         { id: 'evaluate_rules', label: '评估生命周期规则', status: 'completed', count: proposedDelist.length },
         { id: 'apply_actions', label: '执行下架/恢复', status: blockedCount > 0 ? 'blocked' : 'completed', count: runAudits.length },
       ],
       proposed_delist_items: proposedDelist,
       error_items: errorItems,
-      terminal_status: hasBlockedGate
-        ? 'completed_with_blocks'
-        : displayedFailures > 0
-          ? 'completed_with_errors'
-          : 'completed',
+      // 有报告就用报告的真实结果判定；没有报告只能按数据库行推断，全失败一样算 failed。
+      terminal_status: runReport
+        ? deriveRunTerminalStatus(runReport)
+        : runChecks.length === 0
+          ? 'unknown'
+          : displayedFailures >= runChecks.length
+            ? 'failed'
+            : displayedFailures > 0 || hasBlockedGate ? 'partial' : 'success',
     };
   });
   return success('runs', {

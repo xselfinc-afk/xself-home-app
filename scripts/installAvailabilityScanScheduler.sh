@@ -45,10 +45,16 @@ write_plist() {
     <string>${RUNNER}</string>
   </array>
   <key>WorkingDirectory</key><string>${REPO}</string>
-  <!-- Every 48 hours. StartInterval is the established safe pattern in this repo: it survives
-       sleep/wake and does not depend on the machine being awake at an exact calendar time. -->
+  <!-- Every 48 hours. StartInterval survives sleep/wake and does not depend on the machine being
+       awake at an exact calendar time. But its countdown restarts on every load, and launchd
+       reloads agents at every boot: with RunAtLoad=false on a Mac that reboots roughly daily the
+       timer never reached 48h, and the job sat loaded at `runs = 0` having never scanned once.
+
+       RunAtLoad=true makes each boot a trigger; runAvailabilityScan.sh's cadence guard keeps that
+       from meaning "scan on every boot" — it exits immediately unless the last FULL scan is older
+       than the interval. Trigger often, scan on schedule. -->
   <key>StartInterval</key><integer>${INTERVAL}</integer>
-  <key>RunAtLoad</key><false/>
+  <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>${LOG_DIR}/availability-scan.out.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/availability-scan.err.log</string>
   <key>ProcessType</key><string>Background</string>
@@ -60,6 +66,11 @@ PLISTEOF
 
 case "$cmd" in
   install)
+    # RunAtLoad=true means bootstrapping fires the runner right away. The runner's cadence guard
+    # turns that into a no-op whenever a full scan finished less than 48h ago — but if there has
+    # never been one, this install DOES start a real scan. Say so before doing it.
+    echo "note       安装会立即触发一次运行；距上次全量扫描不足 48 小时时它会直接跳过，"
+    echo "           但如果从未成功跑过全量扫描，这次安装就会真的开始一次扫描。"
     write_plist
     launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
     launchctl unload "$PLIST" 2>/dev/null || true

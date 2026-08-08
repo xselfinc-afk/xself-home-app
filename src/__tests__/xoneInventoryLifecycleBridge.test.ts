@@ -492,18 +492,47 @@ assert.equal(bridgeSource.includes("process.env.XONE_INVENTORY_RESTORE_ENABLED =
 
 const NOW = new Date('2026-08-06T00:00:00.000Z');
 const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
-const rows = (count: number, checkedAt: string | null) =>
-  Array.from({ length: count }, () => ({ checked_at: checkedAt }));
+/** 证据行带上商品 id —— 覆盖率的分子必须能和「当前已发布」集合对上号。 */
+const rows = (count: number, checkedAt: string | null, offset = 0) =>
+  Array.from({ length: count }, (_unused, index) => ({
+    supplier_product_id: `P${offset + index}`,
+    checked_at: checkedAt,
+  }));
+/** 当前已发布集合。 */
+const publishedSet = (count: number) => new Set(Array.from({ length: count }, (_u, i) => `P${i}`));
 
 // 1. All evidence fresh -> full coverage.
-const allFresh = computeAvailabilityCoverage(rows(10, hoursAgo(1)), 10, NOW);
+const allFresh = computeAvailabilityCoverage(rows(10, hoursAgo(1)), publishedSet(10), NOW);
 assert.deepEqual(allFresh, { published: 10, covered: 10, percent: 100 });
+
+// 1b. 覆盖率永远不得超过 100%：证据表里留着早已下架商品的行时，它们不算进分子。
+//     这正是概览显示 35200% 的形状 —— 分子来自实时证据，分母来自一次单件扫描的报告。
+const withRetiredRows = computeAvailabilityCoverage(
+  [...rows(352, hoursAgo(1)), ...rows(80, hoursAgo(1), 1_000)],
+  publishedSet(353),
+  NOW,
+);
+assert.equal(withRetiredRows.covered, 352, '已下架商品的证据行不得计入覆盖率分子');
+assert.equal(withRetiredRows.published, 353);
+assert.equal(withRetiredRows.percent, 99.7);
+assert.ok(withRetiredRows.percent <= 100, '覆盖率永远不得超过 100%');
+
+// 1c. 同一商品的多条证据行只算一次。
+assert.equal(
+  computeAvailabilityCoverage(
+    [...rows(1, hoursAgo(1)), ...rows(1, hoursAgo(2))],
+    publishedSet(2),
+    NOW,
+  ).covered,
+  1,
+  '重复行不得把覆盖率灌到分母之上',
+);
 
 // 2. Mostly expired -> coverage collapses to the true low value.
 //    The 2026-08-05 incident shape: 350 rows, only 1 refreshed inside the window.
 //    Ages are stated relative to the CURRENT 120h window, not the 72h one that caused it.
-const incidentRows = [...rows(349, hoursAgo(130)), ...rows(1, hoursAgo(2))];
-const incident = computeAvailabilityCoverage(incidentRows, 353, NOW);
+const incidentRows = [...rows(349, hoursAgo(130)), ...rows(1, hoursAgo(2), 349)];
+const incident = computeAvailabilityCoverage(incidentRows, publishedSet(353), NOW);
 assert.equal(incident.covered, 1);
 assert.equal(incident.percent, 0.3);
 // The old implementation counted any row that had ever been checked.
@@ -511,7 +540,7 @@ const oldStyleCovered = incidentRows.filter((row) => Boolean(row.checked_at)).le
 assert.equal(oldStyleCovered, 350, 'old algorithm reported 350/353 = 99.2% during the outage');
 
 // 3. Everything expired -> coverage 0, and health must not be healthy.
-const allExpired = computeAvailabilityCoverage(rows(353, hoursAgo(150)), 353, NOW);
+const allExpired = computeAvailabilityCoverage(rows(353, hoursAgo(150)), publishedSet(353), NOW);
 assert.deepEqual(allExpired, { published: 353, covered: 0, percent: 0 });
 const expiredHealth = deriveInventoryHealth({
   runLockActive: false, schedulerLoaded: true, errors: 0,
@@ -521,19 +550,19 @@ assert.notEqual(expiredHealth, 'healthy', 'fully expired evidence must never rep
 assert.equal(expiredHealth, 'attention_required');
 
 // 4. Missing or unparseable checked_at is never counted as covered.
-assert.equal(computeAvailabilityCoverage(rows(5, null), 5, NOW).covered, 0);
-assert.equal(computeAvailabilityCoverage([{}, {}], 2, NOW).covered, 0);
-assert.equal(computeAvailabilityCoverage(rows(3, 'not-a-date'), 3, NOW).covered, 0);
+assert.equal(computeAvailabilityCoverage(rows(5, null), publishedSet(5), NOW).covered, 0);
+assert.equal(computeAvailabilityCoverage([{}, {}], publishedSet(2), NOW).covered, 0);
+assert.equal(computeAvailabilityCoverage(rows(3, 'not-a-date'), publishedSet(3), NOW).covered, 0);
 
 // 5. Grace boundary: exactly 120h still counts, past it does not.
-assert.equal(computeAvailabilityCoverage(rows(1, hoursAgo(120)), 1, NOW).covered, 1);
-assert.equal(computeAvailabilityCoverage(rows(1, hoursAgo(120.5)), 1, NOW).covered, 0);
+assert.equal(computeAvailabilityCoverage(rows(1, hoursAgo(120)), publishedSet(1), NOW).covered, 1);
+assert.equal(computeAvailabilityCoverage(rows(1, hoursAgo(120.5)), publishedSet(1), NOW).covered, 0);
 
 // 5b. THE REGRESSION THAT CAUSED THE 2026-08-05 OUTAGE.
 //     Cadence 48h, so one missed scan puts the next successful read at T+96h.
 //     Under the old 72h window that evidence was already expired and the storefront emptied.
 //     Under 120h it is still covered: a single failed scan must never hide the catalogue.
-const oneMissedCycle = computeAvailabilityCoverage(rows(353, hoursAgo(96)), 353, NOW);
+const oneMissedCycle = computeAvailabilityCoverage(rows(353, hoursAgo(96)), publishedSet(353), NOW);
 assert.equal(oneMissedCycle.covered, 353, 'one missed 48h cycle must not expire the evidence');
 assert.equal(oneMissedCycle.percent, 100);
 assert.equal(
@@ -545,7 +574,7 @@ assert.equal(
   'a single missed cycle is not yet a risk state',
 );
 // Two missed cycles (T+144h) is beyond the window — that SHOULD surface as a risk.
-const twoMissedCycles = computeAvailabilityCoverage(rows(353, hoursAgo(144)), 353, NOW);
+const twoMissedCycles = computeAvailabilityCoverage(rows(353, hoursAgo(144)), publishedSet(353), NOW);
 assert.equal(twoMissedCycles.covered, 0);
 assert.notEqual(
   deriveInventoryHealth({
@@ -556,7 +585,7 @@ assert.notEqual(
 );
 
 // 6. No published products -> 0 percent, no divide-by-zero.
-assert.equal(computeAvailabilityCoverage([], 0, NOW).percent, 0);
+assert.equal(computeAvailabilityCoverage([], publishedSet(0), NOW).percent, 0);
 
 // 7. Health precedence is unchanged apart from the new coverage input.
 assert.equal(deriveInventoryHealth({ runLockActive: true, schedulerLoaded: true, errors: 9, coverageBelowMinimum: true }), 'running');

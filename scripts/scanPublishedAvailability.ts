@@ -72,6 +72,26 @@ const ONLY_SKUS = (val('skus') ?? '').split(',').map(s => s.trim()).filter(Boole
 const LIMIT = Math.max(0, parseInt(val('limit') ?? '0', 10) || 0);
 const XONE_TARGETED_TOKEN = val('xone-targeted') ?? '';
 const BATCH = 200;                        // the Open API accepts up to 200 SKUs per call
+
+/**
+ * A narrowed run is NOT a full scan and must never be mistaken for one.
+ *
+ * `latest-availability-scan.json` is what the XOne overview reads as "上次 48h 扫描". Before this
+ * guard, only `--xone-targeted` diverted the report; a plain `--skus=ONE-SKU` still overwrote the
+ * full-scan latest. That is exactly what happened on 2026-08-06: a 1-SKU dry run left the overview
+ * claiming published_targets=1, which then produced a 35200% coverage reading.
+ *
+ * `--limit` does NOT narrow by itself: the scheduler passes `--limit=400` as a cap, and while the
+ * catalogue is smaller than that the run still covers everything. Whether a limit actually
+ * truncated the target set is only knowable after the targets are read, so `is_full_scan` is
+ * decided there — see `wasTruncated` below.
+ */
+const NARROWED = ONLY_SKUS.length > 0 || Boolean(XONE_TARGETED_TOKEN);
+const REPORT_KIND = XONE_TARGETED_TOKEN
+  ? 'xone_single_sku_recheck'
+  : ONLY_SKUS.length > 0
+    ? 'targeted_sku_scan'
+    : 'scheduled_inventory_scan';
 const REPORT_DIR = path.join(process.cwd(), 'reports', 'inventory-availability');
 const LOCK_PATH = path.join(REPORT_DIR, '.scan.lock');
 const LOCK_STALE_MS = 30 * 60 * 1000;
@@ -232,8 +252,12 @@ async function main(): Promise<void> {
     }
 
     let targets = published.map(p => p.sku);
+    const publishedTotal = targets.length;
     if (ONLY_SKUS.length) targets = targets.filter(s => ONLY_SKUS.includes(s));
     targets = targets.slice(0, LIMIT || cfg.maxScanPerRun);
+    // A run is "full" only if it actually looked at every published product. A cap that never
+    // bound is not a narrowing; a cap that truncated the list is.
+    const isFullScan = !NARROWED && targets.length === publishedTotal;
 
     // ── 2. Existing lifecycle state (never invented) ─────────────────────────────────────────
     const priorState = new Map<string, WorkflowSnapshot>();
@@ -314,16 +338,23 @@ async function main(): Promise<void> {
 
     // ── 5. Report (redacted; no raw bodies, no credentials) ──────────────────────────────────
     fs.mkdirSync(REPORT_DIR, { recursive: true });
+    // Only a genuine full scan may claim the `latest` filename. Narrowed runs get their own file
+    // so the overview's "上次 48h 扫描" keeps pointing at the last real full scan.
     const reportPath = XONE_TARGETED_TOKEN
       ? path.join(REPORT_DIR, `xone-targeted-${XONE_TARGETED_TOKEN}.json`)
-      : path.join(REPORT_DIR, 'latest-availability-scan.json');
+      : !isFullScan
+        ? path.join(REPORT_DIR, `targeted-${RUN_ID.replace(/[^A-Za-z0-9_-]/g, '')}.json`)
+        : path.join(REPORT_DIR, 'latest-availability-scan.json');
     const report = {
       run_id: RUN_ID, started_at: startedAt, finished_at: new Date().toISOString(),
       mode: DRY ? 'dry_run' : 'live',
       source: OPEN_API_SOURCE,
       endpoint: '/b2b-overseas-api/v1/buyer/product/price/v1',
       browser_used: false,
-      report_kind: XONE_TARGETED_TOKEN ? 'xone_single_sku_recheck' : 'scheduled_inventory_scan',
+      report_kind: !NARROWED && !isFullScan ? 'partial_limited_scan' : REPORT_KIND,
+      // Whether this run looked at every published product. The overview must never treat a
+      // narrowed run's counts as the current state of the whole catalogue.
+      is_full_scan: isFullScan,
       database_rows_written: 0,
       totals: t,
       gates: { scan: scanGate, failureRate: failureGate, delistBatch: delistGate },

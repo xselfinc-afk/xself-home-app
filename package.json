@@ -137,7 +137,8 @@
     "release:ios:plan": "tsx scripts/iosReleasePlan.ts",
     "release:ios:prepare": "tsx scripts/iosReleasePrepare.ts",
     "release:ios:build": "tsx scripts/iosReleaseBuild.ts",
-    "release:ios:submit": "tsx scripts/iosReleaseSubmit.ts"
+    "release:ios:submit": "tsx scripts/iosReleaseSubmit.ts",
+    "test:inventory-operations": "tsx src/__tests__/inventoryOperationsConsistency.test.ts"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.0.2",
