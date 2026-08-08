@@ -140,7 +140,8 @@
     "release:ios:submit": "tsx scripts/iosReleaseSubmit.ts",
     "test:inventory-operations": "tsx src/__tests__/inventoryOperationsConsistency.test.ts",
     "test:golden-path-freeze": "tsx src/__tests__/goldenPathFreeze.test.ts",
-    "test:onboarding-recovery": "tsx src/__tests__/onboardingRecovery.test.ts"
+    "test:onboarding-recovery": "tsx src/__tests__/onboardingRecovery.test.ts",
+    "verify:xone-bridge-schema": "tsx scripts/verifyXoneBridgeSchema.ts"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.0.2",

@@ -1,0 +1,72 @@
+{
+  "_note": "planGigaAutoPublish 的计划结构，用于续跑回放的单元测试。字段名与 scripts/planGigaAutoPublish.ts 的产出一致（safe_variant_families 的元素为 {key,skus,colors,cost}），SKU、颜色、成本取自 supplier_products / standardized_products 的真实值。此前这个测试直接读 reports/giga-auto-publish/xone-onboarding-plan.json —— 那是会被每次预览覆盖的实时产物，测试因此不确定。",
+  "generated": "2026-08-08T14:38:00.000Z",
+  "max_skus": 3,
+  "totals": { "candidates": 3 },
+  "buckets": {
+    "SAFE_SINGLETON": 0,
+    "SAFE_CLEAN_COLOR_VARIANT": 3,
+    "HOLD_PRICE": 0,
+    "HOLD_PHASE2": 0,
+    "HOLD_INVENTORY": 0,
+    "HOLD_QUALITY": 0,
+    "REJECT": 0
+  },
+  "stock_probe": "probed",
+  "proposed_batch": {
+    "skus": ["W5870P523986", "W5870P523987", "W5870P523988"],
+    "sku_count": 3,
+    "card_count": 1,
+    "families": [
+      {
+        "key": "cb-vg-w5870p523986-sofa-lazy",
+        "skus": ["W5870P523986", "W5870P523987", "W5870P523988"],
+        "colors": ["Baby Pink", "Beige White", "Antique Grey"],
+        "cost": 48
+      }
+    ]
+  },
+  "safe_variant_families": [
+    {
+      "key": "cb-vg-w5870p523986-sofa-lazy",
+      "skus": ["W5870P523986", "W5870P523987", "W5870P523988"],
+      "colors": ["Baby Pink", "Beige White", "Antique Grey"],
+      "cost": 48
+    }
+  ],
+  "candidates": [
+    {
+      "id": "W5870P523986",
+      "bucket": "SAFE_CLEAN_COLOR_VARIANT",
+      "key": "cb-vg-w5870p523986-sofa-lazy",
+      "cat": "Sofa",
+      "color": "Baby Pink",
+      "normCost": 48,
+      "img": true,
+      "reasons": [],
+      "title": "Large single petal cloud comfortable lazy sofa chair"
+    },
+    {
+      "id": "W5870P523987",
+      "bucket": "SAFE_CLEAN_COLOR_VARIANT",
+      "key": "cb-vg-w5870p523986-sofa-lazy",
+      "cat": "Sofa",
+      "color": "Beige White",
+      "normCost": 48,
+      "img": true,
+      "reasons": [],
+      "title": "Large single petal cloud comfortable lazy sofa chair"
+    },
+    {
+      "id": "W5870P523988",
+      "bucket": "SAFE_CLEAN_COLOR_VARIANT",
+      "key": "cb-vg-w5870p523986-sofa-lazy",
+      "cat": "Sofa",
+      "color": "Antique Grey",
+      "normCost": 48,
+      "img": true,
+      "reasons": [],
+      "title": "Large single petal cloud comfortable lazy sofa chair"
+    }
+  ]
+}

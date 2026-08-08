@@ -30,6 +30,7 @@ import {
   ONBOARDING_PROTECTION_ACTOR,
   type OnboardingFacts,
 } from '../src/services/productOnboarding';
+import { classifyCommerce, isNeedsReview } from '../src/utils/commerceTaxonomy';
 import { isStale, isUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
 import {
   buildRecoveryPlan,
@@ -89,6 +90,8 @@ export interface OnboardingRequest {
   apply_protection?: boolean;
   /** onboarding-preview 用：是否做 additive 草稿导入（published=false，不是上架）。 */
   import_drafts?: boolean;
+  /** onboarding-preview 用：先跑一次 check-new-saved，把收藏快照与候选报告刷新到当前。 */
+  refresh_saved?: boolean;
   /** onboarding-batch-publish 用：界面看到的 Ready 数量，用来确认计划没被换过。 */
   expected_ready?: number;
   /** onboarding-preview 用：把候选缩到这几个 SKU。为受控验收准备，日常不传。 */
@@ -176,17 +179,30 @@ async function loadFacts(client: SupabaseClient, sku: string, pickupSaved: Set<s
   const [supplierRes, stdRes, sellRes, mapRes] = await Promise.all([
     client.from('supplier_products').select('supplier_product_id,published').eq('supplier_product_id', sku).maybeSingle(),
     client.from('standardized_products')
-      .select('supplier_product_id,published,product_title,primary_image,selling_price,inventory_status,total_available_qty,product_type_id')
+      .select('supplier_product_id,published,product_title,primary_image,selling_price,inventory_status,total_available_qty,category_code,category_label')
       .eq('supplier_product_id', sku).maybeSingle(),
     client.from('sellable_products').select('supplier_product_id').eq('supplier_product_id', sku).maybeSingle(),
     client.from('supplier_portal_product_mappings')
       .select('supplier_product_id,website_product_id,portal_sku,source,confidence,resolved_at,last_verified_at')
       .eq('supplier_product_id', sku).maybeSingle(),
   ]);
+  // PostgREST 拒绝整条查询时只返回 error，data 是 null。以前这里不看 error —— 于是 select 里
+  // 一个并不存在的列就会让每一件商品都被读成「不在 standardized_products、未发布」。后果不是
+  // 报错而是静默说谎：已经上线的商品重新回到待上新，因为 planner 不会再为它们出候选，
+  // 落进 UNKNOWN 桶，界面写成「暂时无法上架」。事实读不出来就必须报错，不能猜一个 false。
+  for (const [table, res] of [
+    ['supplier_products', supplierRes],
+    ['standardized_products', stdRes],
+    ['sellable_products', sellRes],
+    ['supplier_portal_product_mappings', mapRes],
+  ] as const) {
+    if (res.error) throw new Error(`READ_FAILED:${table}:${res.error.message}`);
+  }
+
   const std = (stdRes.data ?? null) as {
     published?: boolean | null; product_title?: string | null; primary_image?: string | null;
     selling_price?: number | null; inventory_status?: string | null; total_available_qty?: number | null;
-    product_type_id?: string | null;
+    category_code?: string | null; category_label?: string | null;
   } | null;
   const mapping = (mapRes.data ?? null) as StoredPortalMapping | null;
   const now = new Date().toISOString();
@@ -203,8 +219,14 @@ async function loadFacts(client: SupabaseClient, sku: string, pickupSaved: Set<s
     product_title: std?.product_title ?? null,
     primary_image: std?.primary_image ?? null,
     selling_price: std?.selling_price == null ? null : Number(std.selling_price),
-    // 既有 taxonomy 判定：product_type_id 为 NEEDS_REVIEW 时需要人工确认。
-    taxonomy_needs_review: (std?.product_type_id ?? '').toUpperCase() === 'NEEDS_REVIEW',
+    // 既有 taxonomy 判定：仓库里唯一的分类器就是 classifyCommerce，planGigaSavedItems 用的
+    // 也是它。此前这里读的 product_type_id 根本不是 standardized_products 的列 —— 它是那个
+    // 脚本算出来的中间值。于是这道人工确认门禁一直恒为 false，等于没开。
+    taxonomy_needs_review: std ? isNeedsReview(classifyCommerce({
+      name: std.product_title ?? '',
+      category: std.category_code ?? '',
+      categoryLabel: std.category_label ?? '',
+    } as never)) : false,
     stock_available: std
       ? (std.inventory_status === 'in_stock' && Number(std.total_available_qty ?? 0) > 0 ? true
         : std.inventory_status ? false : null)
@@ -260,7 +282,8 @@ async function loadPickupSaved(client: SupabaseClient): Promise<Set<string>> {
     const { data, error } = await client.from('supplier_favorite_memberships')
       .select('supplier_product_id,supplier_account,is_saved,sync_status')
       .eq('supplier_account', 'pickup').range(from, from + 999);
-    if (error) break;
+    // 读一半就停会得到一个残缺的收藏集合，后果是候选被静默丢掉 —— 与其少报，不如报错。
+    if (error) throw new Error(`READ_FAILED:supplier_favorite_memberships:${error.message}`);
     for (const row of (data ?? []) as Array<{ supplier_product_id: string; is_saved: boolean | null; sync_status: string }>) {
       if (row.sync_status === 'ok' && row.is_saved === true) out.add(row.supplier_product_id);
     }
@@ -635,7 +658,10 @@ const BUCKET_LABELS: Record<string, string> = {
 function describeHold(bucket: string, reasons: string[]): string {
   const detail = reasons.map((r) => HOLD_REASON_LABELS[r] ?? r).filter(Boolean);
   if (detail.length) return detail.join('；');
-  return BUCKET_LABELS[bucket] ?? '暂时无法上架';
+  if (BUCKET_LABELS[bucket]) return BUCKET_LABELS[bucket];
+  // planner 没有为它出候选，说明它压根不在这次的评估范围里 —— 常见原因是它早就上线了。
+  // 这跟「planner 看过、判定不能上架」是两回事，不能共用一句话。
+  return '上架计划未评估这件商品，需要人工确认';
 }
 
 /**
@@ -730,12 +756,17 @@ async function readStock(client: SupabaseClient, skus: string[]): Promise<Map<st
   const map = new Map<string, number>();
   if (!skus.length) return map;
   for (let i = 0; i < skus.length; i += 200) {
+    // 列名是 total_available，不是 total_available_qty（后者是 standardized_products 的列）。
+    // 写错列会让 PostgREST 拒绝整条查询，而这里原本把错误咽了下去直接跳出循环 ——
+    // 于是预览里每件商品的库存都是空的，看上去像「读不到库存」，其实是查询根本没成立。
+    // inventory_cache 一个 SKU 可能有多个仓库行，total_available 是 SKU 级合计、逐行重复，
+    // 所以取值而不是求和。
     const { data, error } = await client.from('inventory_cache')
-      .select('supplier_product_id,total_available_qty')
+      .select('supplier_product_id,total_available')
       .in('supplier_product_id', skus.slice(i, i + 200));
-    if (error) break;
-    for (const row of (data ?? []) as Array<{ supplier_product_id: string; total_available_qty: number | null }>) {
-      map.set(row.supplier_product_id, Number(row.total_available_qty ?? 0));
+    if (error) throw new Error(`READ_FAILED:inventory_cache:${error.message}`);
+    for (const row of (data ?? []) as Array<{ supplier_product_id: string; total_available: number | null }>) {
+      map.set(row.supplier_product_id, Number(row.total_available ?? 0));
     }
   }
   return map;
@@ -759,6 +790,15 @@ async function runOnboardingPreview(
 ): Promise<Record<string, unknown>> {
   const { normalizeProduct } = await import('../src/services/normalizationPipeline');
   const { generateReviewSet } = await import('../src/services/reviewGenerator');
+
+  // 「检查新收藏」按钮点的就是这条路，那它就得真的去读一次 Pickup 当前收藏。此前它只跑预览，
+  // 收藏快照与候选报告都停在上一次刷新的时刻（实测停在十小时前），于是「发现新品」永远是同一批，
+  // 早就上线的商品也一直赖在待上新里。刷新走既有 check-new-saved，不另起一套。
+  // 保护在预览末尾按本次候选统一处理，这里只刷新，不建保护。
+  if (request.refresh_saved) {
+    const refreshed = await runCheckNewSaved({ ...request, apply_protection: false }, client);
+    if (refreshed.ok === false) return refreshed;
+  }
 
   const live = readLiveSavedSnapshot();
   const pickupSaved = live?.skus ?? await loadPickupSaved(client);

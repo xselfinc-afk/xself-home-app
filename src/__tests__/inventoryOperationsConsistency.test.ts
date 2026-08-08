@@ -20,7 +20,7 @@ import {
   isFullScanReport,
   parseLaunchctlPrint,
 } from '../../scripts/xoneInventoryLifecycleBridge';
-import { extractSavedSkusFromDelta } from '../../scripts/xoneProductOnboardingBridge';
+import { buildPreviewRows, extractSavedSkusFromDelta } from '../../scripts/xoneProductOnboardingBridge';
 
 let passed = 0;
 function it(name: string, fn: () => void): void { fn(); passed++; console.log(`  ✓ ${name}`); }
@@ -740,6 +740,91 @@ function main(): void {
       );
       assert.equal(new RegExp(`console\\.log\\([^)]*${key}`).test(source), false);
     }
+  });
+
+  // ── 已上线商品回到待上新：写错列 + 咽掉错误 ────────────────────────────────
+  //
+  // 现场：W5870P523986/7/8 已经 published、sellable、$139，界面却把它们列在
+  // 「需要处理的商品 · 无法上架 · 暂时无法上架」。根因不在判定逻辑，在一次读不出来的查询：
+  // loadFacts 的 select 里写了 standardized_products.product_type_id，这个列并不存在
+  // （它是 planGigaSavedItems 算出来的中间值）。PostgREST 因此拒绝整条查询、只返回 error，
+  // 而那里从不看 error —— 于是每一件商品都被读成「不在 standardized_products、未发布」。
+  // 已上线的商品重新变成候选，planner 不会再为它们出候选，落进 UNKNOWN 桶，
+  // 最后被 describeHold 写成一句「暂时无法上架」。
+
+  it('现场. 桥接的 select 不得引用不存在的列', () => {
+    const onboarding = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+    const lifecycle = fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8');
+    // product_type_id 属于 planGigaSavedItems 的中间结果，不是 standardized_products 的列。
+    assert.equal(/product_type_id/.test(code(onboarding, '//')), false);
+    // 库存缓存的列叫 total_available；total_available_qty 是 standardized_products 的。
+    assert.ok(/inventory_cache'\)\s*\n?\s*\.select\('supplier_product_id,total_available'\)/.test(onboarding));
+    // inventory_workflow_states 没有 source_run_id —— 建议来自哪次 run 由请求带过来。
+    const approval = lifecycle.slice(lifecycle.indexOf("from('inventory_workflow_states')"));
+    assert.equal(/source_run_id/.test(approval.slice(0, 200)), false);
+  });
+
+  it('现场. 事实读失败必须报错，不得静默当成「未发布」', () => {
+    const onboarding = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const lifecycle = code(fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8'), '//');
+    // loadFacts 的四张表、readStock、以及人工批准读的三张表，都必须检查 error。
+    for (const table of ['supplier_products', 'standardized_products', 'sellable_products']) {
+      assert.ok(
+        new RegExp(`\\['${table}', \\w+Res\\]`).test(onboarding),
+        `loadFacts 必须检查 ${table} 的查询错误`,
+      );
+    }
+    assert.ok(/throw new Error\(`READ_FAILED:\$\{table\}/.test(onboarding));
+    assert.ok(/throw new Error\(`READ_FAILED:inventory_cache/.test(onboarding), '库存读失败不得咽下');
+    assert.equal(/if \(error\) break;/.test(onboarding), false, '不得用 break 咽掉查询错误');
+    assert.ok(/throw new Error\(`READ_FAILED:\$\{table\}/.test(lifecycle), '人工批准的事实读失败必须报错');
+  });
+
+  it('现场. planner 没评估过的商品，不能说成「暂时无法上架」', () => {
+    // 计划里根本没有这件商品 —— 常见原因就是它早就上线了，planner 不再为它出候选。
+    const rows = buildPreviewRows({
+      plan: { proposed_batch: { skus: [] }, candidates: [] },
+      supplierRows: [{ supplier_product_id: 'W5870P523986', title: 'Sofa', images: [], price: 100 }],
+      normalize: (row) => row,
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].bucket, 'UNKNOWN');
+    // 「没评估过」与「评估过、判定不能上架」必须是两句话。
+    assert.notEqual(rows[0].blocked_reason, '暂时无法上架');
+    assert.match(rows[0].blocked_reason ?? '', /未评估/);
+
+    // planner 真的判定过的，仍然照原样说明原因，不被这次改动冲掉。
+    const held = buildPreviewRows({
+      plan: { proposed_batch: { skus: [] }, candidates: [{ id: 'X1', bucket: 'HOLD_PHASE2', reasons: ['cfgmissing_fragmented'] }] },
+      supplierRows: [{ supplier_product_id: 'X1', title: 'Hall Tree', images: [], price: 100 }],
+      normalize: (row) => row,
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+    assert.equal(held[0].blocked_reason, '同系列商品配置不完整，需要人工确认');
+  });
+
+  it('现场. 「检查新收藏」必须真的去读一次当前收藏', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 刷新走既有 check-new-saved，不另起一套发现流程。
+    assert.ok(/if \(request\.refresh_saved\) \{[\s\S]{0,200}runCheckNewSaved\(/.test(bridge));
+    // 刷新阶段不建保护 —— 保护在预览末尾按本次候选统一处理，避免给旧候选留保护。
+    assert.ok(/runCheckNewSaved\(\{ \.\.\.request, apply_protection: false \}/.test(bridge));
+
+    const rust = code(fs.readFileSync('../XOne/src-tauri/src/lib.rs', 'utf8'), '//');
+    const preview = rust.slice(rust.indexOf('fn start_onboarding_preview'));
+    assert.ok(/"refresh_saved": true/.test(preview.slice(0, 600)), '按钮必须带上刷新');
+    // 协议层要放行这个字段，否则请求会被判成非法。
+    assert.ok(/"apply_protection", "import_drafts", "refresh_saved"/.test(rust));
+  });
+
+  it('现场. taxonomy 门禁必须接到真实分类器，而不是恒为 false', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 仓库里唯一的分类器就是 classifyCommerce，planGigaSavedItems 用的也是它。
+    assert.ok(/from '\.\.\/src\/utils\/commerceTaxonomy'/.test(bridge), '必须复用既有分类器');
+    assert.ok(/taxonomy_needs_review: std \? isNeedsReview\(classifyCommerce\(/.test(bridge));
+    // 不得自己重写一套分类判定。
+    assert.equal(/NEEDS_REVIEW'/.test(bridge), false, '不得自己比对分类常量字符串');
   });
 
   console.log(`\n${passed} passed`);

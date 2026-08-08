@@ -1930,8 +1930,12 @@ export async function executeInventoryLifecycleBridge(
 
     // 后台重新读取最新事实 —— 前端传来的任何判断都不采信。
     const [workflowRes, availabilityRes, productRes, publishedCountRes] = await Promise.all([
+      // source_run_id 不是这张表的列 —— 建议来自哪次 run 由请求带过来，下面用的是
+      // product_availability_current.last_run_id。写在这里会让 PostgREST 拒绝整条查询，
+      // workflow 读成 null，于是 workflow_state 永远对不上、确认次数永远是 0，
+      // 每一次人工批准都被判成 not_eligible。方向是 fail-closed，但门禁等于失灵。
       client.from('inventory_workflow_states')
-        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock,source_run_id')
+        .select('supplier_product_id,workflow_state,consecutive_out_of_stock,consecutive_in_stock')
         .eq('supplier_product_id', sku).maybeSingle(),
       client.from('product_availability_current')
         .select('supplier_product_id,available,checked_at,last_run_id')
@@ -1941,6 +1945,15 @@ export async function executeInventoryLifecycleBridge(
         .eq('supplier_product_id', sku).maybeSingle(),
       client.from('standardized_products').select('supplier_product_id', { count: 'exact', head: true }).eq('published', true),
     ]);
+    // 事实读失败必须报错。安全门吃到 null 会一律拒绝，看上去像「不允许这么做」，
+    // 其实是根本没读到事实 —— 两者对运营的含义完全不同。
+    for (const [table, res] of [
+      ['inventory_workflow_states', workflowRes],
+      ['product_availability_current', availabilityRes],
+      ['standardized_products', productRes],
+    ] as const) {
+      if (res.error) throw new Error(`READ_FAILED:${table}:${res.error.message}`);
+    }
     const workflow = (workflowRes.data ?? null) as { workflow_state?: string; consecutive_out_of_stock?: number; consecutive_in_stock?: number } | null;
     const availability = (availabilityRes.data ?? null) as { available?: boolean | null; checked_at?: string | null; last_run_id?: string | null } | null;
     const product = (productRes.data ?? null) as { published?: boolean | null; product_title?: string | null } | null;

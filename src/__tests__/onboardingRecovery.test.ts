@@ -141,8 +141,10 @@ function main(): void {
 
   // ── 4 + 5. 续跑计划：回放 planner 的决定，不重新规划 ────────────────────────
 
+  // 计划用 fixture，不读 reports/ 下的实时产物 —— 那份文件每次预览都会被覆盖，
+  // 测试跟着它走就成了「今天点过哪个按钮」的函数，而不是对 buildRecoveryPlan 的检验。
   const realPlan = JSON.parse(
-    fs.readFileSync('reports/giga-auto-publish/xone-onboarding-plan.json', 'utf8'),
+    fs.readFileSync('src/__tests__/fixtures/xone-onboarding-plan-2026-08-08.json', 'utf8'),
   ) as Record<string, unknown>;
 
   it('4. 续跑计划精确覆盖这三件，且 schema 与执行器一致', () => {
