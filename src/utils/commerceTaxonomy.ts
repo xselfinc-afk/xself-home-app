@@ -65,6 +65,7 @@ export const DEPARTMENTS: DepartmentDef[] = [
   { id: 'pet-supplies', label: 'Pet Supplies' },
   { id: 'kids-baby', label: 'Kids & Baby' },
   { id: 'fitness-sports', label: 'Fitness & Sports' }, // activated — has Fitness + Sports categories
+  { id: 'home-decor', label: 'Home Décor' },           // activated — has Indoor Décor category
   // Declared for extensibility — no current-catalog categories yet.
   { id: 'kitchen-dining', label: 'Kitchen & Dining', future: true },
   { id: 'storage-organization', label: 'Storage & Organization', future: true },
@@ -90,6 +91,9 @@ export const CATEGORIES: CategoryDef[] = [
   { id: 'outdoor-decor', label: 'Outdoor Décor', department: 'outdoor-garden' },
   { id: 'fitness', label: 'Fitness', department: 'fitness-sports' },
   { id: 'sports', label: 'Sports', department: 'fitness-sports' },
+  // 室内装饰。与 outdoor-decor 对称：那一条只收户外摆件，室内的一直无处可去，
+  // 于是「Vases & Jars」这类正常家居商品只能落到 needs-review。
+  { id: 'indoor-decor', label: 'Indoor Décor', department: 'home-decor' },
   { id: NEEDS_REVIEW, label: 'Needs Review', department: NEEDS_REVIEW },
 ];
 
@@ -147,6 +151,9 @@ export const PRODUCT_TYPES: ProductTypeDef[] = [
   // Outdoor Décor (Garden & Outdoor)
   { id: 'water-fountains', label: 'Water Fountains', category: 'outdoor-decor', rooms: [] },
   { id: 'statues-sculptures', label: 'Statues & Sculptures', category: 'outdoor-decor', rooms: [] },
+  // Indoor Décor (Home Décor) —— 只按真实在库品类开，与「categories/types get added as
+  // inventory lands」一致：目前供应商侧唯一未覆盖的室内装饰品类是 Vases & Jars（4 件）。
+  { id: 'vases-vessels', label: 'Vases & Vessels', category: 'indoor-decor', rooms: ['living-room', 'bedroom', 'dining-room', 'entryway'] },
   // Fitness (Fitness & Sports)
   { id: 'elliptical-trainers', label: 'Elliptical Trainers', category: 'fitness', rooms: [] },
   { id: 'exercise-bikes', label: 'Exercise Bikes', category: 'fitness', rooms: [] },
@@ -234,6 +241,10 @@ const TITLE_RULES: { type: string; kw: string[]; exclude?: string[]; excludeWord
     exclude: ['pump for', 'replacement pump', 'fountain pump', 'pump kit', 'faucet', 'spout', 'plumbing', 'nozzle'] },
   { type: 'statues-sculptures',   kw: ['garden statue', 'outdoor statue', 'yard statue', 'lawn statue', 'garden sculpture', 'outdoor sculpture', 'yard sculpture', 'lawn ornament', 'garden ornament', 'decorative statue', 'decorative sculpture', 'statue', 'statues', 'sculpture', 'sculptures'],
     exclude: ['indoor', 'figurine'] },
+  // Indoor Décor. 'vase' 不是任何家具词的子串，可以直接用；其余一律多词 token。
+  // 排除件与配件：花瓶插件、替换内胆之类不是成品摆件，让它们落到 needs-review。
+  { type: 'vases-vessels',        kw: ['vase', 'vases', 'decorative jar', 'ginger jar', 'storage jar', 'urn planter', 'decorative bowl'],
+    exclude: ['replacement insert', 'vase filler', 'artificial flower', 'faux flower', 'flower stem'] },
   // ── Furniture (unchanged) ──
   { type: 'tv-stand',        kw: ['tv stand', 'tv cabinet', 'tv unit', 'media console', 'media stand', 'media storage', 'entertainment center', 'av media', 'av stand'] },
   { type: 'makeup-vanity',   kw: ['makeup vanity', 'dressing table', 'vanity desk', 'vanity table', 'vanity set', 'vanity mirror', 'vanity stool'] }, // before dresser/nightstand: "Bedside … Dressing Table" is a vanity
@@ -303,6 +314,7 @@ const SPEC_FALLBACK: Record<string, string> = {
   // ── Validated GIGA crosswalk (SPEC_FALLBACK only; title rules + safety excludes win first) ──
   // The step-4 guard re-checks each target type's title exclude/excludeWord, so pet treadmills,
   // golf organizers, fountain components, and indoor figurines are NEVER resurrected here.
+  'vases & jars': 'vases-vessels',
   'water fountains': 'water-fountains',
   'step machines': 'step-machines',
   'statues & sculptures': 'statues-sculptures',

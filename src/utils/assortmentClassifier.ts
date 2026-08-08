@@ -34,6 +34,7 @@ export type AssortmentBasis =
   | 'strong_non_furniture'
   | 'taxonomy_furniture'
   | 'taxonomy_outdoor_garden'
+  | 'taxonomy_home_decor'
   | 'taxonomy_non_furniture_department'
   | 'supplementary_furniture_head'
   | 'supplementary_outdoor_product'
@@ -316,6 +317,12 @@ export function classifyAssortment(input: AssortmentInput): AssortmentResult {
   if (!isNeedsReview(tax)) {
     if (dept === 'furniture' || FURNITURE_TYPES_OUTSIDE_FURNITURE_DEPT.has(type)) {
       return asFurniture('taxonomy_furniture', type);
+    }
+    // Home Décor 是 taxonomy 的正式部门（indoor-decor）。没有这一条，室内装饰会掉进下面的
+    // genuine_non_furniture —— 那是「不卖的东西」，与 taxonomy 自己的声明直接矛盾。
+    // 归到既有的 home_decor 类：门禁语义是 policy_review_decor，交人决定，不是拒收。
+    if (dept === 'home-decor') {
+      return { assortment: 'home_decor', basis: 'taxonomy_home_decor', matched: type, ...base };
     }
     if (dept === 'outdoor-garden') {
       const decor = first(DECOR, title);

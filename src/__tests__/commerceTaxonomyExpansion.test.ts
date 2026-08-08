@@ -187,4 +187,36 @@ it('existing furniture SPEC_FALLBACK unaffected by the invariant guard', () => {
   assert.equal(clsCat('Plain Unit', 'Nightstands'), 'nightstand');
 });
 
+// ── Home Décor → Indoor Décor（与 Outdoor Décor 对称的追加扩展）──
+//
+// 起因：4 件正常的 Decorative Metal Vases 被 needs_review_taxonomy 拦住。分类器没判错 ——
+// 分类体系里压根没有室内装饰的位置：outdoor-decor 只收户外摆件。按既有机制正式补上。
+it('Home Décor 部门与 Indoor Décor 类目已正式登记，且不违反注册表不变量', () => {
+  assert.deepEqual(validateRegistry(), []);
+  assert.ok(DEPARTMENTS.some(d => d.id === 'home-decor' && !d.future), 'home-decor 必须是已启用部门');
+  const cat = CATEGORIES.find(c => c.id === 'indoor-decor');
+  assert.ok(cat && cat.department === 'home-decor');
+  const t = PRODUCT_TYPES.find(x => x.id === 'vases-vessels');
+  assert.ok(t && t.category === 'indoor-decor');
+  // 室内装饰要出现在室内房间里，不能挂到 outdoor。
+  assert.ok(t!.rooms.includes('living-room'));
+  assert.equal(t!.rooms.includes('outdoor'), false);
+});
+it('花瓶：标题与供应商分类两条路都能判到 vases-vessels', () => {
+  assert.equal(type('Decorative Metal Vases Set of 3, Gold Leaf Pattern Floor Vase'), 'vases-vessels');
+  assert.equal(type('Antique White Ceramic Vase for Living Room'), 'vases-vessels');
+  assert.equal(clsCat('Unnamed Item', 'Vases & Jars'), 'vases-vessels');   // 弱标题 → crosswalk
+});
+it('花瓶规则不吃掉配件，也不碰既有家具分类', () => {
+  // 花瓶的配件与耗材不是成品摆件，仍然落到 needs-review。
+  assert.equal(type('Vase Filler Decorative Balls'), 'needs-review');
+  assert.equal(type('Artificial Flower Stems for Vase'), 'needs-review');
+  // 既有分类一件都不能被改判。
+  assert.equal(type('Folding Sofa Bed, Convertible Sleeper Chair'), 'sofa');
+  assert.equal(type('Fully Assembled 48 Freestanding Single Bathroom Vanity'), 'bathroom-vanity');
+  assert.equal(type('Makeup Vanity Table with Mirror'), 'makeup-vanity');
+  assert.equal(type('Farmhouse 4-in-1 Hall Tree with 6 Hooks'), 'coat-rack');
+  assert.equal(type('24" Lion Statue, Resin Outdoor Guardian Sculpture'), 'statues-sculptures');
+});
+
 console.log(`\n${passed} passed`);
