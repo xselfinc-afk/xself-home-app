@@ -674,6 +674,62 @@ function main(): void {
     }
   });
 
+  it('现场 1. 登录必须带 pickup 要求的 --probe-sku，且输出不得丢弃', () => {
+    // supplierSession.ts 对 pickup 明确要求探测 SKU，缺了就直接 EXIT_FAIL。
+    const session = fs.readFileSync('scripts/supplierSession.ts', 'utf8');
+    assert.ok(/source === 'pickup' && !probeSku/.test(session), '前提：pickup 必须带探测 SKU');
+
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runSupplierLogin');
+    const block = bridge.slice(start, bridge.indexOf('async function runRecoveryList'));
+    assert.ok(/--probe-sku=\$\{probeSku\}/.test(block), '必须传探测 SKU');
+    assert.ok(/NO_PROBE_SKU/.test(block), 'pickup 找不到探测 SKU 时必须明确失败，而不是静默启动');
+    // 输出必须留到文件 —— 上一次就是全丢进 /dev/null 才导致失败无人知晓。
+    assert.ok(/stdio: \['ignore', out, out\]/.test(block), '子进程输出必须留存');
+    assert.equal(/Stdio::null|\/dev\/null/.test(block), false);
+    // 登录会开一个有头浏览器等人操作，必须 detached。
+    assert.ok(/detached: true/.test(block));
+    assert.ok(/child\.unref\(\)/.test(block));
+    // 工具链自检仍在。
+    assert.ok(/preflightToolchain/.test(block));
+
+    // Rust 侧不再自己 spawn，改走桥接。
+    const rust = fs.readFileSync('/Users/heliu/XOne/src-tauri/src/lib.rs', 'utf8');
+    const fn = rust.slice(rust.indexOf('async fn start_supplier_favorite_login'), rust.indexOf('async fn start_supplier_favorite_login') + 1200);
+    assert.ok(/"operation": "supplier-login"/.test(fn), 'Rust 必须走桥接');
+    assert.equal(/Stdio::null/.test(fn), false, 'Rust 不得再丢弃登录输出');
+  });
+
+  it('现场 2. 草稿导入只传 ready_for_sync 的 SKU，否则脚本 fail-closed', () => {
+    // 导入脚本是 fail-closed 的：--only 里只要有一个不在它的 ready_for_sync 集合里，整次退出 1。
+    const importer = fs.readFileSync('scripts/syncGigaNewlySavedCandidates.ts', 'utf8');
+    assert.ok(/not in ready_for_sync/.test(importer), '前提：导入脚本会因此整体拒绝');
+
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/classification === 'ready_for_sync'/.test(bridge), '只能把 ready_for_sync 的交给导入');
+    const start = bridge.indexOf('const importable = reported');
+    const block = bridge.slice(start, start + 900);
+    assert.ok(/--only=\$\{importable\.join\(','\)\}/.test(block), '传的必须是筛过的集合');
+    assert.ok(/importable\.length > 0/.test(block), '没有要导入的就跳过，而不是空跑一次');
+    // 失败时把脚本自己的原因带出来，不再只说一句「请稍后重试」。
+    assert.ok(/error=/.test(block));
+  });
+
+  it('现场 3. 上架后必须刷新配送费用，否则 Checkout 只能报价', () => {
+    // runGigaAutoPublish 的八个阶段里没有运费 —— 运费是 orchestrator 的第 7 步。
+    const runner = fs.readFileSync('scripts/runGigaAutoPublish.ts', 'utf8');
+    assert.equal(/refreshGigaDeliveryFees|charged_fee/.test(runner), false, '前提：执行器不管运费');
+    const orchestrator = fs.readFileSync('scripts/gigaSavedToLiveOrchestrator.ts', 'utf8');
+    assert.ok(/refreshGigaDeliveryFeesHybrid/.test(orchestrator), '前提：Golden Path 在发布后单独跑运费');
+
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // XOne 续跑必须补上同一个脚本，而不是自己算运费。
+    assert.ok(/scripts\/refreshGigaDeliveryFeesHybrid\.ts/.test(bridge), '必须复用既有运费脚本');
+    assert.equal(/charged_fee_cents\s*[:=]\s*[0-9]/.test(bridge), false, '绝不自己写运费数值');
+    // 刚变成可售的商品也要一起刷，否则要等下一轮才补得上。
+    assert.ok(/feeTargets = \[\.\.\.new Set\(\[\.\.\.fees, \.\.\.evidence\]\)\]/.test(bridge));
+  });
+
   it('凭据键只按名字摘除，从不读取或打印其值', () => {
     const source = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
     assert.ok(/delete env\[key\]/.test(source), '必须摘除继承来的默认账号凭据');

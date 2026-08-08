@@ -37,6 +37,8 @@ export interface OnboardingProgressFacts {
   /** product_availability_current 是否有行。 */
   has_availability_evidence: boolean;
   in_sellable: boolean;
+  /** giga_delivery_fee_cache 里有可用的运费。没有它，Checkout 只能显示 Quote required。 */
+  has_delivery_fee: boolean;
 }
 
 export type OnboardingStage =
@@ -46,7 +48,8 @@ export type OnboardingStage =
   | 'media'       // 图片
   | 'inventory'   // 库存
   | 'reviews'     // 评价
-  | 'visibility'; // App 可见验证（库存证据 + sellable）
+  | 'visibility'  // App 可见验证（库存证据 + sellable）
+  | 'delivery';   // 配送费用（Checkout 能否报价）
 
 export const STAGE_LABELS: Record<OnboardingStage, string> = {
   data: '资料',
@@ -56,6 +59,7 @@ export const STAGE_LABELS: Record<OnboardingStage, string> = {
   inventory: '库存',
   reviews: '评价',
   visibility: 'App 可见验证',
+  delivery: '配送费用',
 };
 
 /** 每个阶段是否已完成。判定只看产物，不看执行器说了什么。 */
@@ -69,6 +73,7 @@ export function stageCompletion(facts: OnboardingProgressFacts): Record<Onboardi
     reviews: facts.active_review_count > 0,
     // App 可见是回读出来的结论，不是某个脚本「跑过」就算数。
     visibility: facts.in_sellable,
+    delivery: facts.has_delivery_fee,
   };
 }
 
@@ -77,7 +82,8 @@ export type RecoveryState =
   | 'pipeline_incomplete'  // 八个阶段还没走完 → 续跑流水线
   | 'awaiting_evidence'    // 阶段都完了，只差库存证据 → 需要一次库存读取
   | 'published_not_visible'// 证据也有了，却仍不在 sellable → 需要人看
-  | 'complete';            // App 可见
+  | 'awaiting_delivery_fee'// App 可见了，但 Checkout 报不出运费
+  | 'complete';            // App 可见且可结算
 
 /**
  * 这件商品现在处于什么状态，以及下一步该做什么。
@@ -88,7 +94,7 @@ export type RecoveryState =
 export function deriveRecoveryState(facts: OnboardingProgressFacts): {
   state: RecoveryState;
   missing: OnboardingStage[];
-  nextAction: 'none' | 'resume_pipeline' | 'refresh_availability' | 'needs_review';
+  nextAction: 'none' | 'resume_pipeline' | 'refresh_availability' | 'refresh_delivery_fee' | 'needs_review';
 } {
   if (!facts.supplier_published && !facts.in_standardized) {
     return { state: 'not_started', missing: [], nextAction: 'none' };
@@ -101,6 +107,11 @@ export function deriveRecoveryState(facts: OnboardingProgressFacts): {
     return { state: 'pipeline_incomplete', missing: [...missingPipeline, 'visibility'], nextAction: 'resume_pipeline' };
   }
   if (facts.in_sellable) {
+    // 上架了不等于卖得出去：没有运费缓存，Checkout 只会显示 Quote required。
+    // 运费是 Golden Path orchestrator 的第 7 步，发布之后单独跑，软失败不回滚。
+    if (!facts.has_delivery_fee) {
+      return { state: 'awaiting_delivery_fee', missing: ['delivery'], nextAction: 'refresh_delivery_fee' };
+    }
     return { state: 'complete', missing: [], nextAction: 'none' };
   }
   // 八个阶段都完了却不可售：先看是不是根本还没有库存证据。
@@ -113,7 +124,9 @@ export function deriveRecoveryState(facts: OnboardingProgressFacts): {
 
 /** 只有这两种状态算「上架未完成」，需要出现在续跑清单里。 */
 export function isResumable(state: RecoveryState): boolean {
-  return state === 'pipeline_incomplete' || state === 'awaiting_evidence';
+  return state === 'pipeline_incomplete'
+    || state === 'awaiting_evidence'
+    || state === 'awaiting_delivery_fee';
 }
 
 /**

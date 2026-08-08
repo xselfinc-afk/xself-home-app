@@ -18,7 +18,7 @@
 import { config as loadEnv } from 'dotenv';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
   deriveOnboardingState,
@@ -68,6 +68,7 @@ const PAGE_MAX = 50;
 
 export type OnboardingOperation =
   | 'check-new-saved'
+  | 'supplier-login'
   | 'onboarding-recovery-list'
   | 'onboarding-recovery-resume'
   | 'onboarding-preview'
@@ -92,6 +93,8 @@ export interface OnboardingRequest {
   expected_ready?: number;
   /** onboarding-preview 用：把候选缩到这几个 SKU。为受控验收准备，日常不传。 */
   skus?: string[];
+  /** supplier-login 用：pickup | dropship。 */
+  account?: string;
 }
 
 export function parseOnboardingRequest(raw: string): OnboardingRequest {
@@ -100,7 +103,7 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
   const r = parsed as Partial<OnboardingRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
   const ops: OnboardingOperation[] = [
-    'check-new-saved', 'onboarding-recovery-list', 'onboarding-recovery-resume',
+    'check-new-saved', 'supplier-login', 'onboarding-recovery-list', 'onboarding-recovery-resume',
     'onboarding-preview', 'onboarding-preview-cached', 'onboarding-batch-publish',
     'onboarding-candidates', 'prepare-onboarding-candidate', 'approve-first-publish',
   ];
@@ -122,6 +125,7 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     apply_protection: r.apply_protection === true,
     import_drafts: r.import_drafts === true,
     expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
+    account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
     skus: Array.isArray(r.skus)
       ? r.skus.map((x) => String(x).trim()).filter((x) => x.length > 0 && x.length <= 64).slice(0, PAGE_MAX)
       : undefined,
@@ -780,16 +784,29 @@ async function runOnboardingPreview(
   }
 
   // 2. 草稿导入：只 insert 未存在的行，published 取 DB 默认 false。不是上架。
+  //
+  // 只把候选报告判为 ready_for_sync 的那些交给导入脚本。它是 fail-closed 的：--only 里只要
+  // 有一个 SKU 不在它的 ready_for_sync 集合里，整次调用就以
+  // "--only includes SKU(s) not in ready_for_sync" 退出 1。此前这里把全部候选一股脑传进去，
+  // 28 个里有 24 个早已导入过（already_exists），于是每次「检查新收藏」都必然失败。
+  const importable = reported
+    .filter((c) => c.classification === 'ready_for_sync' && candidateSkus.includes(c.sku))
+    .map((c) => c.sku);
   let importedDrafts = false;
-  if (request.import_drafts) {
-    progress('import', `正在导入 ${candidateSkus.length} 件商品草稿`);
+  if (request.import_drafts && importable.length > 0) {
+    progress('import', `正在导入 ${importable.length} 件商品草稿`);
     const sync = runScript(
       'scripts/syncGigaNewlySavedCandidates.ts',
-      ['--sync', `--only=${candidateSkus.join(',')}`, '--summary'],
+      ['--sync', `--only=${importable.join(',')}`, '--summary'],
       900_000,
     );
-    if (sync.status !== 0) return failure('DRAFT_IMPORT_FAILED', '商品草稿导入失败，请稍后重试');
+    if (sync.status !== 0) {
+      const detail = String(sync.stderr ?? '').split('\n').find((l) => l.startsWith('error=')) ?? '';
+      return failure('DRAFT_IMPORT_FAILED', `商品草稿导入失败${detail ? `：${detail.slice(6, 160)}` : '，请稍后重试'}`);
+    }
     importedDrafts = true;
+  } else if (request.import_drafts) {
+    progress('import', '没有需要导入的新商品，跳过');
   }
 
   // 3. Ready 名单的唯一来源：既有 planner。CLI 原样调用，一个参数都没改。
@@ -934,7 +951,7 @@ export function describeApplyFailure(report: Record<string, any> | null): { stag
 /** 读齐续跑判定需要的全部事实。 */
 async function readProgressFacts(client: SupabaseClient, skus: string[]): Promise<OnboardingProgressFacts[]> {
   if (!skus.length) return [];
-  const [sp, std, sell, reviews, avail] = await Promise.all([
+  const [sp, std, sell, reviews, avail, fees] = await Promise.all([
     client.from('supplier_products').select('supplier_product_id,published').in('supplier_product_id', skus),
     client.from('standardized_products')
       .select('supplier_product_id,published,normalization_status,optimized_title,selling_price,primary_image_mirror_status,primary_image_blurhash,inventory_status,total_available_qty')
@@ -942,11 +959,14 @@ async function readProgressFacts(client: SupabaseClient, skus: string[]): Promis
     client.from('sellable_products').select('supplier_product_id').in('supplier_product_id', skus),
     client.from('product_reviews').select('supplier_product_id').eq('status', 'active').in('supplier_product_id', skus),
     client.from('product_availability_current').select('supplier_product_id').in('supplier_product_id', skus),
+    // 运费缓存：Checkout 读的就是它。没有可用运费就只能显示 Quote required。
+    client.from('giga_delivery_fee_cache').select('supplier_product_id,charged_fee_cents').in('supplier_product_id', skus),
   ]);
   const supplierPub = new Map((sp.data ?? []).map((r: any) => [r.supplier_product_id, r.published === true]));
   const stdById = new Map((std.data ?? []).map((r: any) => [r.supplier_product_id, r]));
   const sellSet = new Set((sell.data ?? []).map((r: any) => r.supplier_product_id));
   const availSet = new Set((avail.data ?? []).map((r: any) => r.supplier_product_id));
+  const feeSet = new Set((fees.data ?? []).filter((r: any) => r.charged_fee_cents != null).map((r: any) => r.supplier_product_id));
   const reviewCount = new Map<string, number>();
   for (const r of (reviews.data ?? []) as any[]) {
     reviewCount.set(r.supplier_product_id, (reviewCount.get(r.supplier_product_id) ?? 0) + 1);
@@ -968,6 +988,7 @@ async function readProgressFacts(client: SupabaseClient, skus: string[]): Promis
       active_review_count: reviewCount.get(sku) ?? 0,
       has_availability_evidence: availSet.has(sku),
       in_sellable: sellSet.has(sku),
+      has_delivery_fee: feeSet.has(sku),
     };
   });
 }
@@ -1038,6 +1059,69 @@ function readLatestTargetedAvailabilityReport(): Record<string, any> | null {
   return best;
 }
 
+/**
+ * 拉起供应商登录。
+ *
+ * 登录按钮此前「点了没反应」：Rust 只传了 `--source=<account>`，而 supplierSession.ts 对
+ * pickup 明确要求 `--probe-sku`（登录后必须用一次有界的仓库探测确认身份才允许提升快照），
+ * 缺参数直接 EXIT_FAIL；Rust 又把 stdout/stderr 都丢进了 /dev/null，并在 spawn 之后立刻
+ * 返回成功。于是界面说「已打开登录窗口」，实际进程早已退出。
+ *
+ * 探测 SKU 不硬编码：从当前已发布商品里取一个（读的是既有数据，不新建约定）。
+ * 进程保持 detached —— session:login 会开一个有头浏览器等人操作，最长 20 分钟。
+ */
+async function runSupplierLogin(
+  request: OnboardingRequest,
+  client: SupabaseClient,
+): Promise<Record<string, unknown>> {
+  const account = request.account;
+  if (account !== 'pickup' && account !== 'dropship') return failure('INVALID_ACCOUNT', '未知的供应商账号');
+
+  const preflight = preflightToolchain(childEnv({}, {}));
+  if (!preflight.ok) return failure('TOOLCHAIN_UNAVAILABLE', `无法打开登录窗口：${preflight.reason}`);
+
+  // pickup 的登录必须带探测 SKU，否则脚本会直接退出。
+  let probeSku: string | null = null;
+  const { data, error } = await client.from('standardized_products')
+    .select('supplier_product_id').eq('published', true)
+    .order('supplier_product_id', { ascending: true }).limit(1);
+  if (!error && data && data.length) probeSku = String(data[0].supplier_product_id);
+  if (account === 'pickup' && !probeSku) {
+    return failure('NO_PROBE_SKU', '找不到可用于登录校验的已发布商品，请先完成一次上架');
+  }
+
+  const logPath = path.join(REPORT_DIR, `xone-supplier-login-${account}.log`);
+  let out: number;
+  try {
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
+    // 输出落到文件而不是 /dev/null —— 上一次就是因为全丢掉了，失败才无人知晓。
+    out = fs.openSync(logPath, 'a');
+  } catch {
+    return failure('LOGIN_LOG_UNAVAILABLE', '无法准备登录日志文件');
+  }
+
+  const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
+  const args = [runtime, path.join(REPO, 'scripts/supplierSession.ts'), 'session:login', `--source=${account}`];
+  if (probeSku) args.push(`--probe-sku=${probeSku}`);
+  const child = spawn('/opt/homebrew/bin/node', args, {
+    cwd: REPO,
+    env: childEnv({}, {}),
+    detached: true,
+    stdio: ['ignore', out, out],
+  });
+  child.unref();
+  fs.closeSync(out);
+
+  if (!child.pid) return failure('LOGIN_SPAWN_FAILED', '无法打开登录窗口');
+  return envelope('supplier-login', {
+    production_write_attempted: false,
+    account,
+    probe_sku: probeSku,
+    pid: child.pid,
+    log_path: path.relative(REPO, logPath),
+  });
+}
+
 async function runRecoveryList(client: SupabaseClient): Promise<Record<string, unknown>> {
   const facts = await readProgressFacts(client, skusFromPlanSnapshots());
   const availabilityFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
@@ -1091,14 +1175,18 @@ async function runRecoveryResume(
   const facts = await readProgressFacts(client, skusFromPlanSnapshots());
   const pipeline: string[] = [];
   const evidence: string[] = [];
+  const fees: string[] = [];
   for (const f of facts) {
     const verdict = deriveRecoveryState(f);
     if (verdict.nextAction === 'resume_pipeline') pipeline.push(f.supplier_product_id);
     else if (verdict.nextAction === 'refresh_availability') evidence.push(f.supplier_product_id);
+    else if (verdict.nextAction === 'refresh_delivery_fee') fees.push(f.supplier_product_id);
   }
-  if (!pipeline.length && !evidence.length) return failure('NOTHING_TO_RESUME', '当前没有需要继续完成的商品');
+  if (!pipeline.length && !evidence.length && !fees.length) {
+    return failure('NOTHING_TO_RESUME', '当前没有需要继续完成的商品');
+  }
   if (typeof request.expected_ready === 'number'
-    && request.expected_ready !== pipeline.length + evidence.length) {
+    && request.expected_ready !== pipeline.length + evidence.length + fees.length) {
     return failure('STATE_CHANGED', '商品状态已经变化，请重新查看后再继续');
   }
 
@@ -1126,11 +1214,36 @@ async function runRecoveryResume(
     steps.push({ step: 'refresh_availability', skus: evidence.length, exit_code: scan.status });
   }
 
-  const after = await readProgressFacts(client, [...pipeline, ...evidence]);
+  // 运费：这是 Golden Path orchestrator 的第 7 步（发布之后单独跑，软失败不回滚）。
+  // XOne 的批量上架直接调 runGigaAutoPublish，而那八个阶段里根本没有运费 —— 所以刚上线的
+  // 商品在 Checkout 只会显示 Quote required。这里补上同一个脚本、同一套语义。
+  //
+  // 刚刚变成可售的商品同样要刷一次，否则要等到下一轮续跑才补得上。
+  const feeTargets = [...new Set([...fees, ...evidence])];
+  if (feeTargets.length) {
+    progress('refresh_delivery_fee', `正在获取 ${feeTargets.length} 件商品的配送费用`);
+    // 与 orchestrator 一致：软失败。运费拿不到不影响商品已经上线这件事。
+    const fee = runScript(
+      'scripts/refreshGigaDeliveryFeesHybrid.ts',
+      ['--skus', feeTargets.join(',')],
+      900_000,
+    );
+    steps.push({ step: 'refresh_delivery_fee', skus: feeTargets.length, exit_code: fee.status });
+  }
+
+  const after = await readProgressFacts(client, [...pipeline, ...evidence, ...fees]);
   const resumeFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
   const results = after.map((f) => {
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: null };
+    // App 能看到、但结不了账 —— 说清楚是运费没拿到，不要笼统说「不可见」。
+    if (verdict.state === 'awaiting_delivery_fee') {
+      return {
+        sku: f.supplier_product_id,
+        outcome: 'published_but_not_sellable',
+        reason: 'App 可见，但还没有配送费用，Checkout 会显示需要报价',
+      };
+    }
     if (f.standardized_published === true) {
       return {
         sku: f.supplier_product_id,
@@ -1273,6 +1386,7 @@ export async function executeOnboardingBridge(
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   if (request.operation === 'check-new-saved') return runCheckNewSaved(request, client);
+  if (request.operation === 'supplier-login') return runSupplierLogin(request, client);
   if (request.operation === 'onboarding-recovery-list') return runRecoveryList(client);
   if (request.operation === 'onboarding-recovery-resume') return runRecoveryResume(request, client);
   if (request.operation === 'onboarding-preview') return runOnboardingPreview(request, client);

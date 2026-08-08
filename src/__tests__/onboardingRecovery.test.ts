@@ -39,6 +39,7 @@ const afterFullPipeline = (over: Partial<OnboardingProgressFacts> = {}): Onboard
   active_review_count: 5,
   has_availability_evidence: false,
   in_sellable: false,
+  has_delivery_fee: false,
   ...over,
 });
 
@@ -97,7 +98,7 @@ function main(): void {
   });
 
   it('8 + 9. 只有真的进了 sellable 才算完成', () => {
-    const complete = deriveRecoveryState(afterFullPipeline({ has_availability_evidence: true, in_sellable: true }));
+    const complete = deriveRecoveryState(afterFullPipeline({ has_availability_evidence: true, in_sellable: true, has_delivery_fee: true }));
     assert.equal(complete.state, 'complete');
     assert.equal(complete.nextAction, 'none');
     assert.equal(isResumable(complete.state), false);
@@ -113,6 +114,29 @@ function main(): void {
     assert.equal(verdict.nextAction, 'needs_review');
     // 这种情况不该混进「继续完成」的批次里，重跑解决不了。
     assert.equal(isResumable(verdict.state), false);
+  });
+
+  it('现场 3. App 可见但没有运费 → 上架未完成，不是完成', () => {
+    // 这三件的真实处境：published、sellable 都有了，Checkout 却显示 Quote required。
+    const live = afterFullPipeline({ has_availability_evidence: true, in_sellable: true, has_delivery_fee: false });
+    const verdict = deriveRecoveryState(live);
+    assert.equal(verdict.state, 'awaiting_delivery_fee');
+    assert.deepEqual(verdict.missing, ['delivery']);
+    assert.equal(verdict.nextAction, 'refresh_delivery_fee');
+    // 必须留在续跑清单里，否则用户永远看不到它缺什么。
+    assert.equal(isResumable(verdict.state), true);
+    // 阶段清单里运费单独成一项。
+    assert.equal(stageCompletion(live).delivery, false);
+    assert.equal(stageCompletion(live).visibility, true);
+  });
+
+  it('现场 3. 运费到位之后才算真正完成', () => {
+    const done = deriveRecoveryState(afterFullPipeline({
+      has_availability_evidence: true, in_sellable: true, has_delivery_fee: true,
+    }));
+    assert.equal(done.state, 'complete');
+    assert.equal(done.nextAction, 'none');
+    assert.equal(isResumable(done.state), false);
   });
 
   // ── 4 + 5. 续跑计划：回放 planner 的决定，不重新规划 ────────────────────────
