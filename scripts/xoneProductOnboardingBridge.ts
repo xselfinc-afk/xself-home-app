@@ -1406,25 +1406,72 @@ async function runBatchPublish(
     ['--plan', XONE_PLAN_SNAPSHOT, '--apply', '--summary'],
     1_800_000,
   );
-  const after = await readPublishState(client, readySkus);
   // 死在哪一阶段、为什么 —— 执行器自己的报告里有，读出来给人看。
   let applyReport: Record<string, any> | null = null;
   try { applyReport = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, 'latest-apply.json'), 'utf8')); } catch { /* 没有报告就退回通用文案 */ }
   const applyFailure = describeApplyFailure(applyReport);
 
+  // ── 收尾：把「上架」做完，而不是做到一半 ────────────────────────────────────
+  //
+  // runGigaAutoPublish 的八个阶段到评价为止。App 能不能看到，取决于 product_availability_current
+  // 里有没有证据（sellable_products 是对它的 INNER JOIN）；能不能结账，取决于运费缓存。
+  // 这两步一个属于库存扫描链、一个是 Golden Path orchestrator 的第 7 步，都不在那八个阶段里。
+  //
+  // 以前批量上架跑完就直接回读 sellable —— 那时证据还没生成，于是每次都得到
+  // 「已发布 · App 暂不可见」，用户必须再点一次「继续完成」。这里改成在同一个任务里把
+  // 同样那两个既有脚本跑掉：不新增执行器，不改它们的语义，只是不再半途而废。
+  const afterPublish = await readPublishState(client, readySkus);
+  const closable = readySkus.filter((sku) => afterPublish.published.get(sku) === true);
+  const closingSteps: Array<{ step: string; skus: number; exit_code: number | null }> = [];
+
+  if (closable.length) {
+    progress('refresh_availability', `正在为 ${closable.length} 件商品读取库存证据`);
+    const scan = runScript(
+      'scripts/scanPublishedAvailability.ts',
+      [`--skus=${closable.join(',')}`, '--live'],
+      1_800_000,
+    );
+    closingSteps.push({ step: 'refresh_availability', skus: closable.length, exit_code: scan.status });
+
+    progress('refresh_delivery_fee', `正在获取 ${closable.length} 件商品的配送费用`);
+    // 与 orchestrator 一致：软失败。运费拿不到不推翻「商品已经上线」这件事。
+    const fee = runScript(
+      'scripts/refreshGigaDeliveryFeesHybrid.ts',
+      ['--skus', closable.join(',')],
+      900_000,
+    );
+    closingSteps.push({ step: 'refresh_delivery_fee', skus: closable.length, exit_code: fee.status });
+  }
+  // 判定与续跑走同一套：同样的事实、同样的状态机、同样的措辞。
+  const facts = await readProgressFacts(client, readySkus);
+  const factsBySku = new Map(facts.map((f) => [f.supplier_product_id, f]));
+  const availabilityFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
+
   const results = readySkus.map((sku) => {
+    const f = factsBySku.get(sku);
     const wasPublished = before.published.get(sku) === true;
-    const nowPublished = after.published.get(sku) === true;
-    const visible = after.sellable.has(sku);
-    if (nowPublished && visible) return { sku, outcome: 'verified_visible', reason: null };
-    if (nowPublished && !visible) {
+    if (!f || f.standardized_published !== true) {
+      return { sku, outcome: 'pipeline_failed', reason: applyFailure.reason ?? '上架流水线未完成，商品未发布' };
+    }
+    const verdict = deriveRecoveryState(f);
+    if (verdict.state === 'complete') return { sku, outcome: 'verified_visible', reason: null };
+    if (verdict.state === 'awaiting_delivery_fee') {
+      return { sku, outcome: 'published_but_not_sellable', reason: 'App 可见，但还没有配送费用，Checkout 会显示需要报价' };
+    }
+    if (verdict.state === 'awaiting_evidence') {
       return {
         sku,
         outcome: 'published_but_not_sellable',
-        reason: wasPublished ? '该商品此前已发布，但仍未进入 App 可售视图' : '已发布，但尚未满足 App 可见条件（资料、库存或价格仍在生成中）',
+        reason: availabilityFailure.reason
+          ? `已发布，但库存证据没能拿到：${availabilityFailure.reason}`
+          : '已发布，但还没有可用的库存证据，App 暂时看不到',
       };
     }
-    return { sku, outcome: 'pipeline_failed', reason: applyFailure.reason ?? '上架流水线未完成，商品未发布' };
+    return {
+      sku,
+      outcome: 'published_but_not_sellable',
+      reason: wasPublished ? '该商品此前已发布，但仍未进入 App 可售视图' : '已发布，但未满足 App 可见条件',
+    };
   });
 
   // 验证成功的才释放系统保护；失败的继续保护。用户手工裁决永不触碰。
@@ -1452,6 +1499,7 @@ async function runBatchPublish(
     failed_stage: applyFailure.stage,
     failure_reason: applyFailure.reason,
     failure_detail: applyFailure.detail ?? null,
+    closing_steps: closingSteps,
     counts,
     results,
     protection_released: protectionReleased,

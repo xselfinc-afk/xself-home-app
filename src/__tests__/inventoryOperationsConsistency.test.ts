@@ -824,6 +824,51 @@ function main(): void {
   // 那四件花瓶也不是「资料质量不达标」—— 它们是分类体系里压根没有的品类（供应商分类
   // 「Vases & Jars」，taxonomy 的 58 个 productType 里没有对应项）。门禁判得对，话说得不对。
 
+  // ── 一次点击闭环：批量上架必须自己把上架做完 ────────────────────────────────
+  //
+  // 八个阶段到评价为止。App 能不能看到取决于 product_availability_current 里有没有证据，
+  // 能不能结账取决于运费缓存 —— 两者都不在那八个阶段里。以前批量上架跑完就直接回读
+  // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
+  // 一次「继续完成」。
+
+  it('闭环. 批量上架在同一次任务里读库存证据并获取运费', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    // 复用既有脚本，不新增执行器。
+    assert.ok(/scripts\/scanPublishedAvailability\.ts/.test(block), '批量上架必须自己读库存证据');
+    assert.ok(/scripts\/refreshGigaDeliveryFeesHybrid\.ts/.test(block), '批量上架必须自己获取运费');
+    // 只对真的发布成功的商品收尾。
+    assert.ok(/afterPublish\.published\.get\(sku\) === true/.test(block));
+    // 收尾之后再判定，否则又会读到还没生成的证据。
+    assert.ok(block.indexOf('refreshGigaDeliveryFeesHybrid') < block.indexOf('readProgressFacts'),
+      '必须先收尾再回读事实');
+    // 判定与续跑同一套状态机，措辞不能各写一份。
+    assert.ok(/deriveRecoveryState\(f\)/.test(block));
+    assert.ok(/awaiting_delivery_fee/.test(block) && /awaiting_evidence/.test(block));
+    // 运费是软失败：拿不到不得把已经上线的商品判成失败。
+    assert.equal(/exit_code[\s\S]{0,80}fee[\s\S]{0,40}return failure/.test(block), false);
+  });
+
+  it('闭环. 失败仍然落到「需要处理」，并说出真实原因', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    // 库存证据拿不到时，带上扫描器自己的原因，而不是笼统的「不可见」。
+    assert.ok(/availabilityFailure\.reason/.test(block));
+    assert.ok(/已发布，但库存证据没能拿到/.test(bridge));
+    // 没发布成功的仍然是 pipeline_failed，带执行器报告里的阶段原因。
+    assert.ok(/standardized_published !== true/.test(block));
+    assert.ok(/applyFailure\.reason/.test(block));
+  });
+
+  it('闭环. 收尾的两步在界面上各有说法', () => {
+    const service = fs.readFileSync('../XOne/src/services/supplierFavoriteLoopService.ts', 'utf8');
+    for (const step of ['refresh_availability', 'refresh_delivery_fee']) {
+      assert.ok(new RegExp(`${step}:`).test(service), `${step} 缺少进度文案`);
+    }
+  });
+
   it('现场. planner 会产出的每个 hold 原因都必须有中文说法', () => {
     const planner = fs.readFileSync('scripts/planGigaAutoPublish.ts', 'utf8');
     const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
@@ -852,18 +897,18 @@ function main(): void {
     assert.match(pool[0].blocked_reason ?? '', /户外/);
     assert.equal(/junk_category/.test(pool[0].blocked_reason ?? ''), false, '不得把英文代号丢给用户');
 
-    // 装饰花瓶：标题判不出品类，是「需要人工确认」，不是「资料质量不达标」。
-    const vase = buildPreviewRows({
-      plan: { proposed_batch: { skus: [] }, candidates: [{ id: 'W5977P521300', bucket: 'HOLD_QUALITY', reasons: ['needs_review_taxonomy'] }] },
-      supplierRows: [{ supplier_product_id: 'W5977P521300', title: 'Decorative Metal Vases Set of 3, Gold Leaf Pattern Floor Vase', images: [], price: 58 }],
+    // 标题里没有任何可判定信息的，才是「无法从标题判断品类」。
+    const unknown = buildPreviewRows({
+      plan: { proposed_batch: { skus: [] }, candidates: [{ id: 'X9', bucket: 'HOLD_QUALITY', reasons: ['needs_review_taxonomy'] }] },
+      supplierRows: [{ supplier_product_id: 'X9', title: 'Mystery Widget XL', images: [], price: 58 }],
       normalize: (row) => row,
       reviewCount: () => ({ count: 5, avg: 4.6 }),
     });
-    assert.match(vase[0].blocked_reason ?? '', /无法从标题判断品类/);
+    assert.match(unknown[0].blocked_reason ?? '', /无法从标题判断品类/);
 
     // 说法变了，判定没变：两件都仍然不可上架。
     assert.equal(pool[0].ready, false);
-    assert.equal(vase[0].ready, false);
+    assert.equal(unknown[0].ready, false);
   });
 
   it('现场. 解释用的是既有分流器，不是第二套分类系统', () => {
