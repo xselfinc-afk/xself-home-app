@@ -378,7 +378,10 @@ function main(): void {
   it('2 + 6. 检查新收藏走既有链条，不重写 diff，也不推进基线', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
     const start = bridge.indexOf('async function runCheckNewSaved');
-    const block = bridge.slice(start, bridge.indexOf('export async function executeOnboardingBridge'));
+    // 只切 runCheckNewSaved 本身。它后面是上架预览 —— 那条路径允许导入草稿，不适用这条断言。
+    // 用代码锚点而不是注释：code() 会把注释行剥掉。
+    const nextDecl = bridge.indexOf('interface PreviewRow', start);
+    const block = bridge.slice(start, nextDecl > start ? nextDecl : bridge.indexOf('export async function executeOnboardingBridge'));
     for (const script of ['giga-saved-baseline.ts', 'giga-saved-delta.ts', 'planGigaNewlySavedCandidates.ts']) {
       assert.ok(block.includes(script), `必须复用 ${script}`);
     }
@@ -395,7 +398,10 @@ function main(): void {
   it('7. 收藏保护绑定在候选成立那一刻，且默认只出计划', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
     const start = bridge.indexOf('async function runCheckNewSaved');
-    const block = bridge.slice(start, bridge.indexOf('export async function executeOnboardingBridge'));
+    // 只切 runCheckNewSaved 本身。它后面是上架预览 —— 那条路径允许导入草稿，不适用这条断言。
+    // 用代码锚点而不是注释：code() 会把注释行剥掉。
+    const nextDecl = bridge.indexOf('interface PreviewRow', start);
+    const block = bridge.slice(start, nextDecl > start ? nextDecl : bridge.indexOf('export async function executeOnboardingBridge'));
     // 保护对象是 candidates，不是全部 Pickup 收藏。
     assert.ok(/protectionPlan = candidates\.map/.test(block), '保护只覆盖正式候选');
     assert.equal(/pickupSaved\.forEach|for \(const sku of pickupSaved\)/.test(block), false,
@@ -403,6 +409,70 @@ function main(): void {
     // 没有明确要求就不写生产。
     assert.ok(/if \(request\.apply_protection\)/.test(block));
     assert.ok(/只出计划/.test(block));
+  });
+
+  it('预览 B. 最终成品字段全部来自既有纯函数，售价拿不到就留空', () => {
+    const { buildPreviewRows } = require('../../scripts/xoneProductOnboardingBridge');
+    const rows = buildPreviewRows({
+      plan: {
+        proposed_batch: { skus: ['R1'] },
+        candidates: [
+          { id: 'R1', bucket: 'SAFE_SINGLETON', reasons: [] },
+          { id: 'B1', bucket: 'HOLD_PHASE2', reasons: ['cfgmissing_fragmented'] },
+        ],
+      },
+      supplierRows: [{ supplier_product_id: 'R1' }, { supplier_product_id: 'B1' }],
+      normalize: () => ({
+        product_title_display: 'Large Petal Cloud Sofa Chair',
+        sku_custom: 'XH-SF-LR-523988',
+        category_label: 'Sofa',
+        primary_image: 'https://x/a.jpg',
+        gallery_images_json: ['b', 'c', 'd', 'e', 'f', 'g', 'h'],
+        specifications_json: { Color: 'Antique Grey', Material: 'Microsuede' },
+        price: 48,
+        original_price: 109,
+      }),
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+
+    const ready = rows.find((r: any) => r.supplier_product_id === 'R1');
+    assert.equal(ready.ready, true);
+    assert.equal(ready.title, 'Large Petal Cloud Sofa Chair');
+    assert.equal(ready.sku_custom, 'XH-SF-LR-523988');
+    assert.equal(ready.category, 'Sofa');
+    assert.equal(ready.image_count, 8, '主图 + 7 张画廊图');
+    assert.equal(ready.cost, 48);
+    assert.equal(ready.anchor_price, 109);
+    // 售价在发布前拿不到 —— 必须留空并标记，绝不编造。
+    assert.equal(ready.selling_price, null);
+    assert.equal(ready.selling_price_pending, true);
+    // 冷启动评价必须标明是生成的。
+    assert.equal(ready.review_kind, 'generated');
+    assert.equal(ready.review_count, 5);
+
+    // Ready 名单只认 proposed_batch；其余进「需要处理」并给出人话原因。
+    const blocked = rows.find((r: any) => r.supplier_product_id === 'B1');
+    assert.equal(blocked.ready, false);
+    assert.match(blocked.blocked_reason, /配置不完整/);
+  });
+
+  it('预览 B. 一件异常不得把其余 Ready 商品拖下水', () => {
+    const { buildPreviewRows } = require('../../scripts/xoneProductOnboardingBridge');
+    const ids = ['R1', 'R2', 'R3', 'B1'];
+    const rows = buildPreviewRows({
+      plan: {
+        proposed_batch: { skus: ['R1', 'R2', 'R3'] },
+        candidates: ids.map((id) => ({
+          id, bucket: id.startsWith('R') ? 'SAFE_SINGLETON' : 'HOLD_INVENTORY', reasons: [],
+        })),
+      },
+      supplierRows: ids.map((id) => ({ supplier_product_id: id })),
+      normalize: () => ({ product_title_display: 't', sku_custom: 's', primary_image: 'i', price: 1 }),
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+    assert.equal(rows.filter((r: any) => r.ready).length, 3);
+    assert.equal(rows.filter((r: any) => !r.ready).length, 1);
+    assert.match(rows.find((r: any) => r.supplier_product_id === 'B1').blocked_reason, /无库存/);
   });
 
   it('凭据键只按名字摘除，从不读取或打印其值', () => {

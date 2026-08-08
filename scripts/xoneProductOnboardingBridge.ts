@@ -26,6 +26,7 @@ import {
   evaluateFirstPublish,
   decideProtection,
   verifyFirstPublishOutcome,
+  isHumanApprover,
   ONBOARDING_PROTECTION_ACTOR,
   type OnboardingFacts,
 } from '../src/services/productOnboarding';
@@ -42,10 +43,22 @@ const BASELINE_FILE = path.join(REPORT_DIR, 'saved-items-baseline.json');
 const DELTA_FILE = path.join(REPORT_DIR, 'latest-saved-delta.json');
 /** 首次上架的审计留痕，与既有报告体系同目录。 */
 const ONBOARDING_AUDIT = path.join(REPORT_DIR, 'xone-onboarding-audit.jsonl');
+/**
+ * 既有 planner 的固定输出路径。Golden Path 自己也写这里，所以我们**读完立刻快照**，
+ * 之后一律使用快照 —— 终端那条链随时可能重写它，而 XOne 展示的名单必须和执行的名单
+ * 是同一份。快照文件由 XOne 独占。
+ */
+const AUTOPUB_PLAN_FILE = path.join(REPORT_DIR, 'latest-plan.json');
+const XONE_PLAN_SNAPSHOT = path.join(REPORT_DIR, 'xone-onboarding-plan.json');
+/** 预览产物。打开面板直接读它，不重跑 pipeline。 */
+const XONE_PREVIEW_FILE = path.join(REPORT_DIR, 'xone-onboarding-preview.json');
 const PAGE_MAX = 50;
 
 export type OnboardingOperation =
   | 'check-new-saved'
+  | 'onboarding-preview'
+  | 'onboarding-preview-cached'
+  | 'onboarding-batch-publish'
   | 'onboarding-candidates'
   | 'prepare-onboarding-candidate'
   | 'approve-first-publish';
@@ -57,8 +70,14 @@ export interface OnboardingRequest {
   approved_by?: string;
   offset?: number;
   limit?: number;
-  /** 只有 check-new-saved 用：是否真的建立候选期收藏保护。默认只出计划。 */
+  /** check-new-saved / onboarding-preview 用：是否真的建立候选期收藏保护。默认只出计划。 */
   apply_protection?: boolean;
+  /** onboarding-preview 用：是否做 additive 草稿导入（published=false，不是上架）。 */
+  import_drafts?: boolean;
+  /** onboarding-batch-publish 用：界面看到的 Ready 数量，用来确认计划没被换过。 */
+  expected_ready?: number;
+  /** onboarding-preview 用：把候选缩到这几个 SKU。为受控验收准备，日常不传。 */
+  skus?: string[];
 }
 
 export function parseOnboardingRequest(raw: string): OnboardingRequest {
@@ -66,7 +85,10 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
   try { parsed = JSON.parse(raw); } catch { throw new Error('INVALID_REQUEST'); }
   const r = parsed as Partial<OnboardingRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
-  const ops: OnboardingOperation[] = ['check-new-saved', 'onboarding-candidates', 'prepare-onboarding-candidate', 'approve-first-publish'];
+  const ops: OnboardingOperation[] = [
+    'check-new-saved', 'onboarding-preview', 'onboarding-preview-cached', 'onboarding-batch-publish',
+    'onboarding-candidates', 'prepare-onboarding-candidate', 'approve-first-publish',
+  ];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
   const needsSku = r.operation === 'prepare-onboarding-candidate' || r.operation === 'approve-first-publish';
   if (needsSku && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
@@ -83,6 +105,11 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     offset: clamp(r.offset, 0, 100_000),
     limit: clamp(r.limit, 20, PAGE_MAX),
     apply_protection: r.apply_protection === true,
+    import_drafts: r.import_drafts === true,
+    expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
+    skus: Array.isArray(r.skus)
+      ? r.skus.map((x) => String(x).trim()).filter((x) => x.length > 0 && x.length <= 64).slice(0, PAGE_MAX)
+      : undefined,
   };
 }
 
@@ -380,11 +407,407 @@ async function runCheckNewSaved(
   });
 }
 
+// ── 最终上架预览 ─────────────────────────────────────────────────────────────
+//
+// 目标是让人在点「批量上架」之前，看到的就是商品在 App 里会长的样子。做法是**只调既有能力**：
+//
+//   normalizeProduct()        纯函数，零 IO —— 最终标题 / Xself SKU / 分类 / 主图 / 图片数 / 规格
+//   generateReviewSet()       纯函数，确定性 —— 冷启动评价 5 条（5,5,5,4,4 → 4.6★）
+//   planGigaAutoPublish CLI   原样 spawn —— Ready 名单（proposed_batch）与 hold 原因
+//
+// 这里不生成任何商品数据，只是把既有产出摆出来。
+//
+// 一个必须说清的边界：**最终售价无法在上架前精确预览**。定价引擎（dynamic-pricing）读的是
+// standardized_products，而那一行由 runGigaAutoPublish 的 Stage 2 normalize 写入，
+// normalizeProducts.ts 又硬过滤 published=true。也就是说售价天然产生在发布之后。预览因此只给
+// 成本与锚定价，并明确标注售价将在上架时生成 —— 绝不自己算一个价冒充最终价。
+
+interface PreviewRow {
+  supplier_product_id: string;
+  ready: boolean;
+  bucket: string;
+  blocked_reason: string | null;
+  title: string;
+  sku_custom: string;
+  category: string;
+  primary_image: string | null;
+  image_count: number;
+  spec_summary: string[];
+  cost: number | null;
+  anchor_price: number | null;
+  selling_price: number | null;
+  selling_price_pending: boolean;
+  stock_available: boolean | null;
+  stock_qty: number | null;
+  /** 冷启动评价是系统生成的，不是顾客写的。UI 必须照这个字段如实措辞。 */
+  review_kind: 'generated' | 'customer';
+  review_count: number;
+  review_avg: number;
+}
+
+/** SAFE_* 是 planner 认定可以安全上架的桶；其余一律进「需要处理」。 */
+function isReadyBucket(bucket: string): boolean {
+  return bucket.startsWith('SAFE');
+}
+
+/** planner 的 hold 原因翻成运营看得懂的话。词汇来自既有 plan 报告，未新增判定。 */
+const HOLD_REASON_LABELS: Record<string, string> = {
+  cfgmissing_fragmented: '同系列商品配置不完整，需要人工确认',
+  no_config_axis_standalone: '无法确定规格轴，需要人工确认',
+  no_current_stock: '当前无库存',
+  missing_image: '缺少主图',
+  missing_price: '缺少成本价',
+};
+
+const BUCKET_LABELS: Record<string, string> = {
+  HOLD_PHASE2: '商品配置需要人工确认',
+  HOLD_PRICE: '价格数据不完整',
+  HOLD_INVENTORY: '当前无库存',
+  HOLD_QUALITY: '商品资料质量不达标',
+  REJECT: '不符合上架条件',
+};
+
+function describeHold(bucket: string, reasons: string[]): string {
+  const detail = reasons.map((r) => HOLD_REASON_LABELS[r] ?? r).filter(Boolean);
+  if (detail.length) return detail.join('；');
+  return BUCKET_LABELS[bucket] ?? '暂时无法上架';
+}
+
+/**
+ * 把一份既有 plan 报告 + supplier 行，合成运营能看懂的预览。
+ *
+ * 纯计算，不写库。`plan` 是刚刚由既有 planner 产出的快照。
+ */
+export function buildPreviewRows(input: {
+  plan: Record<string, any> | null;
+  supplierRows: Array<Record<string, any>>;
+  normalize: (row: Record<string, any>) => Record<string, any>;
+  reviewCount: (product: Record<string, any>) => { count: number; avg: number };
+}): PreviewRow[] {
+  const proposed = new Set<string>(((input.plan?.proposed_batch?.skus ?? []) as unknown[]).map((s) => String(s)));
+  const byId = new Map<string, Record<string, any>>();
+  for (const c of (input.plan?.candidates ?? []) as Array<Record<string, any>>) {
+    const id = String(c?.id ?? c?.sku ?? '').trim();
+    if (id) byId.set(id, c);
+  }
+
+  const rows: PreviewRow[] = [];
+  for (const supplierRow of input.supplierRows) {
+    const id = String(supplierRow.supplier_product_id ?? '');
+    if (!id) continue;
+    let normalized: Record<string, any> = {};
+    try { normalized = input.normalize({ ...supplierRow, id: supplierRow.id ?? id }); } catch { normalized = {}; }
+
+    const candidate = byId.get(id) ?? null;
+    const bucket = String(candidate?.bucket ?? (proposed.has(id) ? 'SAFE_SINGLETON' : 'UNKNOWN'));
+    const ready = proposed.has(id);
+    const reasons = Array.isArray(candidate?.reasons) ? candidate!.reasons.map(String) : [];
+    const gallery = Array.isArray(normalized.gallery_images_json) ? normalized.gallery_images_json : [];
+    const primary = typeof normalized.primary_image === 'string' && normalized.primary_image ? normalized.primary_image : null;
+    const specs = normalized.specifications_json && typeof normalized.specifications_json === 'object'
+      ? Object.entries(normalized.specifications_json as Record<string, string>)
+        .slice(0, 3).map(([k, v]) => `${k}: ${v}`)
+      : [];
+    const review = input.reviewCount({
+      supplier_product_id: id,
+      product_title_display: normalized.product_title_display,
+      category_code: normalized.category_code,
+      key_features_json: normalized.key_features_json,
+      short_description: normalized.short_description,
+      material: normalized.material,
+      dimensions: normalized.dimensions,
+      color: normalized.color,
+      specifications_json: normalized.specifications_json,
+    });
+
+    rows.push({
+      supplier_product_id: id,
+      ready,
+      bucket,
+      blocked_reason: ready ? null : describeHold(bucket, reasons),
+      title: String(normalized.product_title_display ?? normalized.product_title ?? supplierRow.title ?? '未命名商品'),
+      sku_custom: String(normalized.sku_custom ?? ''),
+      category: String(normalized.category_label ?? normalized.category_code ?? ''),
+      primary_image: primary,
+      image_count: (primary ? 1 : 0) + gallery.length,
+      spec_summary: specs,
+      cost: typeof normalized.price === 'number' ? normalized.price : null,
+      anchor_price: typeof normalized.original_price === 'number' ? normalized.original_price : null,
+      // 售价由发布阶段的定价引擎生成，预览阶段给不出精确值 —— 绝不自己编一个。
+      selling_price: null,
+      selling_price_pending: true,
+      stock_available: null,
+      stock_qty: null,
+      review_kind: 'generated',
+      review_count: review.count,
+      review_avg: review.avg,
+    });
+  }
+  return rows;
+}
+
+/** 读一批 supplier_products 原始行 —— normalizeProduct 的输入。 */
+async function readSupplierRows(client: SupabaseClient, skus: string[]): Promise<Array<Record<string, any>>> {
+  if (!skus.length) return [];
+  const out: Array<Record<string, any>> = [];
+  for (let i = 0; i < skus.length; i += 200) {
+    const { data, error } = await client.from('supplier_products')
+      .select('id,supplier_product_id,title,images,price,description,raw_payload,published')
+      .in('supplier_product_id', skus.slice(i, i + 200));
+    if (error) throw new Error(`READ_FAILED:supplier_products:${error.message}`);
+    out.push(...((data ?? []) as Array<Record<string, any>>));
+  }
+  return out;
+}
+
+/** 库存事实取自既有 inventory_cache，不另做探测。 */
+async function readStock(client: SupabaseClient, skus: string[]): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (!skus.length) return map;
+  for (let i = 0; i < skus.length; i += 200) {
+    const { data, error } = await client.from('inventory_cache')
+      .select('supplier_product_id,total_available_qty')
+      .in('supplier_product_id', skus.slice(i, i + 200));
+    if (error) break;
+    for (const row of (data ?? []) as Array<{ supplier_product_id: string; total_available_qty: number | null }>) {
+      map.set(row.supplier_product_id, Number(row.total_available_qty ?? 0));
+    }
+  }
+  return map;
+}
+
+/**
+ * 生成最终上架预览。
+ *
+ * 步骤全部委托既有能力；这里只负责编排与摆放：
+ *   1. 取当前 Pickup 收藏里、尚未发布的候选
+ *   2. （可选）additive 草稿导入 —— insertNewOnly，published 取 DB 默认 false，幂等
+ *   3. 原样 spawn planGigaAutoPublish --only=… —— Ready 名单只有这一个来源
+ *   4. 立刻把 latest-plan.json 快照成 XOne 独占文件（终端那条链随时会重写它）
+ *   5. normalizeProduct + generateReviewSet 在内存里算出最终成品字段
+ *
+ * 不发布、不写 standardized_products、不碰 sellable。
+ */
+async function runOnboardingPreview(
+  request: OnboardingRequest,
+  client: SupabaseClient,
+): Promise<Record<string, unknown>> {
+  const { normalizeProduct } = await import('../src/services/normalizationPipeline');
+  const { generateReviewSet } = await import('../src/services/reviewGenerator');
+
+  const live = readLiveSavedSnapshot();
+  const pickupSaved = live?.skus ?? await loadPickupSaved(client);
+  const reported = readCandidateSkus();
+
+  // 仍在 Pickup 收藏、且尚未发布的，才是候选。
+  // 受控验收时可以把候选缩到指定几个；日常不传，走全量候选。
+  const scope = request.skus && request.skus.length ? new Set(request.skus) : null;
+  const candidateSkus: string[] = [];
+  for (const candidate of reported) {
+    if (scope && !scope.has(candidate.sku)) continue;
+    if (!pickupSaved.has(candidate.sku)) continue;
+    const facts = await loadFacts(client, candidate.sku, pickupSaved);
+    if (facts.published === true) continue;
+    candidateSkus.push(candidate.sku);
+  }
+  if (!candidateSkus.length) {
+    return envelope('onboarding-preview', {
+      production_write_attempted: false,
+      saved_captured_at: live?.capturedAt ?? null,
+      discovered: 0, ready_count: 0, blocked_count: 0, rows: [],
+    });
+  }
+
+  // 2. 草稿导入：只 insert 未存在的行，published 取 DB 默认 false。不是上架。
+  let importedDrafts = false;
+  if (request.import_drafts) {
+    progress('import', `正在导入 ${candidateSkus.length} 件商品草稿`);
+    const sync = runScript(
+      'scripts/syncGigaNewlySavedCandidates.ts',
+      ['--sync', `--only=${candidateSkus.join(',')}`, '--summary'],
+      900_000, {}, { letScriptChooseSupplierAccount: true },
+    );
+    if (sync.status !== 0) return failure('DRAFT_IMPORT_FAILED', '商品草稿导入失败，请稍后重试');
+    importedDrafts = true;
+  }
+
+  // 3. Ready 名单的唯一来源：既有 planner。CLI 原样调用，一个参数都没改。
+  progress('plan', '正在生成上架计划');
+  const plan = runScript(
+    'scripts/planGigaAutoPublish.ts',
+    [`--only=${candidateSkus.join(',')}`, `--max-skus=${Math.max(1, candidateSkus.length)}`, '--summary'],
+    900_000,
+  );
+  if (plan.status !== 0) return failure('PLAN_FAILED', '上架计划生成失败，请稍后重试');
+
+  // 4. 立刻快照。之后展示与执行都只认这一份。
+  let planJson: Record<string, any> | null = null;
+  try {
+    const raw = fs.readFileSync(AUTOPUB_PLAN_FILE, 'utf8');
+    fs.writeFileSync(XONE_PLAN_SNAPSHOT, raw);
+    planJson = JSON.parse(raw);
+  } catch {
+    return failure('PLAN_UNREADABLE', '上架计划无法读取，请稍后重试');
+  }
+
+  // 5. 合成预览。
+  progress('preview', '正在生成上架预览');
+  const supplierRows = await readSupplierRows(client, candidateSkus);
+  const rows = buildPreviewRows({
+    plan: planJson,
+    supplierRows,
+    normalize: (row) => normalizeProduct(row as never) as unknown as Record<string, any>,
+    reviewCount: (product) => {
+      const set = generateReviewSet(product as never);
+      const avg = set.length ? set.reduce((s, r) => s + (r.rating ?? 0), 0) / set.length : 0;
+      return { count: set.length, avg: Math.round(avg * 10) / 10 };
+    },
+  });
+  const stock = await readStock(client, candidateSkus);
+  for (const row of rows) {
+    const qty = stock.get(row.supplier_product_id);
+    if (qty !== undefined) { row.stock_qty = qty; row.stock_available = qty > 0; }
+  }
+
+  // 候选期收藏保护：正式成立即自动生效，不作为用户步骤暴露。
+  const protectionApplied: Array<{ sku: string; action: string }> = [];
+  if (request.apply_protection) {
+    for (const row of rows) protectionApplied.push({ sku: row.supplier_product_id, action: await syncProtection(client, row.supplier_product_id, true) });
+  }
+
+  const readyRows = rows.filter((r) => r.ready);
+  const payload = envelope('onboarding-preview', {
+    // 草稿导入是唯一会写库的一步，且只写 supplier_products（published=false）。
+    production_write_attempted: importedDrafts,
+    imported_drafts: importedDrafts,
+    saved_captured_at: live?.capturedAt ?? null,
+    plan_snapshot: path.relative(REPO, XONE_PLAN_SNAPSHOT),
+    generated_at_ms: null,
+    discovered: rows.length,
+    ready_count: readyRows.length,
+    blocked_count: rows.length - readyRows.length,
+    ready_skus: readyRows.map((r) => r.supplier_product_id),
+    rows,
+    protection_applied: protectionApplied,
+  });
+  try { fs.writeFileSync(XONE_PREVIEW_FILE, JSON.stringify(payload, null, 2)); } catch { /* 缓存写失败不影响本次返回 */ }
+  return payload;
+}
+
+/** 直接返回上次的预览产物。打开面板走这条路，不跑任何 pipeline。 */
+function readCachedPreview(): Record<string, unknown> {
+  try {
+    const cached = JSON.parse(fs.readFileSync(XONE_PREVIEW_FILE, 'utf8')) as Record<string, unknown>;
+    return { ...cached, from_cache: true };
+  } catch {
+    return envelope('onboarding-preview', {
+      production_write_attempted: false,
+      from_cache: true, discovered: 0, ready_count: 0, blocked_count: 0, rows: [], never_previewed: true,
+    });
+  }
+}
+
+/**
+ * 批量上架。
+ *
+ * 执行的是**快照里的 proposed_batch**，与界面展示的 Ready 名单是同一份文件 —— UI 与执行器
+ * 不可能是两套名单。runGigaAutoPublish 只吃 plan.proposed_batch，且拒绝非 SAFE 桶，所以
+ * blocked 商品天然被排除。CLI 原样调用。
+ */
+async function runBatchPublish(
+  request: OnboardingRequest,
+  client: SupabaseClient,
+): Promise<Record<string, unknown>> {
+  if (!isHumanApprover(request.approved_by)) return failure('APPROVER_MISSING', '批量上架必须记录批准人');
+
+  let planJson: Record<string, any>;
+  try { planJson = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); }
+  catch { return failure('NO_PLAN_SNAPSHOT', '还没有可执行的上架计划，请先检查新收藏'); }
+
+  const readySkus = ((planJson?.proposed_batch?.skus ?? []) as unknown[]).map(String).filter(Boolean);
+  if (!readySkus.length) return failure('NOTHING_READY', '当前没有可以上架的商品');
+  // 界面报的数量必须和计划里的一致，否则说明中间有人重新规划过。
+  if (typeof request.expected_ready === 'number' && request.expected_ready !== readySkus.length) {
+    return failure('PLAN_CHANGED', '上架计划已经变化，请重新检查新收藏后再试');
+  }
+
+  const before = await readPublishState(client, readySkus);
+  progress('publish', `正在上架 ${readySkus.length} 件商品`);
+  const run = runScript(
+    'scripts/runGigaAutoPublish.ts',
+    ['--plan', XONE_PLAN_SNAPSHOT, '--apply', '--summary'],
+    1_800_000,
+  );
+  const after = await readPublishState(client, readySkus);
+
+  const results = readySkus.map((sku) => {
+    const wasPublished = before.published.get(sku) === true;
+    const nowPublished = after.published.get(sku) === true;
+    const visible = after.sellable.has(sku);
+    if (nowPublished && visible) return { sku, outcome: 'verified_visible', reason: null };
+    if (nowPublished && !visible) {
+      return {
+        sku,
+        outcome: 'published_but_not_sellable',
+        reason: wasPublished ? '该商品此前已发布，但仍未进入 App 可售视图' : '已发布，但尚未满足 App 可见条件（资料、库存或价格仍在生成中）',
+      };
+    }
+    return { sku, outcome: 'pipeline_failed', reason: '上架流水线未完成，商品未发布' };
+  });
+
+  // 验证成功的才释放系统保护；失败的继续保护。用户手工裁决永不触碰。
+  const protectionReleased: Array<{ sku: string; action: string }> = [];
+  for (const r of results) {
+    if (r.outcome !== 'verified_visible') continue;
+    protectionReleased.push({ sku: r.sku, action: await syncProtection(client, r.sku, false) });
+  }
+
+  const counts = {
+    verified_visible: results.filter((r) => r.outcome === 'verified_visible').length,
+    published_but_not_sellable: results.filter((r) => r.outcome === 'published_but_not_sellable').length,
+    pipeline_failed: results.filter((r) => r.outcome === 'pipeline_failed').length,
+  };
+  appendAudit({
+    event: 'batch_publish', approved_by: request.approved_by, exit_code: run.status,
+    requested: readySkus.length, ...counts,
+  });
+  return envelope('onboarding-batch-publish', {
+    production_write_attempted: true,
+    approved_by: request.approved_by,
+    requested: readySkus.length,
+    exit_code: run.status,
+    counts,
+    results,
+    protection_released: protectionReleased,
+  });
+}
+
+async function readPublishState(
+  client: SupabaseClient,
+  skus: string[],
+): Promise<{ published: Map<string, boolean>; sellable: Set<string> }> {
+  const published = new Map<string, boolean>();
+  const sellable = new Set<string>();
+  for (let i = 0; i < skus.length; i += 200) {
+    const chunk = skus.slice(i, i + 200);
+    const std = await client.from('standardized_products').select('supplier_product_id,published').in('supplier_product_id', chunk);
+    for (const row of (std.data ?? []) as Array<{ supplier_product_id: string; published: boolean | null }>) {
+      published.set(row.supplier_product_id, row.published === true);
+    }
+    const sell = await client.from('sellable_products').select('supplier_product_id').in('supplier_product_id', chunk);
+    for (const row of (sell.data ?? []) as Array<{ supplier_product_id: string }>) sellable.add(row.supplier_product_id);
+  }
+  return { published, sellable };
+}
+
 export async function executeOnboardingBridge(
   request: OnboardingRequest,
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   if (request.operation === 'check-new-saved') return runCheckNewSaved(request, client);
+  if (request.operation === 'onboarding-preview') return runOnboardingPreview(request, client);
+  if (request.operation === 'onboarding-preview-cached') return readCachedPreview();
+  if (request.operation === 'onboarding-batch-publish') return runBatchPublish(request, client);
 
   const pickupSaved = await loadPickupSaved(client);
 
