@@ -320,17 +320,34 @@ export function isFullScanReport(report: Record<string, any> | null): boolean {
   return report.is_full_scan === true && report.report_kind === 'scheduled_inventory_scan';
 }
 
-/** Human-facing run kind. Not every run is 「自动48小时循环」. */
-export function describeRunKind(report: Record<string, any> | null): {
-  kind: string;
-  label: string;
-} {
+/**
+ * Human-facing run kind. Not every run is 「自动48小时循环」.
+ *
+ * A report is the best evidence, but plenty of real runs never write one:
+ *   - 商品身份复检 (`xone-targeted-identity-*`) queries the two supplier accounts directly and
+ *     writes no scan report at all;
+ *   - runs that predate `report_kind` / `is_full_scan` only exist as database rows.
+ * Falling straight through to「未知类型」for those made most of the run list unreadable. So when
+ * there is no report, classify from what the run itself still shows: its id, and how many SKUs it
+ * actually checked relative to the published catalogue.
+ *
+ * Nothing here rewrites history — this reads existing runs, it never touches a report file.
+ */
+export function describeRunKind(
+  report: Record<string, any> | null,
+  context?: {
+    runId?: string | null;
+    checkedCount?: number | null;
+    publishedTotal?: number | null;
+    /** inventory_workflow_transitions.runner —— 有些运行只推进状态，从不查库存。 */
+    runner?: string | null;
+  },
+): { kind: string; label: string } {
   const raw = typeof report?.report_kind === 'string' ? report.report_kind : null;
   switch (raw) {
     case 'scheduled_inventory_scan':
-      return report?.is_full_scan === true
-        ? { kind: 'full_scan', label: '全量库存扫描' }
-        : { kind: 'unknown_scope_scan', label: '扫描（范围未记录）' };
+      if (report?.is_full_scan === true) return { kind: 'full_scan', label: '全量库存扫描' };
+      break;
     case 'targeted_sku_scan':
       return { kind: 'targeted_sku_scan', label: '指定 SKU 复检' };
     case 'partial_limited_scan':
@@ -338,8 +355,36 @@ export function describeRunKind(report: Record<string, any> | null): {
     case 'xone_single_sku_recheck':
       return { kind: 'single_sku_recheck', label: '单件复检' };
     default:
-      return { kind: 'unknown', label: '未知类型' };
+      break;
   }
+
+  // ── 报告缺失或范围未记录：用运行本身还能证明的东西判定 ────────────────────
+  const runId = String(context?.runId ?? '');
+  if (/^xone-targeted-identity-/.test(runId)) {
+    return { kind: 'identity_recheck', label: '商品身份复检' };
+  }
+  if (/^xone-targeted-/.test(runId)) {
+    return { kind: 'single_sku_recheck', label: '单件复检' };
+  }
+
+  // 只推进工作流状态、一次库存都没查的运行（runner = inventoryWorkflowRun）。它是真实存在
+  // 的一类运行，不是「证据不足」。
+  if (String(context?.runner ?? '') === 'inventoryWorkflowRun') {
+    return { kind: 'workflow_state_run', label: '库存状态推进' };
+  }
+
+  const checked = Number(context?.checkedCount ?? report?.totals?.total ?? 0);
+  const published = Number(context?.publishedTotal ?? 0);
+  if (checked === 1) return { kind: 'targeted_sku_scan', label: '定向库存复检' };
+  // 覆盖了当前在售商品的九成以上，就是一次全量扫描 —— 期间有商品上下架会让它不等于总数。
+  if (checked > 1 && published > 0 && checked >= published * 0.9) {
+    return { kind: 'full_scan', label: '全量库存扫描' };
+  }
+  if (checked > 1) return { kind: 'partial_limited_scan', label: '部分库存扫描' };
+
+  // 声称是调度扫描、却连范围都证明不了：说清楚是范围未知，不冒充全量。
+  if (raw === 'scheduled_inventory_scan') return { kind: 'unknown_scope_scan', label: '扫描（范围未记录）' };
+  return { kind: 'unknown', label: '未知类型' };
 }
 
 /**
@@ -427,6 +472,8 @@ function readActiveLock(file: string): { active: boolean; pid: number | null; at
 
 /** Pull the few facts we need out of `launchctl print`. Absent keys stay null, never guessed. */
 export function parseLaunchctlPrint(text: string): {
+  /** launchd 的 `state` 字段：running 表示此刻真的有进程在跑。 */
+  running: boolean | null;
   runs: number | null;
   lastExitCode: number | null;
   runAtLoad: boolean | null;
@@ -436,10 +483,13 @@ export function parseLaunchctlPrint(text: string): {
   const runs = grab(/^\s*runs\s*=\s*(\d+)\s*$/m);
   const exit = grab(/^\s*last exit code\s*=\s*(\d+)\s*$/m);
   const interval = grab(/^\s*run interval\s*=\s*(\d+)\s*seconds\s*$/m);
+  const state = grab(/^\s*state\s*=\s*(.+)$/m);
   const runAtLoad = /^\s*runatload\s*=\s*(1|true)\s*$/im.test(text)
     ? true
     : /^\s*runatload\s*=\s*(0|false)\s*$/im.test(text) ? false : null;
   return {
+    // `not running` 必须先判，否则会被 `running` 的子串匹配到。
+    running: state === null ? null : !/^not running$/i.test(state) && /^running$/i.test(state),
     runs: runs === null ? null : Number(runs),
     lastExitCode: exit === null ? null : Number(exit),
     runAtLoad,
@@ -459,20 +509,36 @@ export function parseLaunchctlPrint(text: string): {
 export function diagnoseScheduler(input: {
   installed: boolean;
   loaded: boolean;
+  /** launchd 此刻是不是真的有进程在跑。null = 读不到，绝不当成在跑。 */
+  running?: boolean | null;
   runs: number | null;
+  lastExitCode?: number | null;
   runAtLoad: boolean | null;
   intervalSeconds: number | null;
 }): { status: string; reason: string | null } {
   if (!input.installed) return { status: 'not_installed', reason: '调度器尚未安装' };
   if (!input.loaded) return { status: 'not_loaded', reason: '调度器已安装但未加载到 launchd' };
-  if (input.runs === 0 && input.runAtLoad === false && (input.intervalSeconds ?? 0) > 0) {
-    return {
-      status: 'never_ran',
-      reason: '倒计时从加载时刻重新开始，而这台 Mac 的重启间隔短于扫描间隔，所以计时器从未走完',
-    };
+
+  // 「运行中」只有一个来源：launchctl 此刻报 state = running。跑过一次不等于正在跑 ——
+  // 之前 runs > 0 就归为 active、再被标成「运行中」，于是一个早已结束的任务
+  //（state = not running, runs = 1, exit 0）在界面上永远显示成正在扫描。
+  if (input.running === true) return { status: 'running', reason: null };
+
+  if (input.runs === 0) {
+    if (input.runAtLoad === false && (input.intervalSeconds ?? 0) > 0) {
+      return {
+        status: 'never_ran',
+        reason: '倒计时从加载时刻重新开始，而这台 Mac 的重启间隔短于扫描间隔，所以计时器从未走完',
+      };
+    }
+    return { status: 'never_ran', reason: '已加载，但至今没有执行过一次' };
   }
-  if (input.runs === 0) return { status: 'never_ran', reason: '已加载，但至今没有执行过一次' };
-  return { status: 'active', reason: null };
+
+  // 跑完了，但退出码不为 0 —— 不能说成正常等待。
+  if (typeof input.lastExitCode === 'number' && input.lastExitCode !== 0) {
+    return { status: 'last_run_failed', reason: `上次运行以退出码 ${input.lastExitCode} 结束` };
+  }
+  return { status: 'waiting', reason: null };
 }
 
 export function readSchedulerFact(): Record<string, unknown> {
@@ -493,7 +559,13 @@ export function readSchedulerFact(): Record<string, unknown> {
     } catch { /* 读不到就保持未知，不猜 */ }
   }
   const diagnosis = diagnoseScheduler({
-    installed, loaded, runs: launchd.runs, runAtLoad, intervalSeconds: launchd.intervalSeconds,
+    installed,
+    loaded,
+    running: launchd.running,
+    runs: launchd.runs,
+    lastExitCode: launchd.lastExitCode,
+    runAtLoad,
+    intervalSeconds: launchd.intervalSeconds,
   });
 
   // 「上次扫描」只能是真正的全量扫描，而且只有真的成功了才算成功。
@@ -514,6 +586,7 @@ export function readSchedulerFact(): Record<string, unknown> {
     interval_seconds: INTERVAL_SECONDS,
     cadence_label: '每 48 小时',
     // launchd 的真实执行记录，与报告文件无关。
+    launchd_running: launchd.running,
     launchd_runs: launchd.runs,
     launchd_last_exit_code: launchd.lastExitCode,
     launchd_run_at_load: runAtLoad,
@@ -587,8 +660,8 @@ function latestReportSummary(report: Record<string, any> | null): Record<string,
     started_at: report.started_at ?? null,
     finished_at: report.finished_at ?? null,
     mode: report.mode ?? null,
-    run_kind: describeRunKind(report).kind,
-    run_kind_label: describeRunKind(report).label,
+    run_kind: describeRunKind(report, { runId: report.run_id }).kind,
+    run_kind_label: describeRunKind(report, { runId: report.run_id }).label,
     is_full_scan: report.is_full_scan === true,
     scanned: report.totals?.total ?? 0,
     available: report.totals?.confirmedAvailable ?? 0,
@@ -650,7 +723,10 @@ export function deriveInventoryHealth(input: {
   if (!input.schedulerLoaded) return 'blocked';
   // 一个加载着、却一次都没执行过的调度器不是「健康」—— 证据现在够新只是因为有人手动跑过，
   // 不代表这套自动化在工作。它会在证据过期时毫无预警地让商品从店面消失。
-  if (input.schedulerStatus === 'never_ran') return 'attention_required';
+  // 上次执行失败同理：下一次也很可能失败，必须让人看见。
+  if (input.schedulerStatus === 'never_ran' || input.schedulerStatus === 'last_run_failed') {
+    return 'attention_required';
+  }
   if (input.errors > 0 || input.coverageBelowMinimum) return 'attention_required';
   return 'healthy';
 }
@@ -1664,10 +1740,12 @@ async function buildRuns(
   for (const row of transitions) if (row.proposed_action || row.observed_exception) relevantIds.add(row.supplier_product_id);
   for (const row of checks) if (row.available === null || row.failure_reason) relevantIds.add(row.supplier_product_id);
   for (const id of latestDelistProposalMap(latest).keys()) relevantIds.add(id);
-  const [products, core, cfg] = await Promise.all([
+  const [products, core, cfg, publishedIds] = await Promise.all([
     readProducts(client, [...relevantIds]),
     readCoreRows(client),
     loadInventoryConfigForScript(),
+    // 判定一次历史运行是不是全量，需要知道当时的在售规模。用当前值近似，配合 90% 阈值。
+    readPublishedIds(client),
   ]);
   const workflowById = new Map(core.workflows.map((row) => [row.supplier_product_id, row]));
   const holdById = new Map(core.holds.map((row) => [row.supplier_product_id, row]));
@@ -1686,7 +1764,12 @@ async function buildRuns(
     const hasBlockedGate = Boolean(runReport) && Object.values(runReport!.gates ?? {}).some((gate) => (
       gate && typeof gate === 'object' && (gate as { allowed?: boolean }).allowed === false
     ));
-    const runKind = describeRunKind(runReport);
+    const runKind = describeRunKind(runReport, {
+      runId,
+      checkedCount: runChecks.length,
+      publishedTotal: publishedIds.size,
+      runner: runTransitions.find((row) => row.runner)?.runner ?? null,
+    });
     const proposedDelist = isLatest
       ? [...latestDelistProposalMap(latest).entries()].map(([id, proposal]) => ({
         supplier_product_id: id,

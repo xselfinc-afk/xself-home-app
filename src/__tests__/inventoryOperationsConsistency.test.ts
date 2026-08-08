@@ -147,6 +147,82 @@ function main(): void {
 
   // ── 26 + 27 + 28. 调度器 ───────────────────────────────────────────────────
 
+  it('Hotfix 1. 跑完了不等于正在跑 —— 五种调度器状态各归各位', () => {
+    const base = { installed: true, loaded: true, runAtLoad: true, intervalSeconds: 172_800 };
+    // 生产真实形状：state = not running, runs = 1, last exit code = 0。
+    assert.equal(diagnoseScheduler({ ...base, running: false, runs: 1, lastExitCode: 0 }).status, 'waiting',
+      '任务已经结束，界面不得再显示运行中');
+    assert.equal(diagnoseScheduler({ ...base, running: true, runs: 1, lastExitCode: 0 }).status, 'running');
+    assert.equal(diagnoseScheduler({ ...base, running: false, runs: 1, lastExitCode: 1 }).status, 'last_run_failed');
+    assert.equal(diagnoseScheduler({ ...base, running: false, runs: 0, lastExitCode: null }).status, 'never_ran');
+    assert.equal(diagnoseScheduler({ ...base, installed: false, running: null, runs: null, lastExitCode: null }).status, 'not_installed');
+    assert.equal(diagnoseScheduler({ ...base, loaded: false, running: null, runs: null, lastExitCode: null }).status, 'not_loaded');
+    // 读不到 state 时绝不当成在跑。
+    assert.notEqual(diagnoseScheduler({ ...base, running: null, runs: 1, lastExitCode: 0 }).status, 'running');
+  });
+
+  it('Hotfix 1. state 解析必须先判 not running，否则会被 running 的子串骗过去', () => {
+    const print = (state: string) => parseLaunchctlPrint(`\tstate = ${state}\n\truns = 1\n\tlast exit code = 0\n`);
+    assert.equal(print('not running').running, false);
+    assert.equal(print('running').running, true);
+    assert.equal(parseLaunchctlPrint('runs = 1\n').running, null, '没打印 state 就是未知');
+    assert.equal(print('not running').lastExitCode, 0);
+  });
+
+  it('Hotfix 1. 上次运行失败必须让人看见，不能算健康', () => {
+    const base = { runLockActive: false, schedulerLoaded: true, errors: 0, coverageBelowMinimum: false };
+    assert.equal(deriveInventoryHealth({ ...base, schedulerStatus: 'last_run_failed' }), 'attention_required');
+    assert.equal(deriveInventoryHealth({ ...base, schedulerStatus: 'waiting' }), 'healthy');
+  });
+
+  it('Hotfix 3. 没有报告文件的运行也要能分类，不再一律「未知类型」', () => {
+    // 商品身份复检根本不写扫描报告 —— 这正是运行记录里大量「未知类型」的来源。
+    assert.equal(describeRunKind(null, { runId: 'xone-targeted-identity-abc-123' }).kind, 'identity_recheck');
+    assert.equal(describeRunKind(null, { runId: 'xone-targeted-identity-abc' }).label, '商品身份复检');
+    assert.equal(describeRunKind(null, { runId: 'xone-targeted-1785809509600-34187' }).kind, 'single_sku_recheck');
+    // 历史 avail-* 运行只剩数据库行：按实际检查数判定。
+    assert.equal(describeRunKind(null, { runId: 'avail-2026-08-04', checkedCount: 1, publishedTotal: 353 }).kind, 'targeted_sku_scan');
+    assert.equal(describeRunKind(null, { runId: 'avail-2026-08-04', checkedCount: 353, publishedTotal: 353 }).kind, 'full_scan');
+    // 期间有商品上下架，覆盖九成以上仍算全量。
+    assert.equal(describeRunKind(null, { runId: 'avail-x', checkedCount: 340, publishedTotal: 353 }).kind, 'full_scan');
+    assert.equal(describeRunKind(null, { runId: 'avail-x', checkedCount: 50, publishedTotal: 353 }).kind, 'partial_limited_scan');
+    // 只推进状态、从不查库存的运行也是一类真实运行，不是证据不足。
+    assert.equal(describeRunKind(null, { runId: '5a83a797-dd31-4188', runner: 'inventoryWorkflowRun', checkedCount: 0 }).kind, 'workflow_state_run');
+    // 真正什么证据都没有的才叫未知。
+    assert.equal(describeRunKind(null, { runId: 'avail-x', checkedCount: 0, publishedTotal: 353 }).kind, 'unknown');
+    assert.equal(describeRunKind(null).kind, 'unknown');
+  });
+
+  it('Hotfix 3. 有报告时仍以报告为准，历史文件一个字不改', () => {
+    assert.equal(describeRunKind({ report_kind: 'scheduled_inventory_scan', is_full_scan: true }, { runId: 'avail-1' }).kind, 'full_scan');
+    assert.equal(describeRunKind({ report_kind: 'xone_single_sku_recheck' }, { runId: 'avail-1' }).kind, 'single_sku_recheck');
+    // 声称调度扫描但证明不了范围，且没有别的证据 → 明说范围未记录。
+    assert.equal(describeRunKind({ report_kind: 'scheduled_inventory_scan' }, { runId: 'avail-1', checkedCount: 0 }).kind, 'unknown_scope_scan');
+    // 分类是只读判断：不得出现任何写文件的动作。
+    const bridge = fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8');
+    const fn = bridge.slice(bridge.indexOf('export function describeRunKind'), bridge.indexOf('export function readLatestFullScanReport'));
+    assert.equal(/writeFileSync|appendFileSync|unlinkSync/.test(fn), false, '分类不得改动历史报告');
+  });
+
+  it('Hotfix 4. 安装脚本的 plist heredoc 里不得有反引号或命令替换', () => {
+    const installer = fs.readFileSync('scripts/installAvailabilityScanScheduler.sh', 'utf8');
+    const start = installer.indexOf('<<PLISTEOF');
+    const end = installer.indexOf('PLISTEOF', start + 10);
+    assert.ok(start > 0 && end > start, '找不到 plist heredoc');
+    const heredoc = installer.slice(start, end);
+    // heredoc 未加引号（需要展开 ${LABEL} 等），所以反引号会被当成命令执行 ——
+    // 这正是 "line 36: runs: command not found" 的来源。
+    assert.equal(heredoc.includes('`'), false, 'heredoc 内不得出现反引号');
+    assert.equal(/\$\(/.test(heredoc), false, 'heredoc 内不得出现命令替换');
+    // 只允许这几个有意的变量展开。
+    const vars = [...heredoc.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]);
+    for (const name of vars) {
+      assert.ok(['LABEL', 'RUNNER', 'REPO', 'INTERVAL', 'LOG_DIR'].includes(name), `意外的变量展开 ${name}`);
+    }
+    // 裸 $ 也不允许（除了上面这些 ${...}）。
+    assert.equal(/\$(?!\{)/.test(heredoc), false, 'heredoc 内不得出现裸 $');
+  });
+
   it('26. launchctl 输出按字段解析，缺什么就是 null，不猜', () => {
     const sample = [
       'com.xselfhome.inventory-availability-scan = {',
@@ -172,7 +248,11 @@ function main(): void {
     assert.match(stuck.reason ?? '', /重启/, '必须说清是重启把倒计时清零了');
     assert.equal(diagnoseScheduler({ installed: false, loaded: false, runs: null, runAtLoad: null, intervalSeconds: null }).status, 'not_installed');
     assert.equal(diagnoseScheduler({ installed: true, loaded: false, runs: null, runAtLoad: null, intervalSeconds: null }).status, 'not_loaded');
-    assert.equal(diagnoseScheduler({ installed: true, loaded: true, runs: 5, runAtLoad: true, intervalSeconds: 172_800 }).status, 'active');
+    // 跑过 5 次、此刻没在跑、上次成功 → 等待下次，不是「运行中」。
+    assert.equal(diagnoseScheduler({
+      installed: true, loaded: true, running: false, runs: 5, lastExitCode: 0,
+      runAtLoad: true, intervalSeconds: 172_800,
+    }).status, 'waiting');
   });
 
   it('26. RunAtLoad 打开，同时脚本自带节奏门 —— 触发频繁不等于扫描频繁', () => {
@@ -195,7 +275,7 @@ function main(): void {
     const base = { runLockActive: false, schedulerLoaded: true, errors: 0, coverageBelowMinimum: false };
     assert.equal(deriveInventoryHealth({ ...base, schedulerStatus: 'never_ran' }), 'attention_required',
       '证据现在够新，只是因为有人手动跑过 —— 自动化其实没在工作');
-    assert.equal(deriveInventoryHealth({ ...base, schedulerStatus: 'active' }), 'healthy');
+    assert.equal(deriveInventoryHealth({ ...base, schedulerStatus: 'waiting' }), 'healthy');
     // 既有优先级不变。
     assert.equal(deriveInventoryHealth({ ...base, runLockActive: true, schedulerStatus: 'never_ran' }), 'running');
     assert.equal(deriveInventoryHealth({ ...base, schedulerLoaded: false, schedulerStatus: 'never_ran' }), 'blocked');

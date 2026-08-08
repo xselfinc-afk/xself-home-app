@@ -48,7 +48,13 @@ write_plist() {
   <!-- Every 48 hours. StartInterval survives sleep/wake and does not depend on the machine being
        awake at an exact calendar time. But its countdown restarts on every load, and launchd
        reloads agents at every boot: with RunAtLoad=false on a Mac that reboots roughly daily the
-       timer never reached 48h, and the job sat loaded at `runs = 0` having never scanned once.
+       timer never reached 48h, and the job sat loaded at zero runs, having never scanned once.
+
+       NOTE: this heredoc is deliberately UNQUOTED so the label, runner path, repo path and
+       interval substitutions above still expand. That also means the shell expands everything
+       else in here: a backtick-quoted phrase in this very comment is what produced
+       "line 36: runs: command not found" during a real install. Keep this block free of
+       backticks, dollar signs and command substitution, apart from the intended substitutions.
 
        RunAtLoad=true makes each boot a trigger; runAvailabilityScan.sh's cadence guard keeps that
        from meaning "scan on every boot" — it exits immediately unless the last FULL scan is older
