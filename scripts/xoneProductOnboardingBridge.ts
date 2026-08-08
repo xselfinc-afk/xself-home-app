@@ -31,6 +31,14 @@ import {
   type OnboardingFacts,
 } from '../src/services/productOnboarding';
 import { isStale, isUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
+import {
+  buildRecoveryPlan,
+  deriveRecoveryState,
+  isResumable,
+  stageCompletion,
+  STAGE_LABELS,
+  type OnboardingProgressFacts,
+} from '../src/services/onboardingRecovery';
 
 loadEnv({ path: path.join(__dirname, '..', '.env.local') });
 
@@ -52,10 +60,14 @@ const AUTOPUB_PLAN_FILE = path.join(REPORT_DIR, 'latest-plan.json');
 const XONE_PLAN_SNAPSHOT = path.join(REPORT_DIR, 'xone-onboarding-plan.json');
 /** 预览产物。打开面板直接读它，不重跑 pipeline。 */
 const XONE_PREVIEW_FILE = path.join(REPORT_DIR, 'xone-onboarding-preview.json');
+/** 续跑用的计划快照。与新品那份分开，避免两种意图共用一个文件。 */
+const XONE_RECOVERY_PLAN = path.join(REPORT_DIR, 'xone-onboarding-recovery-plan.json');
 const PAGE_MAX = 50;
 
 export type OnboardingOperation =
   | 'check-new-saved'
+  | 'onboarding-recovery-list'
+  | 'onboarding-recovery-resume'
   | 'onboarding-preview'
   | 'onboarding-preview-cached'
   | 'onboarding-batch-publish'
@@ -86,7 +98,8 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
   const r = parsed as Partial<OnboardingRequest>;
   if (r?.schema_version !== SCHEMA_VERSION) throw new Error('INVALID_REQUEST');
   const ops: OnboardingOperation[] = [
-    'check-new-saved', 'onboarding-preview', 'onboarding-preview-cached', 'onboarding-batch-publish',
+    'check-new-saved', 'onboarding-recovery-list', 'onboarding-recovery-resume',
+    'onboarding-preview', 'onboarding-preview-cached', 'onboarding-batch-publish',
     'onboarding-candidates', 'prepare-onboarding-candidate', 'approve-first-publish',
   ];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
@@ -848,7 +861,9 @@ const STAGE_FAILURE_LABELS: Record<string, string> = {
 export function describeApplyFailure(report: Record<string, any> | null): { stage: string | null; reason: string | null; detail?: string | null } {
   if (!report) return { stage: null, reason: null, detail: null };
   const failures = (report.stage_failures ?? {}) as Record<string, string>;
-  const stage = Object.keys(failures)[0] ?? (typeof report.reached_stage === 'string' ? report.reached_stage : null);
+  // 没有任何阶段失败 = 这次跑完了。不能因为 reached_stage 是 'done' 就报「done 阶段失败」。
+  if (Object.keys(failures).length === 0) return { stage: null, reason: null, detail: null };
+  const stage = Object.keys(failures)[0];
   if (!stage) return { stage: null, reason: null, detail: null };
   const label = STAGE_FAILURE_LABELS[stage] ?? `${stage} 阶段失败`;
   const detail = failures[stage];
@@ -864,6 +879,187 @@ export function describeApplyFailure(report: Record<string, any> | null): { stag
     }
   }
   return { stage, reason: detail ? `${label}（${detail}）` : label, detail };
+}
+
+// ── 上架未完成商品的续跑 ─────────────────────────────────────────────────────
+//
+// 一次批量上架可能死在任何一个阶段。留下的半成品既不是新候选（planner 的候选是「在
+// supplier_products 但不在 standardized_products」，建了行就被排除），也不该从界面消失。
+//
+// 续跑不新增执行器：runGigaAutoPublish 的八个阶段本身就是幂等的 ——
+//   Stage 1 .eq('published', false) 命中 0 行，随后按「当前为 true 的数量」校验，通过
+//   Stage 2 upsert onConflict=supplier_product_id，且 StandardizedProductInsert 不含 published
+//   Stage 3 默认只处理 optimized_title IS NULL
+//   Stage 5 内容寻址，已存在即复用
+//   Stage 6 !FORCE 时只补 primary_image_blurhash IS NULL
+//   Stage 8 upsert，unique(supplier_product_id, reviewer_name)
+// 唯一会重算的是 Stage 4 定价 —— 那是它本来的设计，同样的成本得出同样的价。
+
+/** 读齐续跑判定需要的全部事实。 */
+async function readProgressFacts(client: SupabaseClient, skus: string[]): Promise<OnboardingProgressFacts[]> {
+  if (!skus.length) return [];
+  const [sp, std, sell, reviews, avail] = await Promise.all([
+    client.from('supplier_products').select('supplier_product_id,published').in('supplier_product_id', skus),
+    client.from('standardized_products')
+      .select('supplier_product_id,published,normalization_status,optimized_title,selling_price,primary_image_mirror_status,primary_image_blurhash,inventory_status,total_available_qty')
+      .in('supplier_product_id', skus),
+    client.from('sellable_products').select('supplier_product_id').in('supplier_product_id', skus),
+    client.from('product_reviews').select('supplier_product_id').eq('status', 'active').in('supplier_product_id', skus),
+    client.from('product_availability_current').select('supplier_product_id').in('supplier_product_id', skus),
+  ]);
+  const supplierPub = new Map((sp.data ?? []).map((r: any) => [r.supplier_product_id, r.published === true]));
+  const stdById = new Map((std.data ?? []).map((r: any) => [r.supplier_product_id, r]));
+  const sellSet = new Set((sell.data ?? []).map((r: any) => r.supplier_product_id));
+  const availSet = new Set((avail.data ?? []).map((r: any) => r.supplier_product_id));
+  const reviewCount = new Map<string, number>();
+  for (const r of (reviews.data ?? []) as any[]) {
+    reviewCount.set(r.supplier_product_id, (reviewCount.get(r.supplier_product_id) ?? 0) + 1);
+  }
+  return skus.map((sku) => {
+    const row = stdById.get(sku) as any;
+    return {
+      supplier_product_id: sku,
+      supplier_published: supplierPub.get(sku) === true,
+      in_standardized: Boolean(row),
+      standardized_published: row ? (row.published ?? null) : null,
+      normalization_status: row?.normalization_status ?? null,
+      optimized_title: row?.optimized_title ?? null,
+      selling_price: row?.selling_price == null ? null : Number(row.selling_price),
+      primary_image_mirror_status: row?.primary_image_mirror_status ?? null,
+      primary_image_blurhash: row?.primary_image_blurhash ?? null,
+      inventory_status: row?.inventory_status ?? null,
+      total_available_qty: row?.total_available_qty == null ? null : Number(row.total_available_qty),
+      active_review_count: reviewCount.get(sku) ?? 0,
+      has_availability_evidence: availSet.has(sku),
+      in_sellable: sellSet.has(sku),
+    };
+  });
+}
+
+/** 上架未完成的商品从哪来：曾经进过计划快照、如今还没进 sellable 的那些。 */
+function skusFromPlanSnapshots(): string[] {
+  const out = new Set<string>();
+  for (const file of [XONE_PLAN_SNAPSHOT, XONE_RECOVERY_PLAN]) {
+    try {
+      const plan = JSON.parse(fs.readFileSync(file, 'utf8')) as { proposed_batch?: { skus?: unknown[] } };
+      for (const sku of plan.proposed_batch?.skus ?? []) out.add(String(sku));
+    } catch { /* 没有快照就没有续跑对象 */ }
+  }
+  return [...out];
+}
+
+async function runRecoveryList(client: SupabaseClient): Promise<Record<string, unknown>> {
+  const facts = await readProgressFacts(client, skusFromPlanSnapshots());
+  const rows = facts.map((f) => {
+    const verdict = deriveRecoveryState(f);
+    const done = stageCompletion(f);
+    return {
+      supplier_product_id: f.supplier_product_id,
+      state: verdict.state,
+      resumable: isResumable(verdict.state),
+      next_action: verdict.nextAction,
+      missing: verdict.missing,
+      missing_labels: verdict.missing.map((stage) => STAGE_LABELS[stage]),
+      stages: done,
+      stage_labels: STAGE_LABELS,
+      selling_price: f.selling_price,
+      standardized_published: f.standardized_published,
+      in_sellable: f.in_sellable,
+    };
+  }).filter((row) => row.state !== 'not_started' && row.state !== 'complete');
+
+  return envelope('onboarding-recovery-list', {
+    production_write_attempted: false,
+    total: rows.length,
+    resumable_count: rows.filter((r) => r.resumable).length,
+    rows,
+  });
+}
+
+/**
+ * 续跑。两种下一步，各自复用既有能力，都不新增执行器：
+ *   resume_pipeline      → runGigaAutoPublish --plan <续跑快照> --apply（八阶段幂等）
+ *   refresh_availability → scanPublishedAvailability --skus=… --live（库存证据的唯一产出者）
+ *
+ * 后者属于库存扫描链。首次上架的商品在扫描跑到它之前天然「已发布、App 还看不到」，
+ * 这一步补的就是那一行证据，它不改变任何发布状态。
+ */
+async function runRecoveryResume(
+  request: OnboardingRequest,
+  client: SupabaseClient,
+): Promise<Record<string, unknown>> {
+  if (!isHumanApprover(request.approved_by)) return failure('APPROVER_MISSING', '续跑必须记录批准人');
+  const preflight = preflightToolchain(childEnv({}, {}));
+  if (!preflight.ok) return failure('TOOLCHAIN_UNAVAILABLE', `无法继续：${preflight.reason}`);
+  const account = preflightSupplierAccount(REPO);
+  if (!account.ok) return failure('SUPPLIER_ACCOUNT_UNAVAILABLE', `无法继续：${account.reason}`);
+
+  const facts = await readProgressFacts(client, skusFromPlanSnapshots());
+  const pipeline: string[] = [];
+  const evidence: string[] = [];
+  for (const f of facts) {
+    const verdict = deriveRecoveryState(f);
+    if (verdict.nextAction === 'resume_pipeline') pipeline.push(f.supplier_product_id);
+    else if (verdict.nextAction === 'refresh_availability') evidence.push(f.supplier_product_id);
+  }
+  if (!pipeline.length && !evidence.length) return failure('NOTHING_TO_RESUME', '当前没有需要继续完成的商品');
+  if (typeof request.expected_ready === 'number'
+    && request.expected_ready !== pipeline.length + evidence.length) {
+    return failure('STATE_CHANGED', '商品状态已经变化，请重新查看后再继续');
+  }
+
+  const steps: Array<{ step: string; skus: number; exit_code: number | null }> = [];
+
+  if (pipeline.length) {
+    progress('resume_pipeline', `正在继续完成 ${pipeline.length} 件商品的上架流程`);
+    let previous: Record<string, unknown> | null = null;
+    try { previous = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); } catch { previous = null; }
+    const plan = buildRecoveryPlan(previous, pipeline);
+    if (!plan) return failure('NO_RECOVERY_PLAN', '找不到可用于续跑的计划快照');
+    fs.writeFileSync(XONE_RECOVERY_PLAN, JSON.stringify(plan, null, 2));
+    const run = runScript('scripts/runGigaAutoPublish.ts', ['--plan', XONE_RECOVERY_PLAN, '--apply', '--summary'], 1_800_000);
+    steps.push({ step: 'resume_pipeline', skus: pipeline.length, exit_code: run.status });
+  }
+
+  if (evidence.length) {
+    progress('refresh_availability', `正在为 ${evidence.length} 件商品读取库存证据`);
+    // 既有的证据产出者，窄化运行会写到自己的报告文件，不覆盖全量扫描的 latest。
+    const scan = runScript(
+      'scripts/scanPublishedAvailability.ts',
+      [`--skus=${evidence.join(',')}`, '--live'],
+      1_800_000,
+    );
+    steps.push({ step: 'refresh_availability', skus: evidence.length, exit_code: scan.status });
+  }
+
+  const after = await readProgressFacts(client, [...pipeline, ...evidence]);
+  const results = after.map((f) => {
+    const verdict = deriveRecoveryState(f);
+    if (verdict.state === 'complete') return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: null };
+    if (f.standardized_published === true) {
+      return {
+        sku: f.supplier_product_id,
+        outcome: 'published_but_not_sellable',
+        reason: verdict.state === 'awaiting_evidence'
+          ? '已发布，但还没有可用的库存证据，App 暂时看不到'
+          : '已发布，但未满足 App 可见条件',
+      };
+    }
+    return { sku: f.supplier_product_id, outcome: 'pipeline_failed', reason: '上架流程仍未完成' };
+  });
+  const counts = {
+    verified_visible: results.filter((r) => r.outcome === 'verified_visible').length,
+    published_but_not_sellable: results.filter((r) => r.outcome === 'published_but_not_sellable').length,
+    pipeline_failed: results.filter((r) => r.outcome === 'pipeline_failed').length,
+  };
+  appendAudit({ event: 'recovery_resume', approved_by: request.approved_by, steps, ...counts });
+  return envelope('onboarding-recovery-resume', {
+    production_write_attempted: true,
+    approved_by: request.approved_by,
+    steps,
+    counts,
+    results,
+  });
 }
 
 async function runBatchPublish(
@@ -975,6 +1171,8 @@ export async function executeOnboardingBridge(
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   if (request.operation === 'check-new-saved') return runCheckNewSaved(request, client);
+  if (request.operation === 'onboarding-recovery-list') return runRecoveryList(client);
+  if (request.operation === 'onboarding-recovery-resume') return runRecoveryResume(request, client);
   if (request.operation === 'onboarding-preview') return runOnboardingPreview(request, client);
   if (request.operation === 'onboarding-preview-cached') return readCachedPreview();
   if (request.operation === 'onboarding-batch-publish') return runBatchPublish(request, client);
