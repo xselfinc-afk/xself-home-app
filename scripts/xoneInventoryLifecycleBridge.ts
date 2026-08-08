@@ -630,6 +630,39 @@ async function readCoreRows(client: SupabaseClient): Promise<{
  * how the supplier-favorite facts job silently missed 467 rows. A truncated denominator here
  * would inflate coverage instead of reporting it.
  */
+/**
+ * 当前读取失败的商品 —— 计数和列表共用的唯一来源。
+ *
+ * 判定是「这个商品最近一次库存读取失败了」，与是哪一次运行无关。曾经用过的两种写法都不行：
+ *   product_availability_current.consecutive_failures > 0
+ *     一次 malformed 探测根本不会创建 current 行，所以结构上永远看不到这类商品。真实生产里
+ *     N710P206904C 已发布、最近一次读取失败、却完全不在这张表里 —— 计数因此是 0，列表却有
+ *     1 条，两个数字打架。
+ *   只看某一次 run 的失败
+ *     概览和队列各自选的「最近一次」不是同一次，同样会打架。
+ *
+ * 行数上限 1000 由 PostgREST 决定；按 checked_at 倒序取，一次全量扫描约 353 行，所以每个
+ * 商品的最新一次检查都在窗口内。真被截断时的表现是漏报而不是虚报。
+ */
+async function readCurrentReadFailures(
+  client: SupabaseClient,
+): Promise<Map<string, AvailabilityCheckRow>> {
+  const result = await client.from('product_availability_checks')
+    .select('supplier_product_id,available,status,failure_reason,run_id,checked_at')
+    .order('checked_at', { ascending: false })
+    .limit(10_000);
+  const checks = mustRows(result as never, 'availability_checks_errors') as AvailabilityCheckRow[];
+  const newest = new Map<string, AvailabilityCheckRow>();
+  for (const check of checks) {
+    if (!newest.has(check.supplier_product_id)) newest.set(check.supplier_product_id, check);
+  }
+  const failures = new Map<string, AvailabilityCheckRow>();
+  for (const [id, check] of newest) {
+    if (check.available === null || check.failure_reason) failures.set(id, check);
+  }
+  return failures;
+}
+
 async function readPublishedIds(client: SupabaseClient): Promise<Set<string>> {
   const ids = new Set<string>();
   const page = 1000;
@@ -734,7 +767,7 @@ export function deriveInventoryHealth(input: {
 async function buildSummary(client: SupabaseClient): Promise<Record<string, unknown>> {
   const report = readMostRecentReport();
   const latestRunId = typeof report?.run_id === 'string' ? report.run_id : null;
-  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult, sellableResult, publishedIds] = await Promise.all([
+  const [{ workflows, availability, holds }, cfg, relistAuditResult, latestAuditResult, sellableResult, publishedIds, readFailures] = await Promise.all([
     readCoreRows(client),
     loadInventoryConfigForScript(),
     client.from('publication_audit_log').select('supplier_product_id', { count: 'exact', head: true }).eq('action', 'relist'),
@@ -749,13 +782,14 @@ async function buildSummary(client: SupabaseClient): Promise<Record<string, unkn
     // (352 rows in grace) while the denominator came from a 1-SKU targeted run that had
     // overwritten latest-availability-scan.json.
     readPublishedIds(client),
+    readCurrentReadFailures(client),
   ]);
   if (relistAuditResult.error) throw new Error('READ_FAILED:relist_audit_count');
   if (latestAuditResult.error) throw new Error('READ_FAILED:latest_publication_audit');
   const stateCounts = groupStateCounts(workflows);
-  // 「当前读取失败」必须来自实时证据表。用报告里的 failures 会让一次 1 件的 dry run 长期显示
-  // 「读取失败 1」，即使那件商品早已恢复正常 —— 报告数字属于「最近运行」，不属于「当前状态」。
-  const errors = availability.filter((row) => Number(row.consecutive_failures ?? 0) > 0).length;
+  // 「当前读取失败」必须来自实时证据，且必须与工作队列的「错误」列表同一个来源。
+  // 报告里的 failures 属于「最近运行」，不属于「当前状态」，不能拿来当这个数。
+  const errors = readFailures.size;
   const eligibleDelist = stateCounts.eligible_for_delist ?? 0;
   const eligibleRelist = stateCounts.eligible_for_relist ?? 0;
   const blockedIds = new Set(holds.map((row) => row.supplier_product_id));
@@ -873,13 +907,24 @@ function specificationSummary(value: unknown): string[] {
 }
 
 function itemFromFacts(
+  /**
+   * 这条记录是按哪个 id 查出来的。必须显式传进来，不能从行对象反推。
+   *
+   * 反推的写法在「既没有 workflow 行、也没有 availability_current 行」时会全部落空，
+   * 结果是一张标题、图片、价格都正常、`supplier_product_id` 却是空串的卡片 ——
+   * 真实生产里 N710P206904C 就是这样：它已发布、最近一次读取失败、两张表都没有它的行。
+   */
+  supplierProductId: string,
   workflow: WorkflowRow | null,
   availability: AvailabilityRow | null,
   product: ProductRow | null,
   hold: HoldRow | null,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const id = workflow?.supplier_product_id ?? availability?.supplier_product_id ?? String(extra.supplier_product_id ?? '');
+  const id = supplierProductId
+    || workflow?.supplier_product_id
+    || availability?.supplier_product_id
+    || String(extra.supplier_product_id ?? '');
   return {
     supplier_product_id: id,
     sku: product?.sku_custom ?? workflow?.supplier_sku ?? id,
@@ -1582,20 +1627,8 @@ async function buildItems(
     }
     raw = [...ids].map((id) => ({ id }));
   } else if (request.bucket === 'errors') {
-    const result = await client.from('product_availability_checks')
-      .select('supplier_product_id,available,status,failure_reason,run_id,checked_at')
-      .order('checked_at', { ascending: false })
-      .limit(10_000);
-    const checks = mustRows(result as never, 'availability_checks_errors') as AvailabilityCheckRow[];
-    const latestRunId = readLatestReport()?.run_id;
-    const latestFailures = new Map<string, AvailabilityCheckRow>();
-    for (const check of checks) {
-      if ((!latestRunId || check.run_id === latestRunId)
-        && (check.available === null || check.failure_reason)
-        && !latestFailures.has(check.supplier_product_id)) {
-        latestFailures.set(check.supplier_product_id, check);
-      }
-    }
+    // 与概览的「错误」计数同一个来源。两边各算各的正是 count=0 却列出 1 条的原因。
+    const latestFailures = await readCurrentReadFailures(client);
     raw = [...latestFailures.values()].map((check) => ({
       id: check.supplier_product_id,
       extra: {
@@ -1630,6 +1663,7 @@ async function buildItems(
     const page = audits.slice(cursor, cursor + limit);
     const products = await readProducts(client, page.map((row) => row.supplier_product_id));
     const items = page.map((audit) => itemFromFacts(
+      audit.supplier_product_id,
       wfById.get(audit.supplier_product_id) ?? null,
       avById.get(audit.supplier_product_id) ?? null,
       products.get(audit.supplier_product_id) ?? null,
@@ -1664,6 +1698,7 @@ async function buildItems(
   const report = readLatestReport();
   const proposalById = latestDelistProposalMap(report);
   const items = page.map(({ id, extra }) => itemFromFacts(
+    id,
     wfById.get(id) ?? null,
     avById.get(id) ?? null,
     products.get(id) ?? null,

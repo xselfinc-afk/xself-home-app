@@ -77,15 +77,19 @@ function main(): void {
 
   // ── 19. 当前读取失败取实时表 ───────────────────────────────────────────────
 
-  it('19. 「当前读取失败」来自实时证据表，不来自扫描报告', () => {
+  it('19. 「当前读取失败」来自实时证据，不来自扫描报告', () => {
     const bridge = code(fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8'), '//');
     const block = bridge.slice(bridge.indexOf('const stateCounts = groupStateCounts(workflows);'));
     const errorsLine = block.slice(0, block.indexOf('\n', block.indexOf('const errors =')) + 1);
-    assert.ok(/consecutive_failures/.test(errorsLine), '必须数实时 consecutive_failures');
     assert.equal(
       /report\?\.totals\?\.failures/.test(errorsLine), false,
-      '不得再用报告里的 failures 当作当前状态',
+      '不得用报告里的 failures 当作当前状态 —— 那属于「最近运行」',
     );
+    // 也不能用 consecutive_failures：一次 malformed 探测不会创建 product_availability_current
+    // 行，所以这个字段结构上永远看不到 N710P206904C 那类商品（已发布、最近一次读取失败、
+    // 却完全不在那张表里）。计数因此恒为 0，而队列列表却有 1 条。
+    assert.equal(/consecutive_failures/.test(errorsLine), false);
+    assert.ok(/readFailures\.size/.test(errorsLine), '必须与队列列表共用同一个判定');
   });
 
   // ── 23 + 25. 运行类型与「成功」的定义 ──────────────────────────────────────
@@ -221,6 +225,42 @@ function main(): void {
     }
     // 裸 $ 也不允许（除了上面这些 ${...}）。
     assert.equal(/\$(?!\{)/.test(heredoc), false, 'heredoc 内不得出现裸 $');
+  });
+
+  it('自检 A. 「错误」的计数与列表必须同一个来源', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8'), '//');
+    // 概览的 errors 和队列的 errors 列表都必须走 readCurrentReadFailures。
+    assert.ok(/const errors = readFailures\.size;/.test(bridge), '概览计数必须来自共享判定');
+    const itemsErrors = bridge.slice(bridge.indexOf("request.bucket === 'errors'"));
+    assert.ok(/readCurrentReadFailures\(client\)/.test(itemsErrors.slice(0, 600)), '列表必须来自同一个共享判定');
+    // consecutive_failures 结构上看不到「没有 current 行」的商品，不能再拿它当计数。
+    const summaryBlock = bridge.slice(bridge.indexOf('const stateCounts = groupStateCounts(workflows);'));
+    const errorsLine = summaryBlock.slice(0, summaryBlock.indexOf('\n', summaryBlock.indexOf('const errors =')) + 1);
+    assert.equal(/consecutive_failures/.test(errorsLine), false);
+    // 判定本身按「每个商品最新一次检查」，与是哪一次运行无关。
+    const fn = bridge.slice(bridge.indexOf('async function readCurrentReadFailures'));
+    const body = fn.slice(0, fn.indexOf('async function readPublishedIds'));
+    assert.ok(/newest\.has\(check\.supplier_product_id\)/.test(body), '必须按 SKU 取最新一次');
+    assert.equal(/run_id === /.test(body), false, '不得再绑定到某一次 run');
+  });
+
+  it('自检 B. 商品 id 必须显式传入，不能从行对象反推', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneInventoryLifecycleBridge.ts', 'utf8'), '//');
+    const fn = bridge.slice(bridge.indexOf('function itemFromFacts('));
+    const sig = fn.slice(0, fn.indexOf('): Record<string, unknown> {'));
+    assert.ok(/supplierProductId: string,/.test(sig), 'id 必须是显式参数');
+    // 反推写法在「既无 workflow 行、也无 availability_current 行」时会落到空串 ——
+    // 真实生产里 N710P206904C 就是这样：已发布、最近一次读取失败、两张表都没有它。
+    assert.ok(
+      /const id = supplierProductId\s*\n?\s*\|\|/.test(fn.slice(0, fn.indexOf('return {'))),
+      '必须优先使用显式传入的 id',
+    );
+    // 两个调用点都要把 id 传进去。
+    const calls = [...bridge.matchAll(/itemFromFacts\(\s*\n\s*([A-Za-z_.?\[\]]+)/g)].map((m) => m[1]);
+    assert.equal(calls.length >= 2, true, `应有至少两个调用点，实际 ${calls.length}`);
+    for (const first of calls) {
+      assert.equal(/^(wfById|avById|products|holdById)/.test(first), false, `第一个实参不该是行对象：${first}`);
+    }
   });
 
   it('26. launchctl 输出按字段解析，缺什么就是 null，不猜', () => {
