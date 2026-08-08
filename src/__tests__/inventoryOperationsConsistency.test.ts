@@ -818,6 +818,63 @@ function main(): void {
     assert.ok(/"apply_protection", "import_drafts", "refresh_saved"/.test(rust));
   });
 
+  // ── 现场：界面上出现 junk_category / needs_review_taxonomy 两个英文代号 ──────
+  //
+  // 那件泳池罩不是「垃圾品类」—— 仓库里既有的 assortmentClassifier 把它判为 outdoor_furniture；
+  // 那四件花瓶也不是「资料质量不达标」—— 它们是分类体系里压根没有的品类（供应商分类
+  // 「Vases & Jars」，taxonomy 的 58 个 productType 里没有对应项）。门禁判得对，话说得不对。
+
+  it('现场. planner 会产出的每个 hold 原因都必须有中文说法', () => {
+    const planner = fs.readFileSync('scripts/planGigaAutoPublish.ts', 'utf8');
+    const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+    // planner 里 reason: 'xxx' 与 reasons.push('xxx') 就是会出现在界面上的全部代号。
+    const emitted = new Set<string>();
+    for (const m of planner.matchAll(/reason:\s*'([a-z_]+)'/g)) emitted.add(m[1]);
+    // 三元写法也要认：reasons.push(x ? 'a' : 'b')。
+    for (const m of planner.matchAll(/reasons\.push\(([^)]*)\)/g)) {
+      for (const lit of m[1].matchAll(/'([a-z_]+)'/g)) emitted.add(lit[1]);
+    }
+    assert.ok(emitted.size >= 8, `前提：planner 至少有 8 个原因代号，实际 ${emitted.size}`);
+    const labels = bridge.slice(bridge.indexOf('const HOLD_REASON_LABELS'), bridge.indexOf('function describeUnplaceable'));
+    for (const code of emitted) {
+      assert.ok(new RegExp(`\\b${code}:`).test(labels), `${code} 没有中文说法，会以英文代号漏到界面上`);
+    }
+  });
+
+  it('现场. 分类体系放不下的商品，要说清是哪一种放不下', () => {
+    // 泳池罩：既有分流器判为户外用品，不是「垃圾」。
+    const pool = buildPreviewRows({
+      plan: { proposed_batch: { skus: [] }, candidates: [{ id: 'W3859P528052', bucket: 'REJECT', reasons: ['junk_category'] }] },
+      supplierRows: [{ supplier_product_id: 'W3859P528052', title: 'New 15 FT Round Multifunctional All Weather Cover Pool Dome', images: [], price: 179 }],
+      normalize: (row) => row,
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+    assert.match(pool[0].blocked_reason ?? '', /户外/);
+    assert.equal(/junk_category/.test(pool[0].blocked_reason ?? ''), false, '不得把英文代号丢给用户');
+
+    // 装饰花瓶：标题判不出品类，是「需要人工确认」，不是「资料质量不达标」。
+    const vase = buildPreviewRows({
+      plan: { proposed_batch: { skus: [] }, candidates: [{ id: 'W5977P521300', bucket: 'HOLD_QUALITY', reasons: ['needs_review_taxonomy'] }] },
+      supplierRows: [{ supplier_product_id: 'W5977P521300', title: 'Decorative Metal Vases Set of 3, Gold Leaf Pattern Floor Vase', images: [], price: 58 }],
+      normalize: (row) => row,
+      reviewCount: () => ({ count: 5, avg: 4.6 }),
+    });
+    assert.match(vase[0].blocked_reason ?? '', /无法从标题判断品类/);
+
+    // 说法变了，判定没变：两件都仍然不可上架。
+    assert.equal(pool[0].ready, false);
+    assert.equal(vase[0].ready, false);
+  });
+
+  it('现场. 解释用的是既有分流器，不是第二套分类系统', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/from '\.\.\/src\/utils\/assortmentClassifier'/.test(bridge), '必须复用既有分流器');
+    // 只用来措辞：桥接不得自己判 ready，也不得碰 assortment 的开关。
+    assert.equal(/SAVED_ITEMS_TAXONOMY_FIRST_ENABLED/.test(bridge), false, '不得触碰分流开关');
+    assert.ok(/function isReadyBucket\(bucket: string\): boolean \{\s*return bucket\.startsWith\('SAFE'\);/.test(bridge),
+      'ready 判定必须仍然只看 planner 的桶');
+  });
+
   it('现场. 请求白名单必须把 refresh_saved 带过去，否则刷新是空转的', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
     // 解析器是白名单：没被显式拷贝的字段等于没传。上一轮加了字段却漏了这一行，

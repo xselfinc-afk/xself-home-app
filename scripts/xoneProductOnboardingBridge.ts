@@ -31,6 +31,7 @@ import {
   type OnboardingFacts,
 } from '../src/services/productOnboarding';
 import { classifyCommerce, isNeedsReview } from '../src/utils/commerceTaxonomy';
+import { classifyAssortment } from '../src/utils/assortmentClassifier';
 import { isStale, isUsableMapping, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
 import {
   buildRecoveryPlan,
@@ -641,14 +642,60 @@ function isReadyBucket(bucket: string): boolean {
   return bucket.startsWith('SAFE');
 }
 
-/** planner 的 hold 原因翻成运营看得懂的话。词汇来自既有 plan 报告，未新增判定。 */
+/**
+ * planner 的 hold 原因翻成运营看得懂的话。**只翻译，不改判定。**
+ *
+ * 缺一条就会把内部代号原样漏到界面上 —— 用户看到的 `junk_category`、
+ * `needs_review_taxonomy` 就是这么来的。它们不但是英文，而且措辞误导：
+ * 那件泳池罩不是「垃圾品类」，仓库里既有的 assortmentClassifier 把它判为
+ * outdoor_furniture；那四件花瓶也不是「资料质量不达标」，它们是分类体系里
+ * 压根没有的品类。所以这里要把 planner 的每一个原因都覆盖到。
+ */
 const HOLD_REASON_LABELS: Record<string, string> = {
   cfgmissing_fragmented: '同系列商品配置不完整，需要人工确认',
+  wmissing_fragmented: '同系列商品尺寸不完整，需要人工确认',
+  fragmented_cluster: '同系列已有商品在售，需要合并后再上架',
   no_config_axis_standalone: '无法确定规格轴，需要人工确认',
+  no_live_sibling_standalone: '同系列暂无在售商品，可单独上架',
   no_current_stock: '当前无库存',
+  no_image: '缺少主图',
+  no_price: '缺少成本价',
   missing_image: '缺少主图',
   missing_price: '缺少成本价',
+  low_price: '成本价过低，需要人工确认',
+  duplicate_color: '同系列出现重复颜色，需要人工确认',
+  config_mismatch: '同系列规格不一致，需要人工确认',
+  per_color_cost_mismatch: '同系列各颜色成本不一致，需要人工确认',
+  // 这条出现在放行的商品上（各颜色成本差在取整误差内），不会作为拦截原因显示。
+  cost_within_tolerance: '同系列成本差异在允许范围内',
+  brand_prefix: '标题以品牌型号开头，需要人工整理',
+  marketing_text: '标题含营销文案，需要人工整理',
+  weak_title: '标题信息不足，需要人工整理',
+  title_not_ready: '标题整理后仍然过短，需要人工确认',
+  // 下面两条由 planner 的 commerceCanonical 决定：分类体系放不下这件商品。
+  // 具体是哪一种「放不下」，交给 describeUnplaceable 用既有分流器说清楚。
+  junk_category: '不在当前售卖品类范围内',
+  needs_review_taxonomy: '商品品类尚未纳入分类体系，需要人工确认',
 };
+
+/**
+ * 分类体系放不下这件商品时，说清楚是哪一种放不下。
+ *
+ * 用的是仓库里既有的 `classifyAssortment`（纯函数、已在 OUTDOOR_CONTEXT_CORRECTION_REPORT
+ * 里验证过），**不是第二套分类器，也不改变任何门禁**：它只影响这句话怎么写。
+ * planner 的桶与 ready 判定完全不受影响。
+ */
+function describeUnplaceable(title: string, fallback: string): string {
+  const verdict = classifyAssortment({ title, category: '', categoryLabel: '' } as never);
+  switch (verdict.assortment) {
+    case 'outdoor_furniture':
+      return '识别为户外用品，不在当前售卖品类范围内';
+    case 'ambiguous_manual_review':
+      return '无法从标题判断品类，需要人工确认';
+    default:
+      return fallback;
+  }
+}
 
 const BUCKET_LABELS: Record<string, string> = {
   HOLD_PHASE2: '商品配置需要人工确认',
@@ -658,8 +705,13 @@ const BUCKET_LABELS: Record<string, string> = {
   REJECT: '不符合上架条件',
 };
 
-function describeHold(bucket: string, reasons: string[]): string {
-  const detail = reasons.map((r) => HOLD_REASON_LABELS[r] ?? r).filter(Boolean);
+function describeHold(bucket: string, reasons: string[], title = ''): string {
+  const unplaceable = new Set(['junk_category', 'needs_review_taxonomy']);
+  const detail = reasons
+    .map((r) => (unplaceable.has(r) && title
+      ? describeUnplaceable(title, HOLD_REASON_LABELS[r])
+      : HOLD_REASON_LABELS[r] ?? r))
+    .filter(Boolean);
   if (detail.length) return detail.join('；');
   if (BUCKET_LABELS[bucket]) return BUCKET_LABELS[bucket];
   // planner 没有为它出候选，说明它压根不在这次的评估范围里 —— 常见原因是它早就上线了。
@@ -718,7 +770,7 @@ export function buildPreviewRows(input: {
       supplier_product_id: id,
       ready,
       bucket,
-      blocked_reason: ready ? null : describeHold(bucket, reasons),
+      blocked_reason: ready ? null : describeHold(bucket, reasons, String(supplierRow.title ?? '')),
       title: String(normalized.product_title_display ?? normalized.product_title ?? supplierRow.title ?? '未命名商品'),
       sku_custom: String(normalized.sku_custom ?? ''),
       category: String(normalized.category_label ?? normalized.category_code ?? ''),
