@@ -526,7 +526,7 @@ function main(): void {
     const { describeApplyFailure } = require('../../scripts/xoneProductOnboardingBridge');
     const cases: Array<[string, RegExp]> = [
       ['pricing', /定价阶段失败/],
-      ['inventory', /库存阶段失败/],
+      ['inventory', /库存验证暂不可用/],
       ['mirror', /图片转存阶段失败/],
       ['guardrail', /安全门拦截/],
       ['reviews', /评价初始化阶段失败/],
@@ -536,7 +536,74 @@ function main(): void {
       assert.equal(r.stage, stage);
       assert.match(r.reason, expected);
     }
-    assert.deepEqual(describeApplyFailure(null), { stage: null, reason: null });
+    assert.deepEqual(describeApplyFailure(null), { stage: null, reason: null, detail: null });
+  });
+
+  it('凭据 1. 子进程默认拿不到 SUPPLIER_*，由脚本自己按级联选账号', () => {
+    const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+    // 摘除必须是默认行为（opt-out），不是逐个调用点去记得加 —— 忘一个就是一次生产故障。
+    assert.ok(/if \(!options\.passSupplierAccountThrough\)/.test(bridge), '默认必须摘除');
+    assert.equal(/letScriptChooseSupplierAccount/.test(bridge), false, '旧的 opt-in 参数必须已移除');
+    // 没有任何调用点显式放行默认账号。
+    assert.equal(/passSupplierAccountThrough: true/.test(bridge), false);
+  });
+
+  it('凭据 2. 每个 Golden Path 脚本自己都有 alt 优先的级联', () => {
+    // 桥接之所以能安全摘除，前提是脚本自己会选账号。这里把这个前提钉住。
+    for (const file of ['scripts/planGigaAutoPublish.ts', 'scripts/runGigaAutoPublish.ts', 'scripts/syncGigaNewlySavedCandidates.ts']) {
+      const src = fs.readFileSync(file, 'utf8');
+      const alt = src.indexOf(".env.giga-alt.local");
+      const local = src.indexOf("path: '.env.local'");
+      assert.ok(alt > 0, `${file} 必须加载 .env.giga-alt.local`);
+      assert.ok(local > alt, `${file} 里 alt 必须排在 .env.local 之前（dotenv 不覆盖，先到先得）`);
+    }
+  });
+
+  it('凭据 3. 账号自检按脚本同一套级联解析，且不碰凭据值', () => {
+    const { preflightSupplierAccount } = require('../../scripts/xoneProductOnboardingBridge');
+    const result = preflightSupplierAccount(process.cwd());
+    assert.equal(result.ok, true, '本机应能解析到开放平台账号');
+    assert.equal(result.source, '.env.giga-alt.local', '必须解析到 alt 账号');
+
+    // 自检结果里不得出现任何凭据值。
+    const serialized = JSON.stringify(result);
+    for (const key of ['SUPPLIER_CLIENT_ID', 'SUPPLIER_CLIENT_SECRET']) {
+      const value = process.env[key];
+      if (value) assert.equal(serialized.includes(value), false, `自检结果不得包含 ${key} 的值`);
+    }
+  });
+
+  it('凭据 4. 真的缺失时仍然 fail-closed，不放行', () => {
+    const { preflightSupplierAccount } = require('../../scripts/xoneProductOnboardingBridge');
+    // 指向一个没有任何 env 文件的目录 —— 必须拒绝，而不是乐观放行。
+    const empty = preflightSupplierAccount('/tmp');
+    assert.equal(empty.ok, false);
+    assert.match(empty.reason, /供应商账号配置缺失/);
+  });
+
+  it('凭据 5. 批量上架在翻发布位之前同时自检工具链与账号', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    assert.ok(/preflightToolchain/.test(block));
+    assert.ok(/preflightSupplierAccount/.test(block));
+    assert.ok(/SUPPLIER_ACCOUNT_UNAVAILABLE/.test(block));
+    // 两个自检都必须排在执行器之前 —— 2026-08-08 那次是前六个阶段写完了才发现没账号。
+    assert.ok(block.indexOf('preflightSupplierAccount') < block.indexOf('runGigaAutoPublish'));
+  });
+
+  it('凭据 6. no_giga_creds 给业务说法，raw enum 只进技术详情', () => {
+    const { describeApplyFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    const r = describeApplyFailure({
+      reached_stage: 'inventory', stage_failures: { inventory: 'no_giga_creds' }, log: [],
+    });
+    assert.equal(r.stage, 'inventory');
+    assert.match(r.reason, /库存验证暂不可用/);
+    assert.match(r.reason, /供应商库存服务未连接/);
+    // 主文案不得直接抛枚举。
+    assert.equal(/no_giga_creds/.test(r.reason), false);
+    // 但原始枚举要保留，供技术详情显示。
+    assert.equal(r.detail, 'no_giga_creds');
   });
 
   it('凭据键只按名字摘除，从不读取或打印其值', () => {

@@ -341,11 +341,73 @@ export function preflightToolchain(env: NodeJS.ProcessEnv): { ok: boolean; reaso
   };
 }
 
-function childEnv(extraEnv: Record<string, string>, options: { letScriptChooseSupplierAccount?: boolean }): NodeJS.ProcessEnv {
+/**
+ * 供应商账号自检。
+ *
+ * 库存阶段（runGigaAutoPublish Stage 7）要求 SUPPLIER_API_BASE_URL 指向 openapi.gigab2b.com
+ * —— 只有 alt 账号的那个是。这里按**脚本自己那套级联**（alt → local → env）解析一遍，
+ * 确认库存阶段真的能拿到可用账号，再决定要不要启动执行器。
+ *
+ * 只判断键是否存在、base 是否匹配，绝不读取或打印任何凭据值。
+ */
+export function preflightSupplierAccount(repo: string): { ok: boolean; source: string | null; reason: string | null } {
+  const cascade = ['.env.giga-alt.local', '.env.local', '.env'];
+  const resolved: Record<string, { value: string; source: string }> = {};
+  for (const file of cascade) {
+    const full = path.join(repo, file);
+    if (!fs.existsSync(full)) continue;
+    let parsed: Record<string, string>;
+    // 用 dotenv 自己的 parser，保持与脚本完全一致的解析行为。
+    try { parsed = require('dotenv').parse(fs.readFileSync(full)) as Record<string, string>; } catch { continue; }
+    for (const key of SUPPLIER_CRED_KEYS) {
+      // dotenv 从不覆盖已存在的值 —— 先出现的文件赢，与脚本级联一致。
+      if (parsed[key] && !resolved[key]) resolved[key] = { value: parsed[key], source: file };
+    }
+  }
+  const missing = SUPPLIER_CRED_KEYS.filter((key) => !resolved[key]);
+  if (missing.length) {
+    return { ok: false, source: null, reason: `供应商账号配置缺失：${missing.join('、')}` };
+  }
+  const base = resolved.SUPPLIER_API_BASE_URL;
+  if (!/openapi\.gigab2b\.com/.test(base.value)) {
+    return {
+      ok: false,
+      source: base.source,
+      reason: `库存阶段需要开放平台账号，当前解析到的接口地址来自 ${base.source}，不是开放平台域名`,
+    };
+  }
+  return { ok: true, source: base.source, reason: null };
+}
+
+/**
+ * 子进程环境。
+ *
+ * 两条不变量，都是被真实故障教出来的：
+ *
+ * 1. PATH 必须含 node 工具链 —— 见 toolchainPath。
+ *
+ * 2. **绝不把 SUPPLIER_* 传给子进程。** 每个 Golden Path 脚本自己都有正确的账号级联
+ *    （.env.giga-alt.local → .env.local → .env，alt 优先），而 dotenv 从不覆盖已存在的
+ *    变量。这个桥接在模块加载时读过 .env.local，默认账号的 SUPPLIER_* 因此已经在
+ *    process.env 里；子进程继承之后，脚本自己的 alt 文件再也盖不上去。
+ *
+ *    2026-08-08 的 no_giga_creds 就是这么来的：runGigaAutoPublish 拿到的是默认账号的
+ *    SUPPLIER_API_BASE_URL，而它的 gigaReady() 要求 base 匹配 openapi.gigab2b.com ——
+ *    只有 alt 账号的那个匹配。于是库存阶段判定「没有凭据」。
+ *
+ *    所以这里默认摘除，让每个脚本按自己既定的顺序决定用哪个账号。需要显式传账号的场景
+ *    才 opt-out（目前没有）。只删键名，不读取也不打印任何凭据值。
+ */
+const SUPPLIER_CRED_KEYS_DOC = SUPPLIER_CRED_KEYS;
+
+function childEnv(
+  extraEnv: Record<string, string>,
+  options: { passSupplierAccountThrough?: boolean } = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   env.PATH = toolchainPath(process.execPath, process.env.PATH);
-  if (options.letScriptChooseSupplierAccount) {
-    for (const key of SUPPLIER_CRED_KEYS) delete env[key];
+  if (!options.passSupplierAccountThrough) {
+    for (const key of SUPPLIER_CRED_KEYS_DOC) delete env[key];
   }
   return env;
 }
@@ -355,7 +417,7 @@ function runScript(
   args: string[],
   timeoutMs: number,
   extraEnv: Record<string, string> = {},
-  options: { letScriptChooseSupplierAccount?: boolean } = {},
+  options: { passSupplierAccountThrough?: boolean } = {},
 ) {
   const runtime = path.join(REPO, 'node_modules', '.bin', 'tsx');
   return spawnSync('/opt/homebrew/bin/node', [runtime, path.join(REPO, relative), ...args], {
@@ -393,7 +455,7 @@ async function runCheckNewSaved(
 
   if (!fs.existsSync(BASELINE_FILE)) {
     progress('baseline', '首次运行，正在建立收藏基线');
-    const res = runScript('scripts/giga-saved-baseline.ts', [], 300_000, {}, { letScriptChooseSupplierAccount: true });
+    const res = runScript('scripts/giga-saved-baseline.ts', [], 300_000);
     if (res.status !== 0) {
       record('baseline', false, '收藏基线建立失败');
       return failure('BASELINE_FAILED', '无法建立收藏基线，请稍后重试');
@@ -404,7 +466,7 @@ async function runCheckNewSaved(
   }
 
   progress('delta', '正在读取 Pickup 当前收藏');
-  const delta = runScript('scripts/giga-saved-delta.ts', [], 300_000, {}, { letScriptChooseSupplierAccount: true });
+  const delta = runScript('scripts/giga-saved-delta.ts', [], 300_000);
   if (delta.status !== 0) {
     record('delta', false, '读取 Pickup 收藏失败');
     return failure('SAVED_FETCH_FAILED', '读取 Pickup 收藏失败，请确认供应商账号可用后重试');
@@ -413,7 +475,7 @@ async function runCheckNewSaved(
   record('delta', true, `当前收藏 ${live?.skus.size ?? 0} 件`);
 
   progress('candidates', '正在筛选新品候选');
-  const plan = runScript('scripts/planGigaNewlySavedCandidates.ts', [], 600_000, {}, { letScriptChooseSupplierAccount: true });
+  const plan = runScript('scripts/planGigaNewlySavedCandidates.ts', [], 600_000);
   if (plan.status !== 0) {
     record('candidates', false, '新品候选筛选失败');
     return failure('CANDIDATE_PLAN_FAILED', '新品候选筛选失败，请稍后重试');
@@ -675,7 +737,7 @@ async function runOnboardingPreview(
     const sync = runScript(
       'scripts/syncGigaNewlySavedCandidates.ts',
       ['--sync', `--only=${candidateSkus.join(',')}`, '--summary'],
-      900_000, {}, { letScriptChooseSupplierAccount: true },
+      900_000,
     );
     if (sync.status !== 0) return failure('DRAFT_IMPORT_FAILED', '商品草稿导入失败，请稍后重试');
     importedDrafts = true;
@@ -773,7 +835,7 @@ const STAGE_FAILURE_LABELS: Record<string, string> = {
   pricing: '定价阶段失败',
   mirror: '图片转存阶段失败',
   blurhash: '图片占位图生成阶段失败',
-  inventory: '库存阶段失败',
+  inventory: '库存验证暂不可用',
   reviews: '评价初始化阶段失败',
 };
 
@@ -783,21 +845,25 @@ const STAGE_FAILURE_LABELS: Record<string, string> = {
  * 之前只会说一句「上架流水线未完成」，用户没法判断该做什么。报告里其实一直有
  * reached_stage 与 stage_failures，只是没人读。
  */
-export function describeApplyFailure(report: Record<string, any> | null): { stage: string | null; reason: string | null } {
-  if (!report) return { stage: null, reason: null };
+export function describeApplyFailure(report: Record<string, any> | null): { stage: string | null; reason: string | null; detail?: string | null } {
+  if (!report) return { stage: null, reason: null, detail: null };
   const failures = (report.stage_failures ?? {}) as Record<string, string>;
   const stage = Object.keys(failures)[0] ?? (typeof report.reached_stage === 'string' ? report.reached_stage : null);
-  if (!stage) return { stage: null, reason: null };
+  if (!stage) return { stage: null, reason: null, detail: null };
   const label = STAGE_FAILURE_LABELS[stage] ?? `${stage} 阶段失败`;
   const detail = failures[stage];
   // script_exit_nonzero 且没有任何输出，几乎总是子进程没起来（找不到 node 工具链）。
+  // 供应商账号没解析到开放平台域名时，库存阶段直接判无凭据。给业务说法，raw enum 留技术详情。
+  if (detail === 'no_giga_creds') {
+    return { stage, reason: `${label}：供应商库存服务未连接`, detail };
+  }
   if (detail === 'script_exit_nonzero') {
     const log = Array.isArray(report.log) ? report.log.join('\n') : '';
     if (/exit=null[\s\S]*--- stdout ---\s*\n\s*--- stderr ---\s*$/m.test(log) || /exit=null/.test(log)) {
-      return { stage, reason: `${label}：脚本没有启动，通常是运行环境缺少 node 工具链` };
+      return { stage, reason: `${label}：脚本没有启动，通常是运行环境缺少 node 工具链`, detail };
     }
   }
-  return { stage, reason: detail ? `${label}（${detail}）` : label };
+  return { stage, reason: detail ? `${label}（${detail}）` : label, detail };
 }
 
 async function runBatchPublish(
@@ -810,6 +876,11 @@ async function runBatchPublish(
   // 起不了进程，就会留下一批「已批准、什么都没生成」的半成品 —— 2026-08-08 那次就是这样。
   const preflight = preflightToolchain(childEnv({}, {}));
   if (!preflight.ok) return failure('TOOLCHAIN_UNAVAILABLE', `无法开始批量上架：${preflight.reason}`);
+
+  // 账号同样要在翻发布位之前确认。库存阶段拿不到开放平台账号时会 no_giga_creds，
+  // 而那时前六个阶段已经写完了 —— 2026-08-08 那次就停在这里。
+  const account = preflightSupplierAccount(REPO);
+  if (!account.ok) return failure('SUPPLIER_ACCOUNT_UNAVAILABLE', `无法开始批量上架：${account.reason}`);
 
   let planJson: Record<string, any>;
   try { planJson = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); }
@@ -874,6 +945,7 @@ async function runBatchPublish(
     exit_code: run.status,
     failed_stage: applyFailure.stage,
     failure_reason: applyFailure.reason,
+    failure_detail: applyFailure.detail ?? null,
     counts,
     results,
     protection_released: protectionReleased,
