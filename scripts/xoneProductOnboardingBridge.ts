@@ -62,6 +62,8 @@ const XONE_PLAN_SNAPSHOT = path.join(REPORT_DIR, 'xone-onboarding-plan.json');
 const XONE_PREVIEW_FILE = path.join(REPORT_DIR, 'xone-onboarding-preview.json');
 /** 续跑用的计划快照。与新品那份分开，避免两种意图共用一个文件。 */
 const XONE_RECOVERY_PLAN = path.join(REPORT_DIR, 'xone-onboarding-recovery-plan.json');
+/** 库存证据扫描的报告目录。窄化运行各自写一份 targeted-*.json。 */
+const AVAILABILITY_REPORT_DIR = path.join(REPO, 'reports', 'inventory-availability');
 const PAGE_MAX = 50;
 
 export type OnboardingOperation =
@@ -363,7 +365,19 @@ export function preflightToolchain(env: NodeJS.ProcessEnv): { ok: boolean; reaso
  *
  * 只判断键是否存在、base 是否匹配，绝不读取或打印任何凭据值。
  */
-export function preflightSupplierAccount(repo: string): { ok: boolean; source: string | null; reason: string | null } {
+/**
+ * 按 Golden Path 的级联解析出应该使用的供应商账号。
+ *
+ * 顺序与每个脚本自己写的一模一样：.env.giga-alt.local → .env.local → .env，先到先得
+ * （dotenv 从不覆盖已存在的值）。库存相关接口只有 alt 账号能用，所以 alt 必须排第一。
+ *
+ * 返回值里带着凭据，**只允许交给子进程，不得写日志、不得放进任何响应**。
+ */
+function resolveSupplierAccount(repo: string): {
+  values: Record<string, string>;
+  source: string | null;
+  missing: string[];
+} {
   const cascade = ['.env.giga-alt.local', '.env.local', '.env'];
   const resolved: Record<string, { value: string; source: string }> = {};
   for (const file of cascade) {
@@ -373,23 +387,31 @@ export function preflightSupplierAccount(repo: string): { ok: boolean; source: s
     // 用 dotenv 自己的 parser，保持与脚本完全一致的解析行为。
     try { parsed = require('dotenv').parse(fs.readFileSync(full)) as Record<string, string>; } catch { continue; }
     for (const key of SUPPLIER_CRED_KEYS) {
-      // dotenv 从不覆盖已存在的值 —— 先出现的文件赢，与脚本级联一致。
       if (parsed[key] && !resolved[key]) resolved[key] = { value: parsed[key], source: file };
     }
   }
-  const missing = SUPPLIER_CRED_KEYS.filter((key) => !resolved[key]);
-  if (missing.length) {
-    return { ok: false, source: null, reason: `供应商账号配置缺失：${missing.join('、')}` };
+  const values: Record<string, string> = {};
+  for (const key of SUPPLIER_CRED_KEYS) if (resolved[key]) values[key] = resolved[key].value;
+  return {
+    values,
+    source: resolved.SUPPLIER_API_BASE_URL?.source ?? null,
+    missing: SUPPLIER_CRED_KEYS.filter((key) => !resolved[key]),
+  };
+}
+
+export function preflightSupplierAccount(repo: string): { ok: boolean; source: string | null; reason: string | null } {
+  const account = resolveSupplierAccount(repo);
+  if (account.missing.length) {
+    return { ok: false, source: null, reason: `供应商账号配置缺失：${account.missing.join('、')}` };
   }
-  const base = resolved.SUPPLIER_API_BASE_URL;
-  if (!/openapi\.gigab2b\.com/.test(base.value)) {
+  if (!/openapi\.gigab2b\.com/.test(account.values.SUPPLIER_API_BASE_URL)) {
     return {
       ok: false,
-      source: base.source,
-      reason: `库存阶段需要开放平台账号，当前解析到的接口地址来自 ${base.source}，不是开放平台域名`,
+      source: account.source,
+      reason: `库存阶段需要开放平台账号，当前解析到的接口地址来自 ${account.source}，不是开放平台域名`,
     };
   }
-  return { ok: true, source: base.source, reason: null };
+  return { ok: true, source: account.source, reason: null };
 }
 
 /**
@@ -420,7 +442,21 @@ function childEnv(
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   env.PATH = toolchainPath(process.execPath, process.env.PATH);
   if (!options.passSupplierAccountThrough) {
-    for (const key of SUPPLIER_CRED_KEYS_DOC) delete env[key];
+    // 按级联解析出正确账号并**显式注入**。
+    //
+    // 上一版是「删掉这三个键，让脚本自己去 dotenv」——对有级联的脚本没问题，但
+    // scanPublishedAvailability.ts 根本不加载 dotenv：Golden Path 是靠
+    // `npx dotenv -e .env.giga-alt.local -e .env.local -- …` 从外部注入的。删了键它就拿到
+    // undefined，gigaApiClient 拼出 `undefined/b2b-overseas-api/...`，fetch 报
+    // "Failed to parse URL"，三件全部 malformed_response，一行证据都没写下。
+    //
+    // 注入解析值对两类脚本都正确：有级联的脚本本来也会解析出同一组值（dotenv 不覆盖已存在
+    // 的值，而这些值正是它的级联结果）；没有级联的脚本则只有这一条路。
+    const account = resolveSupplierAccount(REPO);
+    for (const key of SUPPLIER_CRED_KEYS_DOC) {
+      if (account.values[key]) env[key] = account.values[key];
+      else delete env[key];
+    }
   }
   return env;
 }
@@ -948,8 +984,63 @@ function skusFromPlanSnapshots(): string[] {
   return [...out];
 }
 
+/** 库存读取失败的业务化表达。词汇来自既有扫描器的 status，未新增判定。 */
+const AVAILABILITY_FAILURE_LABELS: Record<string, string> = {
+  malformed_response: '供应商返回的库存数据不完整',
+  api_failed: '供应商库存接口调用失败',
+  network_failed: '连不上供应商',
+  rate_limited: '供应商限流',
+  parse_failed: '供应商响应无法解析',
+  auth_failed: '供应商登录已失效',
+  captcha_required: '供应商要求验证码',
+};
+
+/**
+ * 最近一次库存证据读取到底发生了什么。
+ *
+ * 「App 暂不可见」只是结果，用户需要的是原因。扫描器自己的报告里有 totals / gates /
+ * proposals，逐条写着每件商品的 status 与 reason —— 读出来翻成人话即可，不重新判定。
+ */
+export function describeAvailabilityFailure(report: Record<string, any> | null): {
+  reason: string | null;
+  detail: string | null;
+} {
+  if (!report) return { reason: null, detail: null };
+  const totals = report.totals ?? {};
+  const scanned = Number(totals.total ?? 0);
+  const failures = Number(totals.failures ?? 0);
+  if (scanned === 0) return { reason: '库存读取没有覆盖到这些商品', detail: 'no_targets' };
+  if (failures === 0) return { reason: null, detail: null };
+
+  const byStatus = (totals.byStatus ?? {}) as Record<string, number>;
+  const status = Object.entries(byStatus).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'unknown';
+  const label = AVAILABILITY_FAILURE_LABELS[status] ?? '库存读取失败';
+  const gateBlocked = report.gates?.failureRate?.allowed === false;
+  const suffix = gateBlocked ? '，本次没有写入任何库存证据' : '';
+  return { reason: `${label}（${failures}/${scanned} 件读取失败）${suffix}`, detail: status };
+}
+
+/** 最近一次窄化库存扫描的报告。用来给「为什么还不可见」一个真实答案。 */
+function readLatestTargetedAvailabilityReport(): Record<string, any> | null {
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(AVAILABILITY_REPORT_DIR).filter((n) => n.startsWith('targeted-') && n.endsWith('.json'));
+  } catch { return null; }
+  let best: Record<string, any> | null = null;
+  let bestAt = -Infinity;
+  for (const name of files) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(AVAILABILITY_REPORT_DIR, name), 'utf8'));
+      const at = Date.parse(String(parsed.finished_at ?? parsed.started_at ?? ''));
+      if (Number.isFinite(at) && at > bestAt) { bestAt = at; best = parsed; }
+    } catch { /* 跳过损坏文件 */ }
+  }
+  return best;
+}
+
 async function runRecoveryList(client: SupabaseClient): Promise<Record<string, unknown>> {
   const facts = await readProgressFacts(client, skusFromPlanSnapshots());
+  const availabilityFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
   const rows = facts.map((f) => {
     const verdict = deriveRecoveryState(f);
     const done = stageCompletion(f);
@@ -965,6 +1056,9 @@ async function runRecoveryList(client: SupabaseClient): Promise<Record<string, u
       selling_price: f.selling_price,
       standardized_published: f.standardized_published,
       in_sellable: f.in_sellable,
+      // 等证据的商品，把上一次读取失败的真实原因带出来。
+      blocked_reason: verdict.state === 'awaiting_evidence' ? availabilityFailure.reason : null,
+      blocked_detail: verdict.state === 'awaiting_evidence' ? availabilityFailure.detail : null,
     };
   }).filter((row) => row.state !== 'not_started' && row.state !== 'complete');
 
@@ -1033,6 +1127,7 @@ async function runRecoveryResume(
   }
 
   const after = await readProgressFacts(client, [...pipeline, ...evidence]);
+  const resumeFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
   const results = after.map((f) => {
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: null };
@@ -1041,7 +1136,9 @@ async function runRecoveryResume(
         sku: f.supplier_product_id,
         outcome: 'published_but_not_sellable',
         reason: verdict.state === 'awaiting_evidence'
-          ? '已发布，但还没有可用的库存证据，App 暂时看不到'
+          ? (resumeFailure.reason
+            ? `已发布，但库存证据没能拿到：${resumeFailure.reason}`
+            : '已发布，但还没有可用的库存证据，App 暂时看不到')
           : '已发布，但未满足 App 可见条件',
       };
     }
@@ -1052,13 +1149,18 @@ async function runRecoveryResume(
     published_but_not_sellable: results.filter((r) => r.outcome === 'published_but_not_sellable').length,
     pipeline_failed: results.filter((r) => r.outcome === 'pipeline_failed').length,
   };
-  appendAudit({ event: 'recovery_resume', approved_by: request.approved_by, steps, ...counts });
+  appendAudit({
+    event: 'recovery_resume', approved_by: request.approved_by, steps, ...counts,
+    availability_failure: resumeFailure.detail,
+  });
   return envelope('onboarding-recovery-resume', {
     production_write_attempted: true,
     approved_by: request.approved_by,
     steps,
     counts,
     results,
+    availability_failure_reason: resumeFailure.reason,
+    availability_failure_detail: resumeFailure.detail,
   });
 }
 

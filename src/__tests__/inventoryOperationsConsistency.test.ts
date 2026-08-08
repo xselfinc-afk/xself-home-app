@@ -606,6 +606,74 @@ function main(): void {
     assert.equal(r.detail, 'no_giga_creds');
   });
 
+  it('凭据 7. 没有 dotenv 级联的脚本也必须拿到可用账号', () => {
+    const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+    // 上一版是「删掉这三个键让脚本自己去 dotenv」。scanPublishedAvailability 根本不加载
+    // dotenv —— Golden Path 是靠 `npx dotenv -e … --` 从外部注入的。删了键它拿到 undefined，
+    // gigaApiClient 拼出 `undefined/b2b-overseas-api/...`，fetch 报 Failed to parse URL。
+    assert.ok(/env\[key\] = account\.values\[key\]/.test(bridge), '必须注入解析后的值，而不是删键');
+    assert.ok(/resolveSupplierAccount\(REPO\)/.test(bridge), '注入值必须来自同一套级联');
+
+    // 前提：那个脚本确实不自带级联，所以只能靠注入。
+    const scanner = fs.readFileSync('scripts/scanPublishedAvailability.ts', 'utf8');
+    assert.equal(/loadEnv\(|require\('dotenv'\)|from 'dotenv'/.test(scanner), false,
+      'scanPublishedAvailability 不加载 dotenv —— 这正是必须注入的理由');
+    // 而 Golden Path 是从外部注入的，我们只是复制了它的做法。
+    const runner = fs.readFileSync('scripts/runAvailabilityScan.sh', 'utf8');
+    assert.ok(/dotenv -e \.env\.giga-alt\.local -e \.env\.local/.test(runner));
+  });
+
+  it('凭据 8. 注入的账号是 alt 优先解析的结果，且不出现在任何响应里', () => {
+    const { preflightSupplierAccount } = require('../../scripts/xoneProductOnboardingBridge');
+    const result = preflightSupplierAccount(process.cwd());
+    assert.equal(result.ok, true);
+    assert.equal(result.source, '.env.giga-alt.local');
+    // 自检结果只带来源，不带值。
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'values'), false);
+  });
+
+  it('可见性 1. 用真实失败报告说清「为什么还不可见」', () => {
+    const { describeAvailabilityFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    // 2026-08-08 三次续跑留下的真实报告（3/3 malformed_response，0 行写入）。
+    const report = JSON.parse(fs.readFileSync('src/__tests__/fixtures/xone-availability-failure-2026-08-08.json', 'utf8'));
+    const described = describeAvailabilityFailure(report);
+    assert.match(described.reason, /供应商返回的库存数据不完整/);
+    assert.match(described.reason, /3\/3 件读取失败/);
+    // 失败率门把这次拦下了，一行证据都没写 —— 必须说出来。
+    assert.match(described.reason, /没有写入任何库存证据/);
+    assert.equal(described.detail, 'malformed_response');
+    // 主文案不得直接抛枚举。
+    assert.equal(/malformed_response/.test(described.reason), false);
+  });
+
+  it('可见性 2. 读取成功时不编造失败原因', () => {
+    const { describeAvailabilityFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    const ok = describeAvailabilityFailure({
+      totals: { total: 3, failures: 0, byStatus: {} }, gates: { failureRate: { allowed: true } },
+    });
+    assert.deepEqual(ok, { reason: null, detail: null });
+    assert.deepEqual(describeAvailabilityFailure(null), { reason: null, detail: null });
+    // 一件都没扫到也要如实说，不能当成成功。
+    assert.match(describeAvailabilityFailure({ totals: { total: 0 } }).reason, /没有覆盖到/);
+  });
+
+  it('可见性 3. 各类库存读取失败各有各的业务说法', () => {
+    const { describeAvailabilityFailure } = require('../../scripts/xoneProductOnboardingBridge');
+    const cases: Array<[string, RegExp]> = [
+      ['api_failed', /接口调用失败/],
+      ['network_failed', /连不上供应商/],
+      ['rate_limited', /限流/],
+      ['auth_failed', /登录已失效/],
+    ];
+    for (const [status, expected] of cases) {
+      const r = describeAvailabilityFailure({
+        totals: { total: 2, failures: 2, byStatus: { [status]: 2 } }, gates: {},
+      });
+      assert.match(r.reason, expected);
+      assert.equal(r.detail, status);
+    }
+  });
+
   it('凭据键只按名字摘除，从不读取或打印其值', () => {
     const source = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
     assert.ok(/delete env\[key\]/.test(source), '必须摘除继承来的默认账号凭据');

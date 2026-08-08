@@ -1,0 +1,92 @@
+{
+  "run_id": "avail-2026-08-08T15:04:37.661Z-62976",
+  "started_at": "2026-08-08T15:04:37.662Z",
+  "finished_at": "2026-08-08T15:04:38.435Z",
+  "mode": "live",
+  "source": "open_api",
+  "endpoint": "/b2b-overseas-api/v1/buyer/product/price/v1",
+  "browser_used": false,
+  "report_kind": "targeted_sku_scan",
+  "is_full_scan": false,
+  "database_rows_written": 0,
+  "totals": {
+    "total": 3,
+    "confirmedAvailable": 0,
+    "confirmedOutOfStock": 0,
+    "failures": 3,
+    "byStatus": {
+      "malformed_response": 3
+    },
+    "failurePercent": 100
+  },
+  "gates": {
+    "scan": {
+      "allowed": true,
+      "blocks": []
+    },
+    "failureRate": {
+      "allowed": false,
+      "blocks": [
+        "exceeds_max_failure_percent"
+      ]
+    },
+    "delistBatch": {
+      "allowed": true,
+      "blocks": []
+    }
+  },
+  "counts": {
+    "published_targets": 3,
+    "visible_now": 0,
+    "first_strike": 0,
+    "second_strike_delist": 0,
+    "relist_pending": 0,
+    "relist_eligible": 0,
+    "visibility_disagreements": 0,
+    "exceptions": 3
+  },
+  "proposals": [
+    {
+      "sku": "W5870P523986",
+      "status": "malformed_response",
+      "available": null,
+      "reason": "Failed to parse URL from [REDACTED]",
+      "previousState": "published_in_stock",
+      "proposedState": "published_in_stock",
+      "proposedAction": "raise_exception",
+      "priorityClass": "P3",
+      "isException": true,
+      "publishedNow": true,
+      "visibleNow": false,
+      "visibilityDisagreement": false
+    },
+    {
+      "sku": "W5870P523987",
+      "status": "malformed_response",
+      "available": null,
+      "reason": "Failed to parse URL from [REDACTED]",
+      "previousState": "published_in_stock",
+      "proposedState": "published_in_stock",
+      "proposedAction": "raise_exception",
+      "priorityClass": "P3",
+      "isException": true,
+      "publishedNow": true,
+      "visibleNow": false,
+      "visibilityDisagreement": false
+    },
+    {
+      "sku": "W5870P523988",
+      "status": "malformed_response",
+      "available": null,
+      "reason": "Failed to parse URL from [REDACTED]",
+      "previousState": "published_in_stock",
+      "proposedState": "published_in_stock",
+      "proposedAction": "raise_exception",
+      "priorityClass": "P3",
+      "isException": true,
+      "publishedNow": true,
+      "visibleNow": false,
+      "visibilityDisagreement": false
+    }
+  ]
+}
