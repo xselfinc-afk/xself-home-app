@@ -15,6 +15,7 @@
     "test:supplier-favorites": "tsx src/__tests__/supplierFavoriteManagement.test.ts",
     "test:supplier-favorite-sync": "tsx src/__tests__/supplierFavoriteSync.test.ts",
     "test:supplier-portal-mapping": "tsx src/__tests__/supplierPortalMapping.test.ts",
+    "test:product-onboarding": "tsx src/__tests__/productOnboarding.test.ts",
     "test:inventory-publication-approval": "tsx src/__tests__/inventoryPublicationApproval.test.ts",
     "test:inventory-scan-safety": "tsx src/__tests__/inventoryScanNeverPublishes.test.ts",
     "test:supplier-manual-identity": "tsx src/__tests__/supplierManualIdentity.test.ts",
