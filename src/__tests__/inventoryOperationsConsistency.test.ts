@@ -831,6 +831,56 @@ function main(): void {
   // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
   // 一次「继续完成」。
 
+  // ── 封版基线：2026-08-09 真实跑通的新品首次上架主链 ──────────────────────────
+  //
+  // W5977P521301 / W5977P521316 / W5977P521302，仅收藏在 Pickup，一次点击走完：
+  //   检查新收藏 → 批量上架 → 自动加入 Dropship 收藏 → 自动取运费 → 自动补库存证据
+  //   → App 可见 → Checkout 报价 $17.00（giga_openapi_price_v1 / dropship_82482447）
+  //
+  // 这两条测试钉的是那条链的形状。它们不验证业务算法（各自有专门的测试），只保证
+  // 步骤不被删、顺序不被换、范围不被放大 —— 那正是这条链此前三次翻车的地方。
+
+  it('封版. 收尾四步齐全、顺序固定、且都只作用于本批 SKU', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+
+    // 顺序是有依赖的，不是风格问题：
+    //   证据必须在发布之后（否则扫不到刚发布的商品）
+    //   收藏必须在运费之前（否则 price/v1 必然 B20003）
+    //   回读事实必须在最后（否则读到的是收尾前的旧状态）
+    const order = ['runGigaAutoPublish.ts', 'scanPublishedAvailability.ts',
+      'syncSupplierFavoritesToPublished.ts', 'refreshGigaDeliveryFeesHybrid.ts', 'readProgressFacts'];
+    let cursor = -1;
+    for (const step of order) {
+      const at = block.indexOf(step);
+      assert.ok(at > 0, `收尾链缺少 ${step}`);
+      assert.ok(at > cursor, `${step} 的位置不对，收尾顺序被改动了`);
+      cursor = at;
+    }
+    // 三个收尾脚本都必须按本批名单收窄，不得对全库跑。
+    for (const scoped of [/--skus=\$\{closable\.join\(','\)\}/, /'--skus', closable\.join\(','\)/]) {
+      assert.ok(scoped.test(block), '收尾步骤必须按本批 SKU 收窄');
+    }
+    // 收尾只对真的发布成功的商品做，失败的不参与。
+    assert.ok(/afterPublish\.published\.get\(sku\) === true/.test(block));
+  });
+
+  it('封版. 范围只能收窄，不能放大', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 预览可以按 request.skus 收窄候选（真实验收就是靠它把范围钉在 3 件）。
+    assert.ok(/const scope = request\.skus && request\.skus\.length \? new Set\(request\.skus\) : null;/.test(bridge));
+    assert.ok(/if \(scope && !scope\.has\(candidate\.sku\)\) continue;/.test(bridge));
+    // 批量上架只认快照里的 proposed_batch，且数量对不上就拒绝执行。
+    const batch = bridge.slice(bridge.indexOf('async function runBatchPublish'), bridge.indexOf('async function readPublishState'));
+    assert.ok(/proposed_batch\?\.skus/.test(batch));
+    assert.ok(/PLAN_CHANGED/.test(batch));
+    // 收藏新增永远走显式名单，绝不让它自己去算 TARGET 差集。
+    const favScript = code(fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8'), '//');
+    assert.ok(/planFavoriteAdditions\(ONLY_ACCOUNT!, ADD_SKUS/.test(favScript));
+    assert.equal(/planFavoriteAdditions\([^)]*target/.test(favScript), false, 'add 不得从 TARGET 推导名单');
+  });
+
   // ── Dropship 收藏是运费的前置条件 ────────────────────────────────────────────
   //
   // GIGA 官方文档：product/price/v1 只能查该账号 Saved Items 里的商品，否则 B20003
