@@ -49,6 +49,15 @@ const LOOP_ID = 'product-onboarding';
 const REPO = path.join(__dirname, '..');
 const REPORT_DIR = path.join(REPO, 'reports', 'giga-auto-publish');
 const CANDIDATES_FILE = path.join(REPORT_DIR, 'latest-newly-saved-candidates.json');
+
+/**
+ * XOne 单次草稿导入的安全上限。
+ *
+ * 导入脚本 syncGigaNewlySavedCandidates 自己的默认是 25，而它是 Golden Path 的冻结文件 ——
+ * 终端链必须保持 25 不变。这里通过它自带的 `--limit=N` 参数把 XOne 这条路抬到 50：
+ * 上限本身仍然生效（51 件照样被脚本拒绝），**不使用 --force**，安全门一个都没取消。
+ */
+const XONE_IMPORT_SAFE_LIMIT = 50;
 const BASELINE_FILE = path.join(REPORT_DIR, 'saved-items-baseline.json');
 const DELTA_FILE = path.join(REPORT_DIR, 'latest-saved-delta.json');
 /** 首次上架的审计留痕，与既有报告体系同目录。 */
@@ -892,7 +901,7 @@ async function runOnboardingPreview(
     progress('import', `正在导入 ${importable.length} 件商品草稿`);
     const sync = runScript(
       'scripts/syncGigaNewlySavedCandidates.ts',
-      ['--sync', `--only=${importable.join(',')}`, '--summary'],
+      ['--sync', `--only=${importable.join(',')}`, `--limit=${XONE_IMPORT_SAFE_LIMIT}`, '--summary'],
       900_000,
     );
     if (sync.status !== 0) {
@@ -1476,10 +1485,21 @@ async function runBatchPublish(
     // 范围严格限定在本批：脚本的 --add 必须显式给出 --skus，它不会去算 TARGET 差集
     // （那是 322 件历史欠账）。逐件发送、逐件回读官方收藏验证，失败软处理。
     progress('sync_dropship_favorite', `正在把 ${closable.length} 件商品加入 Dropship 收藏`);
+    // 收藏写入闸门只为这一次子进程打开，不落任何 .env、不影响别的进程。
+    //
+    // 少了这一行，整步是空转的：executeCleanup 的 gateOpen 要求
+    // env[SUPPLIER_FAVORITE_REMOVAL_ENABLED] === 'true' 且 options.execute，只满足后者时
+    // 每件都被记成 'planned'，addProductsToWish 一次都不会发。2026-08-09 那 15 件就是这样
+    // 全部停在 planned —— 身份都解析好了，请求根本没出去。
+    //
+    // 为什么这样开是安全的：批量上架本身已经是人工批准的生产动作（approved_by + 数量确认）；
+    // 这个子进程只跑 --add，而 planFavoriteAdditions 产出的 removals 恒为空，删除路径进不去；
+    // 名单是本批 SKU，逐件发送、逐件回读官方收藏验证，一件都不会多。
     const fav = runScript(
       'scripts/syncSupplierFavoritesToPublished.ts',
       ['--add', '--account=dropship', `--skus=${closable.join(',')}`, '--execute', '--json'],
       1_800_000,
+      { SUPPLIER_FAVORITE_REMOVAL_ENABLED: 'true' },
     );
     closingSteps.push({ step: 'sync_dropship_favorite', skus: closable.length, exit_code: fav.status });
 

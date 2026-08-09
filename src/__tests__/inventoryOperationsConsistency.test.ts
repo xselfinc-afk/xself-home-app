@@ -831,6 +831,69 @@ function main(): void {
   // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
   // 一次「继续完成」。
 
+  // ── 现场：15 件全部「尚未进入 Dropship 收藏」──────────────────────────────────
+  //
+  // 2026-08-09 06:26 那次运行，收藏执行器的断点里 15 件全是 status='planned'、product_id 都
+  // 解析好了、last_error 为空。'planned' 是**门禁关闭**时才会写的 dry-run 状态：
+  //   gateOpen = env[SUPPLIER_FAVORITE_REMOVAL_ENABLED] === 'true' && options.execute
+  // 桥接传了 --execute，却没传那个 env，于是 addProductsToWish 一次都没发出去。
+  //
+  // 之前 3 件之所以成功，是因为那次是我在终端用命令前缀手动开了闸门；GUI 这条路从来没开过。
+
+  it('现场. 补 Dropship 收藏时必须为该子进程打开写入闸门', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    // 闸门必须随这一次调用传进去，否则整步空转且不报错。
+    assert.ok(/\{ SUPPLIER_FAVORITE_REMOVAL_ENABLED: 'true' \}/.test(block), '补收藏必须打开写入闸门');
+    // 仍然是那一条命令：只加、只 dropship、只本批。
+    assert.ok(/'--add', '--account=dropship'/.test(block));
+    assert.ok(/--skus=\$\{closable\.join\(','\)\}/.test(block));
+  });
+
+  it('现场. 闸门只对补收藏那一次生效，不是全局打开', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 只允许出现一次，且必须在补收藏那一步；childEnv 的默认值里不得出现。
+    const hits = bridge.match(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/g) ?? [];
+    assert.equal(hits.length, 1, `闸门只应在补收藏那一处出现，实际 ${hits.length} 处`);
+    const childEnvBlock = bridge.slice(bridge.indexOf('function childEnv'), bridge.indexOf('function runScript'));
+    assert.equal(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/.test(childEnvBlock), false, '不得写进 childEnv 默认环境');
+    // 也不得落进任何 .env 文件（那是需要人工批准的持久开关）。
+    for (const envFile of ['.env.local', '.env']) {
+      if (!fs.existsSync(envFile)) continue;
+      assert.equal(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/.test(fs.readFileSync(envFile, 'utf8')), false,
+        `${envFile} 里不得持久开启收藏写入闸门`);
+    }
+  });
+
+  // ── 单次导入上限 25 → 50 ─────────────────────────────────────────────────────
+  //
+  // 导入脚本 syncGigaNewlySavedCandidates 是 Golden Path 的冻结文件，它自己的默认仍是 25。
+  // XOne 这条路用它自带的 --limit 参数抬到 50 —— 上限本身照常生效，也不用 --force。
+
+  it('上限. XOne 导入按 50 收窄，且绝不使用 --force', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/const XONE_IMPORT_SAFE_LIMIT = 50;/.test(bridge), 'XOne 侧上限必须是 50');
+    assert.ok(/--limit=\$\{XONE_IMPORT_SAFE_LIMIT\}/.test(bridge), '导入调用必须带上这个上限');
+    assert.equal(/'--force'/.test(bridge), false, '任何情况下都不得使用 --force');
+  });
+
+  it('上限. 50 件放行、51 件仍被拦截；终端链默认仍是 25', () => {
+    const importer = fs.readFileSync('scripts/syncGigaNewlySavedCandidates.ts', 'utf8');
+    // 冻结文件自身的默认不变 —— 终端 Golden Path 仍是 25。
+    assert.ok(/const SAFE_LIMIT_DEFAULT = 25;/.test(importer), '终端链默认上限必须保持 25');
+    // --limit=N 覆盖默认值，判定是「严格大于才拦」。
+    assert.ok(/const limitArg = argv\.find\(a => a\.startsWith\('--limit='\)\);/.test(importer));
+    assert.ok(/if \(toProcess\.length > SAFE_LIMIT && !FORCE\)/.test(importer), '守卫必须是严格大于');
+    // 上限值从桥接源码里读，测试与实现不各写一份。
+    const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+    const limit = Number(bridge.match(/const XONE_IMPORT_SAFE_LIMIT = (\d+);/)?.[1]);
+    assert.equal(limit, 50);
+    const blocked = (n: number) => n > limit;   // 与守卫同一个表达式
+    assert.equal(blocked(50), false, '50 件必须放行');
+    assert.equal(blocked(51), true, '51 件必须被拦截');
+  });
+
   // ── 封版基线：2026-08-09 真实跑通的新品首次上架主链 ──────────────────────────
   //
   // W5977P521301 / W5977P521316 / W5977P521302，仅收藏在 Pickup，一次点击走完：
