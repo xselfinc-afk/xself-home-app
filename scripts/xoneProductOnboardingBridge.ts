@@ -1304,6 +1304,8 @@ async function runRecoveryResume(
   const scope = skusFromPlanSnapshots();
   const steps: Array<{ step: string; skus: number; exit_code: number | null }> = [];
   let sessionBlocked: 'dropship' | null = null;
+  /** SKU → 补收藏那一步的结局，用于给出真实原因而不是笼统的「尚未进入收藏」。 */
+  const favoriteAdd = new Map<string, string>();
 
   /** 当前每件的状态签名。两轮相同 = 上一步没有推进，停下，避免空转。 */
   const signatureOf = (fs_: OnboardingProgressFacts[]) =>
@@ -1395,6 +1397,7 @@ async function runRecoveryResume(
         { SUPPLIER_FAVORITE_REMOVAL_ENABLED: 'true' },
       );
       steps.push({ step: 'sync_dropship_favorite', skus: fees.length, exit_code: fav.status });
+      for (const [sku, status] of readFavoriteAddOutcomes(String(fav.stdout ?? ''))) favoriteAdd.set(sku, status);
 
       progress('refresh_delivery_fee', `正在获取 ${fees.length} 件商品的配送费用`);
       // 与 orchestrator 一致：软失败。运费拿不到不影响商品已经上线这件事。
@@ -1421,7 +1424,8 @@ async function runRecoveryResume(
         outcome: 'published_but_not_sellable',
         reason: sessionBlocked === 'dropship'
           ? 'App 可见，但 Dropship 登录已失效，需要重新登录后再继续'
-          : `App 可见，但 Checkout 暂无法报价：${describeFeeFailure(feeError.get(f.supplier_product_id) ?? null)}`,
+          : `App 可见，但 Checkout 暂无法报价：${describeFavoriteAddFailure(favoriteAdd.get(f.supplier_product_id) ?? null)
+            ?? describeFeeFailure(feeError.get(f.supplier_product_id) ?? null)}`,
       };
     }
     if (f.standardized_published === true) {
@@ -1458,6 +1462,44 @@ async function runRecoveryResume(
     session_blocked: sessionBlocked,
     stopped_without_progress: noProgress,
   });
+}
+
+/**
+ * 补收藏那一步，每件的真实结局。从脚本自己的 SYNC_RESULT 里读，不另作判断。
+ *
+ * 2026-08-09 W1826P308991 的教训：请求发出去了、身份也对，供应商却回
+ * `{"code":0,"msg":"Failed to add to Saved Items list."}` —— 那条 listing 只对自提渠道开放
+ * （Dropship 账号下 first_available_date 被遮蔽成 `**`）。这种情况必须与「还没试过」区分开，
+ * 否则界面会一直说「尚未进入 Dropship 收藏」，把人引去查收藏，而真正该做的是改走自提或人工报价。
+ */
+function readFavoriteAddOutcomes(stdout: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const line = String(stdout ?? '').split('\n').find((l) => l.startsWith('SYNC_RESULT '));
+  if (!line) return out;
+  try {
+    const parsed = JSON.parse(line.slice('SYNC_RESULT '.length)) as {
+      exceptions?: Array<{ sku?: string; reason?: string; status?: string }>;
+    };
+    for (const e of parsed.exceptions ?? []) {
+      const sku = String(e.sku ?? '').trim();
+      if (sku) out.set(sku, String(e.status ?? e.reason ?? 'unknown'));
+    }
+  } catch { /* 读不出来就当作没有额外信息，回落到通用文案 */ }
+  return out;
+}
+
+/** 补收藏失败的业务化表达。词汇来自执行器写下的 status，不新增判定。 */
+function describeFavoriteAddFailure(status: string | null): string | null {
+  switch (status) {
+    case 'send_failed':
+      return '供应商拒绝把该商品加入 Dropship 收藏 —— 该商品只对自提渠道开放，无法自动取得配送运费';
+    case 'exception':
+      return '该商品在门户上的身份无法唯一确定，需要人工确认后才能加入 Dropship 收藏';
+    case 'verification_failed':
+      return '加入 Dropship 收藏的请求已发出，但回读确认它并不在收藏里';
+    default:
+      return null;
+  }
 }
 
 /** 运费缓存里这几件最近一次失败的错误码。拿不到就返回空 Map，不编造。 */
@@ -1544,6 +1586,8 @@ async function runBatchPublish(
   const afterPublish = await readPublishState(client, readySkus);
   const closable = readySkus.filter((sku) => afterPublish.published.get(sku) === true);
   const closingSteps: Array<{ step: string; skus: number; exit_code: number | null }> = [];
+  /** SKU → 补收藏那一步的结局。供应商拒收与「还没试过」必须说成两句话。 */
+  const batchFavoriteAdd = new Map<string, string>();
 
   if (closable.length) {
     progress('refresh_availability', `正在为 ${closable.length} 件商品读取库存证据`);
@@ -1581,6 +1625,7 @@ async function runBatchPublish(
       { SUPPLIER_FAVORITE_REMOVAL_ENABLED: 'true' },
     );
     closingSteps.push({ step: 'sync_dropship_favorite', skus: closable.length, exit_code: fav.status });
+    for (const [sku, status] of readFavoriteAddOutcomes(String(fav.stdout ?? ''))) batchFavoriteAdd.set(sku, status);
 
     progress('refresh_delivery_fee', `正在获取 ${closable.length} 件商品的配送费用`);
     // 与 orchestrator 一致：软失败。运费拿不到不推翻「商品已经上线」这件事。
@@ -1610,7 +1655,8 @@ async function runBatchPublish(
       return {
         sku,
         outcome: 'published_but_not_sellable',
-        reason: `App 可见，但 Checkout 暂无法报价：${describeFeeFailure(feeError.get(sku) ?? null)}`,
+        reason: `App 可见，但 Checkout 暂无法报价：${describeFavoriteAddFailure(batchFavoriteAdd.get(sku) ?? null)
+          ?? describeFeeFailure(feeError.get(sku) ?? null)}`,
       };
     }
     if (verdict.state === 'awaiting_evidence') {

@@ -835,6 +835,34 @@ function main(): void {
   // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
   // 一次「继续完成」。
 
+  // ── 供应商拒收时不得说成「尚未进入收藏」────────────────────────────────────
+  //
+  // W1826P308991：身份已人工确认（portal 1096253，主图哈希/标题/图片数/高度/入仓日五项吻合），
+  // Dropship 会话有效，请求也发出去了，供应商回 {"code":0,"msg":"Failed to add to Saved Items list."}。
+  // 只读对照发现该 listing 在 Dropship 账号下 first_available_date 被遮蔽成 "**"，
+  // 而对照组（1439058、1022040）两个账号都是真实日期 —— 它只对自提渠道开放。
+  // 这种情况必须与「还没试过」区分开，否则界面会一直把人引去查收藏。
+
+  it('拒收. 供应商拒绝加入收藏时说出真实原因', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/只对自提渠道开放，无法自动取得配送运费/.test(bridge), '必须说清是渠道限制');
+    // 三种结局各有各的说法，不能混成一句。
+    assert.ok(/case 'send_failed':/.test(bridge));
+    assert.ok(/case 'exception':/.test(bridge));
+    assert.ok(/case 'verification_failed':/.test(bridge));
+    // 结局取自执行器自己写下的 SYNC_RESULT，不另作判断。
+    assert.ok(/const line = String\(stdout \?\? ''\)\.split\('\\n'\)\.find\(\(l\) => l\.startsWith\('SYNC_RESULT '\)\)/.test(bridge));
+  });
+
+  it('拒收. 真实结局优先于运费缓存的通用错误码', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 两条路径都必须先看补收藏的结局，拿不到才回落到 describeFeeFailure。
+    const hits = [...bridge.matchAll(/describeFavoriteAddFailure\([\s\S]{0,60}?\?\?\s*describeFeeFailure/g)];
+    assert.equal(hits.length, 2, `批量上架与续跑都要优先真实结局，实际 ${hits.length} 处`);
+    // 读不出 SYNC_RESULT 时回落到通用文案，不编造。
+    assert.ok(/return out;/.test(bridge));
+  });
+
   // ── 续跑必须一趟推到底 ───────────────────────────────────────────────────────
   //
   // 2026-08-09 真实验收暴露两个缺口：
