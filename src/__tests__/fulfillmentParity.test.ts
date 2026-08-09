@@ -16,6 +16,7 @@
  */
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import { DELIVERY_TIMING_COPY, deliveryTimingCopy, serverDeliveryCopyOf } from '../services/deliveryTimingCopy';
 import {
   resolveFulfillmentEligibility,
   pickupRadiusMiles,
@@ -99,34 +100,51 @@ parity('neither (far + invalid fee)', { childSku: 'S', buyerCoords: BUYER, inven
 parity('missing coordinates (near but null coords)', { childSku: 'S', buyerCoords: BUYER, inventory: inv, warehouses: [{ code: 'W', state: 'CA', lat: null, lng: null, active: true, supportsPickup: true }], delivery: validFee() }, 'shipping_only');
 parity('invalid fee only (no pickup wh + missing fee)', { childSku: 'S', buyerCoords: BUYER, inventory: inv, warehouses: [wh({ code: 'W', state: 'NJ', miles: 200 })], delivery: invalidFee() }, 'unavailable');
 
-// ── 配送时效文案的两处必须一致 ──────────────────────────────────────────────
+// ── 配送时效文案：服务端优先，客户端只兜底 ────────────────────────────────────
 //
-// 这句话由服务端 plan-fulfillment 和客户端 CheckoutScreen 各自持有一份。两处不一致时，
-// 用户会在同一次结账里看到两种说法 —— 这是这次改动唯一的真实风险，所以钉住它。
-//
-// 它是运营承诺，不是算出来的：系统里没有任何配送时效数据（2026-08-09 审计，
-// GIGA 的 price / detailInfo / inventory / warehouse 只返回费用、入仓日期与地址）。
-// 因此这里只校验两处同步与「不得由距离推导」，不校验天数本身 —— 那是业务决定。
+// 归属是这次改动的重点。文案由 plan-fulfillment 通过 group.estimatedDelivery 返回，客户端
+// 渲染服务端的值 —— 所以改文案是一次 function 部署，不需要发版。常量只在服务端没给出可用
+// 值时兜底。这里测的是真实函数，不是对源码做正则。
 {
-  const copySrcClient = fs.readFileSync('src/screens/CheckoutScreen.tsx', 'utf8');
-  const copySrcServer = fs.readFileSync('supabase/functions/plan-fulfillment/index.ts', 'utf8');
-  const clientCopy = copySrcClient.match(/const DELIVERY_TIMING_COPY = '([^']+)'/)?.[1] ?? null;
-  const serverCopy = copySrcServer.match(/if \(usePickup\) return '[^']+';\s*\n\s*return '([^']+)';/)?.[1] ?? null;
+  const g = (isPickup: boolean, estimatedDelivery?: string | null) => ({ isPickup, estimatedDelivery });
 
-  it('配送时效文案：服务端与客户端一字不差', () => {
-    assert.ok(clientCopy, 'CheckoutScreen 必须有 DELIVERY_TIMING_COPY');
-    assert.ok(serverCopy, 'plan-fulfillment 必须返回配送时效文案');
-    assert.equal(serverCopy, clientCopy, '两处配送时效文案必须完全一致，否则同一次结账会出现两种说法');
+  it('配送文案：服务端给了就用服务端的', () => {
+    assert.equal(deliveryTimingCopy(g(false, 'Ships in 24h from CA10')), 'Ships in 24h from CA10');
   });
 
-  it('配送时效不得由距离推导，运费仍走服务端真实金额', () => {
-    // 距离参数在配送分支必须保持不用 —— 按距离分档的猜测正是当初被回滚掉的做法。
-    assert.ok(/function estimatedDelivery\(_distanceMiles: number/.test(copySrcServer), '距离参数必须保持未使用');
-    const branch = copySrcServer.slice(copySrcServer.indexOf('function estimatedDelivery'), copySrcServer.indexOf('/** Add business days'));
-    assert.equal(/_distanceMiles\s*[<>=]/.test(branch), false, '配送文案不得依赖距离');
-    // 运费仍然来自服务端权威金额，不得因为这次文案改动混进硬编码。
-    assert.ok(/plan\.deliveryFeeCents != null \? plan\.deliveryFeeCents \/ 100 : 0/.test(copySrcClient),
-      'Delivery 金额必须仍取 plan.deliveryFeeCents');
+  it('配送文案：服务端没给才回落到客户端常量', () => {
+    for (const empty of [undefined, null, '', '   ']) {
+      assert.equal(deliveryTimingCopy(g(false, empty)), DELIVERY_TIMING_COPY, `空值 ${JSON.stringify(empty)} 必须兜底`);
+    }
+    assert.equal(deliveryTimingCopy(undefined), DELIVERY_TIMING_COPY, '没有分组也要兜底');
+  });
+
+  it('配送文案：自提组的窗口绝不冒充配送文案', () => {
+    // 自提组的 estimatedDelivery 装的是自提窗口，渲染到 Delivery 下面比兜底更糟。
+    assert.equal(deliveryTimingCopy(g(true, 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM')), DELIVERY_TIMING_COPY);
+  });
+
+  it('切换到 Delivery 时不覆盖服务端已有的配送文案', () => {
+    // 计划里已有一个配送组带着服务端文案 → 转换过来的自提组必须沿用它，而不是常量。
+    assert.equal(serverDeliveryCopyOf([g(true, 'Pickup available in 2–5 days'), g(false, 'Ships in 24h')]), 'Ships in 24h');
+    // 全是自提组 → 服务端没给过配送文案，返回 null，由调用方兜底。
+    assert.equal(serverDeliveryCopyOf([g(true, 'Pickup available in 2–5 days')]), null);
+    assert.equal(serverDeliveryCopyOf([]), null);
+  });
+
+  it('兜底常量与服务端默认串保持一致', () => {
+    // 两边不一致时，用户在换 App 版本前后会看到两种说法。服务端是权威，这里只校验兜底同步。
+    const server = fs.readFileSync('supabase/functions/plan-fulfillment/index.ts', 'utf8');
+    const serverCopy = server.match(/if \(usePickup\) return '[^']+';\s*\n\s*return '([^']+)';/)?.[1] ?? null;
+    assert.ok(serverCopy, 'plan-fulfillment 必须返回配送时效文案');
+    assert.equal(serverCopy, DELIVERY_TIMING_COPY);
+  });
+
+  it('运费仍取服务端真实金额，未因文案改动混入硬编码', () => {
+    const client = fs.readFileSync('src/screens/CheckoutScreen.tsx', 'utf8');
+    assert.ok(/plan\.deliveryFeeCents != null \? plan\.deliveryFeeCents \/ 100 : 0/.test(client));
+    // 渲染必须走 helper，不得再直接打印常量。
+    assert.equal(/: DELIVERY_TIMING_COPY}/.test(client), false, '渲染点不得直接用常量，必须经 deliveryTimingCopy');
   });
 }
 

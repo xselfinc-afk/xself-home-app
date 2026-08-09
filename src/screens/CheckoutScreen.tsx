@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
 import { type FulfillmentPlan, type FulfillmentGroup } from '../types/fulfillment';
+import { DELIVERY_TIMING_COPY, deliveryTimingCopy, serverDeliveryCopyOf } from '../services/deliveryTimingCopy';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -48,21 +49,25 @@ function planFingerprint(plan: FulfillmentPlan): string {
  * a hardcoded value. When the fee is unavailable, the fee shows as 0 here but Delivery is
  * blocked downstream via plan.deliveryAvailable (no charge happens).
  */
-// Delivery-timing copy. This is an OPERATIONAL COMMITMENT set by the business, not a value
-// derived from data: no supplier field, no GIGA endpoint and no order history in this system
-// carries a delivery ETA (audited 2026-08-09 — price/detailInfo/inventory/warehouse all return
-// fees, inbound arrival dates and addresses only). Change it only with the business, and keep
-// it in sync with supabase/functions/plan-fulfillment/index.ts, which serves the same string.
-const DELIVERY_TIMING_COPY = 'Local warehouse · Fastest delivery: 2 BUSINESS DAYS';
 // Honest copy when a plan EXISTS but delivery is unavailable (no cached GIGA fee /
 // deliveryFeeCents null). The address is NOT the problem — the item needs a quote or pickup.
 const DELIVERY_QUOTE_UNAVAILABLE_COPY = 'Delivery quote is not available for this item yet. Please choose pickup if available or contact us for delivery help.';
 
 function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
   const feeDollars = plan.deliveryAvailable && plan.deliveryFeeCents != null ? plan.deliveryFeeCents / 100 : 0;
+  // Never clobber a delivery string the server already sent. A converted group carries the PICKUP
+  // window, which must not survive the switch to Delivery — so we reuse the server's delivery copy
+  // from any delivery group in this same plan, and fall back to the constant only when it sent none.
+  const serverDeliveryCopy = serverDeliveryCopyOf(plan.groups);
   const groups = plan.groups.map(g => {
     if (!g.isPickup) return g;
-    return { ...g, isPickup: false as const, shipping: feeDollars, estimatedDelivery: DELIVERY_TIMING_COPY, pickupWindow: undefined };
+    return {
+      ...g,
+      isPickup: false as const,
+      shipping: feeDollars,
+      estimatedDelivery: serverDeliveryCopy || DELIVERY_TIMING_COPY,
+      pickupWindow: undefined,
+    };
   });
   return { ...plan, groups, totalShipping: feeDollars };
 }
@@ -954,7 +959,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   <Text style={styles.fulfillOptionSub}>
                     {!fulfillmentPlan.deliveryAvailable
                       ? `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
-                      : DELIVERY_TIMING_COPY}
+                      : deliveryTimingCopy(fulfillmentPlan.groups.find(g => !g.isPickup))}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -975,7 +980,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                           : 'Delivery — unavailable'}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>
-                        {fulfillmentPlan.deliveryAvailable ? DELIVERY_TIMING_COPY : `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
+                        {fulfillmentPlan.deliveryAvailable ? deliveryTimingCopy(group) : `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
                       </Text>
                     </View>
                   </View>
