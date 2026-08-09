@@ -48,6 +48,39 @@ Pickup 收藏
 > 翻车史：批量上架跑完就直接回读 sellable，那时证据还没生成，于是每次都停在
 > 「已发布 · App 暂不可见」，用户被迫再点一次「继续完成」。
 
+### 2.1b 未收藏的同系列兄弟不是上架前提（2026-08-09 业务规则变更，已批准）
+
+**Pickup 收藏 = 明确决定销售这个 SKU。** 没有被收藏的 supplier family / `associateProductList`
+兄弟代表当前不准备销售，**不得阻止已收藏 SKU 上架** —— 不能要求运营为了卖一件而把整个供应商
+family 收藏进来。
+
+据此 `planGigaAutoPublish` 的碎片家族判定（`fragmentedVerdict`）只剩两条扣留理由：
+
+| 条件 | 结果 | 为什么保留 |
+|---|---|---|
+| `hasLiveSibling` | HOLD_PHASE2 `fragmented_cluster` | 同族**已有商品在售**，单独发会造成重复卡片，必须走 `mergeGigaVariantFamily` |
+| `widthMissing` | HOLD_PHASE2 `wmissing_fragmented` | 不知道商品多大，是**本商品自身**的数据缺失，与兄弟无关 |
+| 其余（含 `cfgMissing`） | SAFE_SINGLETON | 按独立商品放行 |
+
+原因码刻意分开记，别再压成一个 `cfgmissing`：
+
+- `no_config_axis_standalone` —— 这个品类**本来就没有**配置轴（沙发/椅子/床/桌…），哨兵整族一致，键稳定；
+- `unresolved_axis_standalone` —— **本该有轴但没解析出来**（柜类标题写的是 "4-in-1"、"Double Door"
+  这类文字，而 `deriveConfigToken` 只认 `N doors` / `N drawers` 数字）。日后改进解析器时，按这个码就能
+  精确定位受影响的商品。
+
+> 被替换掉的是 `cfgmissing_fragmented`。它当初的理由是「键不稳定，将来兄弟进来算出不同键就合不上」——
+> 顾虑是真的，但它用**今天卖不出去**去换一次假设中的未来合并。合并该在它该在的地方解决：
+> `mergeGigaVariantFamily` 负责把后来收藏的兄弟并入已在售 family。
+
+实施前后做过全库只读对比，效果精确可量化：**SAFE_SINGLETON 48 → 75（+27），
+SAFE_CLEAN_COLOR_VARIANT 12 → 12 不变，HOLD_PRICE 2 → 2 不变** —— 家族评估路径一件未受影响。
+27 件里当时仅 3 件仍在 Pickup 收藏中，其余 24 件是历史草稿，不会出现在 XOne 待上新。
+
+**已知缺口**：后续兄弟被收藏时，系统不会自动合并 —— `mergeGigaVariantFamily` 目前是手动工具
+（需人工给 `--new-sku` / `--live-sku` / `--target-family-key`），也没有检测器发现「新收藏的 SKU
+与某个在售 SKU 同属一个变体组」。自动化是独立的后续工作。
+
 ### 2.2 范围只能收窄，不能放大
 
 - 预览按 `request.skus` 收窄候选；

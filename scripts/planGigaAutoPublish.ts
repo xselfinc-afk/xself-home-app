@@ -154,6 +154,29 @@ export function baseBucketOf(c: { img: boolean; normCost: number; title: string;
   return { bucket: 'CLEAN', reason: '' }; // provisional — refined by variant grouping below
 }
 
+/**
+ * Verdict for a FRAGMENTED `-vg-` cluster member — the lone co-present clean member of a supplier
+ * variation group. Pure; exported for tests. See the call site for the full rationale.
+ *
+ * BUSINESS RULE (approved 2026-08-09): a Pickup favorite IS the decision to sell that SKU. Siblings
+ * the operator did not favorite are not for sale today and must never be a prerequisite — publishing
+ * one item must not require favoriting a whole supplier family. Only two things still hold an item:
+ * a sibling already ON SALE (duplicate card risk → merge path), and an unknown width (data gap about
+ * this product itself).
+ */
+export function fragmentedVerdict(c: {
+  hasLiveSibling: boolean; widthMissing: boolean; cfgMissing: boolean; noConfigAxis: boolean;
+}): { bucket: string; reason: string } {
+  if (c.hasLiveSibling) return { bucket: 'HOLD_PHASE2', reason: 'fragmented_cluster' };
+  if (c.widthMissing) return { bucket: 'HOLD_PHASE2', reason: 'wmissing_fragmented' };
+  if (c.cfgMissing) {
+    // 「这个品类本来就没有配置轴」与「本该有轴但没解析出来」是两件事，原因码分开记，便于日后
+    // 改进解析器时能按 unresolved_axis_standalone 精确定位到哪些商品受影响。
+    return { bucket: 'SAFE_SINGLETON', reason: c.noConfigAxis ? 'no_config_axis_standalone' : 'unresolved_axis_standalone' };
+  }
+  return { bucket: 'SAFE_SINGLETON', reason: 'no_live_sibling_standalone' };
+}
+
 export async function main() {
   const { createClient } = await import('@supabase/supabase-js');
   const pipe = await import('../src/services/normalizationPipeline');
@@ -257,18 +280,30 @@ export async function main() {
       //    a brand-new card and touches no existing live SKU. Safe as a standalone single-color card:
       //    it seeds a STABLE family key, so any sibling imported later computes the same key and
       //    auto-groups. Promote to SAFE_SINGLETON so it flows through the unchanged apply runner.
-      //  - cfg/width unresolved (cfgmissing/wmissing sentinel) → the key is unstable; a future sibling
-      //    with a derivable config/width would compute a DIFFERENT key and never merge, fragmenting the
-      //    family into separate cards. Hold it (HOLD_PHASE2) regardless of live-sibling presence.
-      //  - HAS live sibling → must go through the merge path (mergeGigaVariantFamily); keep HOLD_PHASE2.
-      //  - cfgMissing BUT no-config-axis category (sofa/bed/table/chair…) AND width present → the
-      //    sentinel is homogeneous for the whole family, so the key is stable; release as standalone.
+      //  - width unresolved (wmissing sentinel) → we do not know how big the product is. That is a
+      //    data gap about THIS product, not about its siblings; keep HOLD_PHASE2.
+      //  - HAS live sibling → a sibling is already ON SALE, so publishing this one standalone would
+      //    put a second card next to it. Must go through the merge path (mergeGigaVariantFamily);
+      //    keep HOLD_PHASE2.
+      //  - otherwise (incl. cfgMissing) → release as a standalone single-color card.
+      //
+      //    BUSINESS RULE (approved 2026-08-09): a Pickup favorite IS the decision to sell that SKU.
+      //    Siblings the operator did NOT favorite are not for sale today, so they must never be a
+      //    prerequisite — we do not require favoriting a whole supplier family to publish one item.
+      //    This deliberately replaces the previous `cfgmissing_fragmented` hold, which blocked
+      //    today's sale to protect a hypothetical future merge. That merge concern is real but is
+      //    handled where it belongs: mergeGigaVariantFamily joins a later sibling into the live
+      //    family. Read-only comparison over the full catalogue measured the effect at exactly
+      //    +27 SAFE_SINGLETON, with SAFE_CLEAN_COLOR_VARIANT and HOLD_PRICE unchanged.
       members.forEach(m => {
-        const noConfigAxis = NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase());
-        if (m.hasLiveSibling) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('fragmented_cluster'); }
-        else if (m.widthMissing) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('wmissing_fragmented'); }
-        else if (m.cfgMissing && !noConfigAxis) { m.bucket = 'HOLD_PHASE2'; m.reasons.push('cfgmissing_fragmented'); }
-        else { m.bucket = 'SAFE_SINGLETON'; m.reasons.push(m.cfgMissing ? 'no_config_axis_standalone' : 'no_live_sibling_standalone'); }
+        const v = fragmentedVerdict({
+          hasLiveSibling: m.hasLiveSibling,
+          widthMissing: m.widthMissing,
+          cfgMissing: m.cfgMissing,
+          noConfigAxis: NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase()),
+        });
+        m.bucket = v.bucket;
+        m.reasons.push(v.reason);
       });
       continue;
     }
