@@ -726,8 +726,12 @@ function main(): void {
     // XOne 续跑必须补上同一个脚本，而不是自己算运费。
     assert.ok(/scripts\/refreshGigaDeliveryFeesHybrid\.ts/.test(bridge), '必须复用既有运费脚本');
     assert.equal(/charged_fee_cents\s*[:=]\s*[0-9]/.test(bridge), false, '绝不自己写运费数值');
-    // 刚变成可售的商品也要一起刷，否则要等下一轮才补得上。
-    assert.ok(/feeTargets = \[\.\.\.new Set\(\[\.\.\.fees, \.\.\.evidence\]\)\]/.test(bridge));
+    // 刚变成可售的商品也要拿到运费。原先靠 feeTargets = fees ∪ evidence 在同一趟里硬凑；
+    // 现在续跑是循环推进 —— 拿到证据的商品下一轮自然变成 awaiting_delivery_fee 落进 fees，
+    // 由状态机保证，不再需要那个并集。
+    const resume = bridge.slice(bridge.indexOf('async function runRecoveryResume'), bridge.indexOf('async function runBatchPublish'));
+    assert.ok(/for \(let pass = 1; pass <= MAX_PASSES; pass \+= 1\)/.test(resume), '续跑必须循环推进');
+    assert.ok(/verdict\.nextAction === 'refresh_delivery_fee'/.test(resume), '运费阶段由状态机驱动');
   });
 
   it('凭据键只按名字摘除，从不读取或打印其值', () => {
@@ -831,6 +835,71 @@ function main(): void {
   // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
   // 一次「继续完成」。
 
+  // ── 续跑必须一趟推到底 ───────────────────────────────────────────────────────
+  //
+  // 2026-08-09 真实验收暴露两个缺口：
+  //   ① runRecoveryResume 没有「补 Dropship 收藏」这一步 —— 恢复出来的商品永远补不上运费；
+  //   ② 启动时一次性分组，流水线跑完就结束，用户必须再点第二次才继续证据/运费。
+  // 现在改成循环推进：每完成一个阶段重新读事实再决定下一步。
+
+  const resumeBlock = () => {
+    const src = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    return src.slice(src.indexOf('async function runRecoveryResume'), src.indexOf('async function runBatchPublish'));
+  };
+
+  it('续跑. 一趟推进 pipeline → evidence → 收藏 → 运费，不再需要点第二次', () => {
+    const block = resumeBlock();
+    assert.ok(/for \(let pass = 1; pass <= MAX_PASSES; pass \+= 1\)/.test(block), '必须循环推进');
+    assert.ok(/const facts = await readProgressFacts\(client, scope\);/.test(block), '每轮必须重读事实');
+    const order = ['runGigaAutoPublish.ts', 'scanPublishedAvailability.ts',
+      'syncSupplierFavoritesToPublished.ts', 'refreshGigaDeliveryFeesHybrid.ts'];
+    let cursor = -1;
+    for (const step of order) {
+      const at = block.indexOf(step);
+      assert.ok(at > 0, `续跑缺少 ${step}`);
+      assert.ok(at > cursor, `${step} 顺序不对`);
+      cursor = at;
+    }
+    assert.ok((block.match(/\n\s*continue;/g) ?? []).length >= 3, '各阶段必须 continue 回到循环顶部');
+  });
+
+  it('续跑. 已完成的阶段不会重复执行', () => {
+    const block = resumeBlock();
+    // 阶段名单来自 deriveRecoveryState 的 nextAction —— 已完成的商品 nextAction 是 none，
+    // 不进任何一组，所以八阶段不会被重跑。
+    assert.ok(/verdict\.nextAction === 'resume_pipeline'/.test(block));
+    assert.ok(/verdict\.nextAction === 'refresh_availability'/.test(block));
+    assert.ok(/verdict\.nextAction === 'refresh_delivery_fee'/.test(block));
+    assert.ok(/if \(!pipeline\.length && !evidence\.length && !fees\.length\) break;/.test(block));
+    assert.ok(/signature === lastSignature/.test(block), '必须有无进展保护');
+  });
+
+  it('续跑. 登录失效时明说重新登录，并且不回滚已发布', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/scripts\/supplierFavoriteSessionStatus\.ts/.test(bridge), '必须复用既有会话检查');
+    assert.ok(/session\.checked && !session\.dropshipAuthenticated/.test(bridge));
+    assert.ok(/Dropship 登录已失效，需要重新登录后再继续/.test(bridge));
+    assert.equal(/published:\s*false/.test(resumeBlock()), false, '登录失效不得回滚 published');
+    assert.ok(/session_blocked: sessionBlocked/.test(bridge));
+  });
+
+  it('续跑. 会话问不出结果时不据此拦人', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    assert.ok(/checked: false, dropshipAuthenticated: false/.test(bridge));
+    assert.ok(/session\.checked && !session\.dropshipAuthenticated/.test(bridge),
+      '只有确实问到「未登录」才停，checked=false 不停');
+  });
+
+  it('续跑. 范围恒等于计划快照，绝不扫历史商品', () => {
+    const block = resumeBlock();
+    assert.ok(/const scope = skusFromPlanSnapshots\(\);/.test(block));
+    assert.equal((block.match(/skusFromPlanSnapshots\(\)/g) ?? []).length, 1, 'scope 只能取一次');
+    assert.ok(/--skus=\$\{evidence\.join\(','\)\}/.test(block));
+    assert.ok(/--skus=\$\{fees\.join\(','\)\}/.test(block));
+    assert.ok(/'--skus', fees\.join\(','\)/.test(block));
+    assert.ok(/'--add', '--account=dropship'/.test(block));
+  });
+
   // ── 现场：15 件全部「尚未进入 Dropship 收藏」──────────────────────────────────
   //
   // 2026-08-09 06:26 那次运行，收藏执行器的断点里 15 件全是 status='planned'、product_id 都
@@ -853,9 +922,14 @@ function main(): void {
 
   it('现场. 闸门只对补收藏那一次生效，不是全局打开', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
-    // 只允许出现一次，且必须在补收藏那一步；childEnv 的默认值里不得出现。
-    const hits = bridge.match(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/g) ?? [];
-    assert.equal(hits.length, 1, `闸门只应在补收藏那一处出现，实际 ${hits.length} 处`);
+    // 闸门在批量上架与续跑各出现一次，都必须是补收藏那一步的 runScript extraEnv ——
+    // 每一处都紧跟 --add --account=dropship，绝不是进程级或全局开启。
+    const hits = [...bridge.matchAll(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/g)].map((m) => m.index ?? 0);
+    assert.equal(hits.length, 2, `闸门只应出现在两条补收藏路径上，实际 ${hits.length} 处`);
+    for (const at of hits) {
+      const near = bridge.slice(Math.max(0, at - 400), at);
+      assert.ok(/'--add', '--account=dropship'/.test(near), '闸门只能用于补收藏那一次调用');
+    }
     const childEnvBlock = bridge.slice(bridge.indexOf('function childEnv'), bridge.indexOf('function runScript'));
     assert.equal(/SUPPLIER_FAVORITE_REMOVAL_ENABLED/.test(childEnvBlock), false, '不得写进 childEnv 默认环境');
     // 也不得落进任何 .env 文件（那是需要人工批准的持久开关）。

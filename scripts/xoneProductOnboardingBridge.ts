@@ -1268,6 +1268,28 @@ async function runRecoveryList(client: SupabaseClient): Promise<Record<string, u
  * 后者属于库存扫描链。首次上架的商品在扫描跑到它之前天然「已发布、App 还看不到」，
  * 这一步补的就是那一行证据，它不改变任何发布状态。
  */
+/**
+ * 供应商门户会话是否还有效。复用既有的 supplierFavoriteSessionStatus，不另写探测。
+ *
+ * `checked=false` 表示这次没问出结果（脚本没跑起来 / 输出不可解析）—— 那时不要据此下结论，
+ * 让后续步骤照常尝试，宁可失败得具体，也不要凭猜测拦住用户。
+ */
+function readSupplierSessionStatus(): { checked: boolean; dropshipAuthenticated: boolean } {
+  const res = runScript('scripts/supplierFavoriteSessionStatus.ts', [], 300_000);
+  const line = String(res.stdout ?? '').split('\n').find((l) => l.startsWith('SESSION_STATUS '));
+  if (!line) return { checked: false, dropshipAuthenticated: false };
+  try {
+    const parsed = JSON.parse(line.slice('SESSION_STATUS '.length)) as {
+      accounts?: Array<{ account?: string; authenticated?: boolean }>;
+    };
+    const dropship = (parsed.accounts ?? []).find((a) => a.account === 'dropship');
+    if (!dropship) return { checked: false, dropshipAuthenticated: false };
+    return { checked: true, dropshipAuthenticated: dropship.authenticated === true };
+  } catch {
+    return { checked: false, dropshipAuthenticated: false };
+  }
+}
+
 async function runRecoveryResume(
   request: OnboardingRequest,
   client: SupabaseClient,
@@ -1278,76 +1300,128 @@ async function runRecoveryResume(
   const account = preflightSupplierAccount(REPO);
   if (!account.ok) return failure('SUPPLIER_ACCOUNT_UNAVAILABLE', `无法继续：${account.reason}`);
 
-  const facts = await readProgressFacts(client, skusFromPlanSnapshots());
-  const pipeline: string[] = [];
-  const evidence: string[] = [];
-  const fees: string[] = [];
-  for (const f of facts) {
-    const verdict = deriveRecoveryState(f);
-    if (verdict.nextAction === 'resume_pipeline') pipeline.push(f.supplier_product_id);
-    else if (verdict.nextAction === 'refresh_availability') evidence.push(f.supplier_product_id);
-    else if (verdict.nextAction === 'refresh_delivery_fee') fees.push(f.supplier_product_id);
-  }
-  if (!pipeline.length && !evidence.length && !fees.length) {
-    return failure('NOTHING_TO_RESUME', '当前没有需要继续完成的商品');
-  }
-  if (typeof request.expected_ready === 'number'
-    && request.expected_ready !== pipeline.length + evidence.length + fees.length) {
-    return failure('STATE_CHANGED', '商品状态已经变化，请重新查看后再继续');
-  }
-
+  // 范围：仍然只认计划快照里的 SKU。循环推进不会扩大它，每一轮都在同一个 scope 内重读事实。
+  const scope = skusFromPlanSnapshots();
   const steps: Array<{ step: string; skus: number; exit_code: number | null }> = [];
+  let sessionBlocked: 'dropship' | null = null;
 
-  if (pipeline.length) {
-    progress('resume_pipeline', `正在继续完成 ${pipeline.length} 件商品的上架流程`);
-    let previous: Record<string, unknown> | null = null;
-    try { previous = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); } catch { previous = null; }
-    const plan = buildRecoveryPlan(previous, pipeline);
-    if (!plan) return failure('NO_RECOVERY_PLAN', '找不到可用于续跑的计划快照');
-    fs.writeFileSync(XONE_RECOVERY_PLAN, JSON.stringify(plan, null, 2));
-    const run = runScript('scripts/runGigaAutoPublish.ts', ['--plan', XONE_RECOVERY_PLAN, '--apply', '--summary'], 1_800_000);
-    steps.push({ step: 'resume_pipeline', skus: pipeline.length, exit_code: run.status });
+  /** 当前每件的状态签名。两轮相同 = 上一步没有推进，停下，避免空转。 */
+  const signatureOf = (fs_: OnboardingProgressFacts[]) =>
+    fs_.map((f) => `${f.supplier_product_id}:${deriveRecoveryState(f).state}`).sort().join('|');
+
+  // 一趟「继续完成」要把状态机推到底：
+  //   pipeline_incomplete → resume_pipeline
+  //   awaiting_evidence   → refresh_availability
+  //   awaiting_delivery_fee → 补 Dropship 收藏 → refresh_delivery_fee
+  // 每完成一个阶段就**重新读事实**再决定下一步 —— 启动时一次性分组会让流水线跑完就结束，
+  // 用户必须再点第二次（2026-08-09 真实验收暴露的问题）。
+  const MAX_PASSES = 6;
+  let lastSignature = '';
+  let noProgress = false;
+
+  for (let pass = 1; pass <= MAX_PASSES; pass += 1) {
+    const facts = await readProgressFacts(client, scope);
+    const pipeline: string[] = [];
+    const evidence: string[] = [];
+    const fees: string[] = [];
+    for (const f of facts) {
+      const verdict = deriveRecoveryState(f);
+      if (verdict.nextAction === 'resume_pipeline') pipeline.push(f.supplier_product_id);
+      else if (verdict.nextAction === 'refresh_availability') evidence.push(f.supplier_product_id);
+      else if (verdict.nextAction === 'refresh_delivery_fee') fees.push(f.supplier_product_id);
+    }
+
+    if (pass === 1) {
+      if (!pipeline.length && !evidence.length && !fees.length) {
+        return failure('NOTHING_TO_RESUME', '当前没有需要继续完成的商品');
+      }
+      if (typeof request.expected_ready === 'number'
+        && request.expected_ready !== pipeline.length + evidence.length + fees.length) {
+        return failure('STATE_CHANGED', '商品状态已经变化，请重新查看后再继续');
+      }
+    }
+
+    if (!pipeline.length && !evidence.length && !fees.length) break;   // 全部推到底了
+
+    const signature = signatureOf(facts);
+    if (signature === lastSignature) { noProgress = true; break; }     // 上一步没推动任何一件
+    lastSignature = signature;
+
+    // 每轮只推进最靠前的那个阶段，然后回到循环顶部重新读事实。
+    if (pipeline.length) {
+      progress('resume_pipeline', `正在继续完成 ${pipeline.length} 件商品的上架流程`);
+      let previous: Record<string, unknown> | null = null;
+      try { previous = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')); } catch { previous = null; }
+      const plan = buildRecoveryPlan(previous, pipeline);
+      if (!plan) return failure('NO_RECOVERY_PLAN', '找不到可用于续跑的计划快照');
+      fs.writeFileSync(XONE_RECOVERY_PLAN, JSON.stringify(plan, null, 2));
+      const run = runScript('scripts/runGigaAutoPublish.ts', ['--plan', XONE_RECOVERY_PLAN, '--apply', '--summary'], 1_800_000);
+      steps.push({ step: 'resume_pipeline', skus: pipeline.length, exit_code: run.status });
+      continue;
+    }
+
+    if (evidence.length) {
+      progress('refresh_availability', `正在为 ${evidence.length} 件商品读取库存证据`);
+      // 既有的证据产出者，窄化运行会写到自己的报告文件，不覆盖全量扫描的 latest。
+      const scan = runScript(
+        'scripts/scanPublishedAvailability.ts',
+        [`--skus=${evidence.join(',')}`, '--live'],
+        1_800_000,
+      );
+      steps.push({ step: 'refresh_availability', skus: evidence.length, exit_code: scan.status });
+      continue;
+    }
+
+    // App 已可见、只差运费。运费的前置条件是商品在 Dropship 账号的 Saved Items 里
+    // （price/v1 只返回该账号收藏内的商品，否则 B20003）。批量上架那条路早就有这一步，
+    // 续跑此前没有 —— 于是恢复出来的商品永远补不上运费。这里补上同一个调用。
+    if (fees.length) {
+      // 先看门户会话还在不在。会话过期时 addProductsToWish 会被重定向（code 302），
+      // 门户搜索也解析不出 product_id，最终以 no_mapping 收场 —— 那句话会把「请重新登录」
+      // 误报成「商品没有映射」。所以宁可提前停，也不要给出误导的原因。
+      const session = readSupplierSessionStatus();
+      if (session.checked && !session.dropshipAuthenticated) {
+        sessionBlocked = 'dropship';
+        steps.push({ step: 'sync_dropship_favorite', skus: fees.length, exit_code: null });
+        break;   // fail-soft：不回滚发布位，商品保持 App 可见
+      }
+
+      progress('sync_dropship_favorite', `正在把 ${fees.length} 件商品加入 Dropship 收藏`);
+      // 闸门只为这一次子进程打开；名单是本次 scope 内的商品，逐件发送、逐件回读验证。
+      const fav = runScript(
+        'scripts/syncSupplierFavoritesToPublished.ts',
+        ['--add', '--account=dropship', `--skus=${fees.join(',')}`, '--execute', '--json'],
+        1_800_000,
+        { SUPPLIER_FAVORITE_REMOVAL_ENABLED: 'true' },
+      );
+      steps.push({ step: 'sync_dropship_favorite', skus: fees.length, exit_code: fav.status });
+
+      progress('refresh_delivery_fee', `正在获取 ${fees.length} 件商品的配送费用`);
+      // 与 orchestrator 一致：软失败。运费拿不到不影响商品已经上线这件事。
+      const fee = runScript(
+        'scripts/refreshGigaDeliveryFeesHybrid.ts',
+        ['--skus', fees.join(',')],
+        900_000,
+      );
+      steps.push({ step: 'refresh_delivery_fee', skus: fees.length, exit_code: fee.status });
+      continue;
+    }
   }
-
-  if (evidence.length) {
-    progress('refresh_availability', `正在为 ${evidence.length} 件商品读取库存证据`);
-    // 既有的证据产出者，窄化运行会写到自己的报告文件，不覆盖全量扫描的 latest。
-    const scan = runScript(
-      'scripts/scanPublishedAvailability.ts',
-      [`--skus=${evidence.join(',')}`, '--live'],
-      1_800_000,
-    );
-    steps.push({ step: 'refresh_availability', skus: evidence.length, exit_code: scan.status });
-  }
-
-  // 运费：这是 Golden Path orchestrator 的第 7 步（发布之后单独跑，软失败不回滚）。
-  // XOne 的批量上架直接调 runGigaAutoPublish，而那八个阶段里根本没有运费 —— 所以刚上线的
-  // 商品在 Checkout 只会显示 Quote required。这里补上同一个脚本、同一套语义。
-  //
-  // 刚刚变成可售的商品同样要刷一次，否则要等到下一轮续跑才补得上。
-  const feeTargets = [...new Set([...fees, ...evidence])];
-  if (feeTargets.length) {
-    progress('refresh_delivery_fee', `正在获取 ${feeTargets.length} 件商品的配送费用`);
-    // 与 orchestrator 一致：软失败。运费拿不到不影响商品已经上线这件事。
-    const fee = runScript(
-      'scripts/refreshGigaDeliveryFeesHybrid.ts',
-      ['--skus', feeTargets.join(',')],
-      900_000,
-    );
-    steps.push({ step: 'refresh_delivery_fee', skus: feeTargets.length, exit_code: fee.status });
-  }
-
-  const after = await readProgressFacts(client, [...pipeline, ...evidence, ...fees]);
+  const after = await readProgressFacts(client, scope);
   const resumeFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
+  const feeError = await readDeliveryFeeErrors(client, scope);
   const results = after.map((f) => {
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: null };
-    // App 能看到、但结不了账 —— 说清楚是运费没拿到，不要笼统说「不可见」。
+    // App 能看到、只差运费。登录失效时必须直说「重新登录」——
+    // 会话过期会一路表现成 302 / no_mapping，那些话会把用户引去查商品映射，方向完全错了。
     if (verdict.state === 'awaiting_delivery_fee') {
       return {
         sku: f.supplier_product_id,
         outcome: 'published_but_not_sellable',
-        reason: 'App 可见，但还没有配送费用，Checkout 会显示需要报价',
+        reason: sessionBlocked === 'dropship'
+          ? 'App 可见，但 Dropship 登录已失效，需要重新登录后再继续'
+          : `App 可见，但 Checkout 暂无法报价：${describeFeeFailure(feeError.get(f.supplier_product_id) ?? null)}`,
       };
     }
     if (f.standardized_published === true) {
@@ -1380,6 +1454,9 @@ async function runRecoveryResume(
     results,
     availability_failure_reason: resumeFailure.reason,
     availability_failure_detail: resumeFailure.detail,
+    // 停在哪、为什么停 —— 界面据此决定是提示「重新登录」还是「稍后重试」。
+    session_blocked: sessionBlocked,
+    stopped_without_progress: noProgress,
   });
 }
 
