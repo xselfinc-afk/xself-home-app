@@ -125,6 +125,8 @@ const progress = { processed: 0, total: 0, success: 0, exceptions: 0, timeouts: 
 function phaseLabel(ev: CleanupProgressEvent): string {
   if (ev.phase === 'resolve') return 'resolving_identity';
   if (ev.phase === 'verify') return 'verifying';
+  // 新增方向不能显示成 cleaning —— 那是取消收藏的说法。
+  if (ev.phase === 'add') return 'adding_favorite';
   return ev.account === 'dropship' ? 'cleaning_dropship' : 'cleaning_pickup';
 }
 
@@ -132,7 +134,7 @@ function emitProgress(line: string, ev: CleanupProgressEvent): void {
   log(`  ${line}`);
   if (ev.outcome === 'exception') progress.exceptions += 1;
   else if (ev.outcome === 'timeout') progress.timeouts += 1;
-  else if (ev.outcome === 'verified_removed') progress.success += 1;
+  else if (ev.outcome === 'verified_removed' || ev.outcome === 'verified_added') progress.success += 1;
   else if (ev.outcome === 'verification_failed') progress.verification_failed += 1;
   if (ev.phase !== 'verify') { progress.processed = ev.index; progress.total = ev.total; }
   process.stdout.write(`SYNC_PROGRESS ${JSON.stringify({
