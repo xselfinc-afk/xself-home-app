@@ -15,6 +15,7 @@
  * Run: npx tsx src/__tests__/fulfillmentParity.test.ts
  */
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
 import {
   resolveFulfillmentEligibility,
   pickupRadiusMiles,
@@ -97,5 +98,36 @@ parity('pickup-only (near pickup + invalid fee)', { childSku: 'S', buyerCoords: 
 parity('neither (far + invalid fee)', { childSku: 'S', buyerCoords: BUYER, inventory: inv, warehouses: [wh({ code: 'W', state: 'CA', miles: 200 })], delivery: invalidFee() }, 'unavailable');
 parity('missing coordinates (near but null coords)', { childSku: 'S', buyerCoords: BUYER, inventory: inv, warehouses: [{ code: 'W', state: 'CA', lat: null, lng: null, active: true, supportsPickup: true }], delivery: validFee() }, 'shipping_only');
 parity('invalid fee only (no pickup wh + missing fee)', { childSku: 'S', buyerCoords: BUYER, inventory: inv, warehouses: [wh({ code: 'W', state: 'NJ', miles: 200 })], delivery: invalidFee() }, 'unavailable');
+
+// ── 配送时效文案的两处必须一致 ──────────────────────────────────────────────
+//
+// 这句话由服务端 plan-fulfillment 和客户端 CheckoutScreen 各自持有一份。两处不一致时，
+// 用户会在同一次结账里看到两种说法 —— 这是这次改动唯一的真实风险，所以钉住它。
+//
+// 它是运营承诺，不是算出来的：系统里没有任何配送时效数据（2026-08-09 审计，
+// GIGA 的 price / detailInfo / inventory / warehouse 只返回费用、入仓日期与地址）。
+// 因此这里只校验两处同步与「不得由距离推导」，不校验天数本身 —— 那是业务决定。
+{
+  const copySrcClient = fs.readFileSync('src/screens/CheckoutScreen.tsx', 'utf8');
+  const copySrcServer = fs.readFileSync('supabase/functions/plan-fulfillment/index.ts', 'utf8');
+  const clientCopy = copySrcClient.match(/const DELIVERY_TIMING_COPY = '([^']+)'/)?.[1] ?? null;
+  const serverCopy = copySrcServer.match(/if \(usePickup\) return '[^']+';\s*\n\s*return '([^']+)';/)?.[1] ?? null;
+
+  it('配送时效文案：服务端与客户端一字不差', () => {
+    assert.ok(clientCopy, 'CheckoutScreen 必须有 DELIVERY_TIMING_COPY');
+    assert.ok(serverCopy, 'plan-fulfillment 必须返回配送时效文案');
+    assert.equal(serverCopy, clientCopy, '两处配送时效文案必须完全一致，否则同一次结账会出现两种说法');
+  });
+
+  it('配送时效不得由距离推导，运费仍走服务端真实金额', () => {
+    // 距离参数在配送分支必须保持不用 —— 按距离分档的猜测正是当初被回滚掉的做法。
+    assert.ok(/function estimatedDelivery\(_distanceMiles: number/.test(copySrcServer), '距离参数必须保持未使用');
+    const branch = copySrcServer.slice(copySrcServer.indexOf('function estimatedDelivery'), copySrcServer.indexOf('/** Add business days'));
+    assert.equal(/_distanceMiles\s*[<>=]/.test(branch), false, '配送文案不得依赖距离');
+    // 运费仍然来自服务端权威金额，不得因为这次文案改动混进硬编码。
+    assert.ok(/plan\.deliveryFeeCents != null \? plan\.deliveryFeeCents \/ 100 : 0/.test(copySrcClient),
+      'Delivery 金额必须仍取 plan.deliveryFeeCents');
+  });
+}
 
 console.log(`\n${passed} parity assertions passed.`);

@@ -146,11 +146,16 @@ function getDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number
 
 /** Estimated delivery / pickup string — mirrors fulfillmentPlanner.ts.
  *  When the order is being fulfilled by pickup, returns the real pickup window.
- *  For delivery we do NOT promise an ETA: no guaranteed carrier/handling estimate
- *  is available, so we return conservative copy instead of a distance-based guess. */
+ *
+ *  The delivery string is an OPERATIONAL COMMITMENT set by the business, not a value derived
+ *  from data — nothing in this system carries a delivery ETA (audited 2026-08-09: GIGA's
+ *  price / detailInfo / inventory / warehouse endpoints return fees, inbound arrival dates and
+ *  addresses only; the orders table has no shipped/delivered timestamps). It is deliberately
+ *  NOT a function of distance — the `_distanceMiles` argument stays unused for delivery.
+ *  Keep it identical to DELIVERY_TIMING_COPY in src/screens/CheckoutScreen.tsx. */
 function estimatedDelivery(_distanceMiles: number, usePickup: boolean): string {
   if (usePickup) return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
-  return 'Delivery timing confirmed after checkout';
+  return 'Local warehouse · Fastest delivery: 2 BUSINESS DAYS';
 }
 
 /** Add business days (Mon–Fri), skipping weekends. */

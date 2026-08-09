@@ -48,9 +48,12 @@ function planFingerprint(plan: FulfillmentPlan): string {
  * a hardcoded value. When the fee is unavailable, the fee shows as 0 here but Delivery is
  * blocked downstream via plan.deliveryAvailable (no charge happens).
  */
-// Conservative delivery-timing copy. We do NOT promise a delivery ETA: no guaranteed
-// carrier/handling estimate is available, so checkout shows this instead of a distance guess.
-const DELIVERY_TIMING_COPY = 'Delivery timing confirmed after checkout';
+// Delivery-timing copy. This is an OPERATIONAL COMMITMENT set by the business, not a value
+// derived from data: no supplier field, no GIGA endpoint and no order history in this system
+// carries a delivery ETA (audited 2026-08-09 — price/detailInfo/inventory/warehouse all return
+// fees, inbound arrival dates and addresses only). Change it only with the business, and keep
+// it in sync with supabase/functions/plan-fulfillment/index.ts, which serves the same string.
+const DELIVERY_TIMING_COPY = 'Local warehouse · Fastest delivery: 2 BUSINESS DAYS';
 // Honest copy when a plan EXISTS but delivery is unavailable (no cached GIGA fee /
 // deliveryFeeCents null). The address is NOT the problem — the item needs a quote or pickup.
 const DELIVERY_QUOTE_UNAVAILABLE_COPY = 'Delivery quote is not available for this item yet. Please choose pickup if available or contact us for delivery help.';
