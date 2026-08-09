@@ -31,6 +31,7 @@ import {
   resolveExtraMappings,
   countResumable,
   buildFavoriteCleanupPlan,
+  planFavoriteAdditions,
   type ManualResolutionRecord,
   withDeadline,
   type CleanupProgressEvent,
@@ -68,6 +69,22 @@ const ONLY_ACCOUNT: 'pickup' | 'dropship' | null = (() => {
   return raw;
 })();
 if (ONLY_SKU && !ONLY_ACCOUNT) { console.error('[favCleanup] --sku 必须配合 --account 使用'); process.exit(1); }
+
+/**
+ * 新增收藏模式（--add）。与默认的取消收藏模式互斥，且**必须**显式给出 SKU 名单。
+ *
+ * 为什么不复用 TARGET 差集：那个差集当前是 322 件历史欠账，一次开闸就是 322 次对外写入。
+ * 新增只服务一个场景 —— 「本次刚上架的这几件，补进 Dropship 收藏，好让 price/v1 能返回运费」。
+ * 所以名单由调用方给，脚本不替它推断，给不出就拒绝运行。
+ */
+const ADD_MODE = has('add');
+const ADD_SKUS = (val('skus') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+if (ADD_MODE) {
+  if (ONLY_SKU) { console.error('[favCleanup] --add 与 --sku 互斥'); process.exit(1); }
+  if (!ONLY_ACCOUNT) { console.error('[favCleanup] --add 必须配合 --account 使用'); process.exit(1); }
+  if (!ADD_SKUS.length) { console.error('[favCleanup] --add 必须显式给出 --skus=A,B,C'); process.exit(1); }
+  if (ADD_SKUS.length > 50) { console.error(`[favCleanup] --add 单次最多 50 件（收到 ${ADD_SKUS.length}）`); process.exit(1); }
+}
 
 const log = (line: string) => { if (!JSON_OUT) console.log(line); };
 
@@ -227,7 +244,7 @@ async function main(): Promise<void> {
     favorites[other] = [];
     favorites[ONLY_ACCOUNT!] = [ONLY_SKU];
   }
-  const extraSkus = ONLY_SKU ? [ONLY_SKU] : allExtraSkus;
+  const extraSkus = ADD_MODE ? ADD_SKUS : (ONLY_SKU ? [ONLY_SKU] : allExtraSkus);
 
   // ── Resolve mappings for the EXTRA set only ────────────────────────────────
   const storedMappings = await readAll<StoredPortalMapping>('supplier_portal_product_mappings',
@@ -258,11 +275,11 @@ async function main(): Promise<void> {
     // A full dry run never scrapes the portal (that would be ~2 calls × every unmapped extra SKU);
     // unmapped SKUs are reported as "needs resolution" instead. Single-item mode is the exception:
     // two read-only calls, and resolving the identity is the whole point of the dry run there.
-    if (!EXECUTE && !ONLY_SKU) return { product_id: null, verified_sku: null, status: 'not_mapped' };
+    if (!EXECUTE && !ONLY_SKU && !ADD_MODE) return { product_id: null, verified_sku: null, status: 'not_mapped' };
     if (!portalDeps) {
       // In single-item mode the probe must run under the SAME account we will act on, so point the
       // reader at that account's session file rather than the default one.
-      if (ONLY_ACCOUNT) process.env.GIGA_SESSION_FILE = sessionFileFor(ONLY_ACCOUNT);
+      if (ONLY_ACCOUNT) process.env.GIGA_SESSION_FILE = sessionFileFor(ONLY_ACCOUNT);   // add 模式同样按目标账号解析
       const mod = await import('./fetchGigaWarehouseInventoryFromXhr');
       portalDeps = { session: mod.loadSession(), search: mod.searchProductCandidates as never, base: mod.fetchBaseInfos as never };
     }
@@ -311,12 +328,15 @@ async function main(): Promise<void> {
     resolved.usable.get(sku) ?? { product_id: null, verified_sku: null, status: 'not_mapped' as const };
   // 与 XOne 确认页调用的是同一个函数 —— preview 与 execute 不再各算一套。
   // 安全门（published 永不删、身份必须唯一）在这一层强制，用户点了「取消收藏」也绕不过去。
-  const plan = buildFavoriteCleanupPlan({
-    target,
-    favorites,
-    resolutions: manualResolutions,
-    mappingFor: mappingLookup,
-  });
+  // add 走显式名单（planFavoriteAdditions），remove 走既有的 TARGET 差集。两者互斥。
+  const plan = ADD_MODE
+    ? planFavoriteAdditions(ONLY_ACCOUNT!, ADD_SKUS, mappingLookup)
+    : buildFavoriteCleanupPlan({
+      target,
+      favorites,
+      resolutions: manualResolutions,
+      mappingFor: mappingLookup,
+    });
 
   const totalRemovals = plan.removals.pickup.length + plan.removals.dropship.length;
   const unmapped = extraSkus.length - resolved.usable.size;
@@ -399,13 +419,14 @@ async function main(): Promise<void> {
     pace: async () => { await sleep(MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS))); },
     now,
     env: process.env,
-  }, { execute: EXECUTE, batchSize: BATCH_SIZE, maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES, runId, perItemTimeoutMs: PER_ITEM_TIMEOUT_MS, verifyTimeoutMs: VERIFY_TIMEOUT_MS }, checkpoint);
+  }, { execute: EXECUTE, batchSize: BATCH_SIZE, maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES, runId, perItemTimeoutMs: PER_ITEM_TIMEOUT_MS, verifyTimeoutMs: VERIFY_TIMEOUT_MS, operation: ADD_MODE ? 'add' : 'remove' }, checkpoint);
 
   log('\n─── result ───');
   log(`  dry_run           : ${result.dry_run}`);
   log(`  xhr_sends         : ${result.xhr_sends}`);
   log(`  planned (dry)     : ${result.planned}`);
   log(`  verified_removed  : ${result.verified_removed}`);
+  if (ADD_MODE) log(`  verified_added    : ${result.items.filter((i) => i.status === 'verified_added').length}`);
   log(`  verification_fail : ${result.verification_failed}`);
   log(`  send_failed       : ${result.send_failed}`);
   log(`  skipped (resume)  : ${result.skipped}`);

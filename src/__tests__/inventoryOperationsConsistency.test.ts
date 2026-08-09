@@ -831,6 +831,51 @@ function main(): void {
   // sellable，那时证据还没生成，于是必然得到「已发布 · App 暂不可见」，用户被迫再点
   // 一次「继续完成」。
 
+  // ── Dropship 收藏是运费的前置条件 ────────────────────────────────────────────
+  //
+  // GIGA 官方文档：product/price/v1 只能查该账号 Saved Items 里的商品，否则 B20003
+  // （Error Description: The SKU is not added to Saved Items List）。而运费必须取 Dropship
+  // 账号的值 —— 同一个 SKU，Dropship 报 27.16、Pickup 报 3.68（自提履约费），差七倍。
+
+  it('闭环. 补 Dropship 收藏排在取运费之前，且只针对本批 SKU', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    // 复用既有收藏执行器，不新建第二套。
+    assert.ok(/scripts\/syncSupplierFavoritesToPublished\.ts/.test(block), '必须复用既有收藏执行器');
+    assert.ok(/'--add', '--account=dropship'/.test(block), '只补 Dropship，且是新增方向');
+    // 名单显式给出，绝不让脚本自己去算 TARGET 差集（那是 322 件历史欠账）。
+    assert.ok(/--skus=\$\{closable\.join\(','\)\}/.test(block), '必须显式给出本批名单');
+    // 顺序：先加收藏，再取运费，否则 price/v1 必然 B20003。
+    assert.ok(block.indexOf("'--add'") < block.indexOf('refreshGigaDeliveryFeesHybrid'),
+      '补收藏必须排在取运费之前');
+  });
+
+  it('闭环. add 模式必须显式给名单，给不出就拒绝运行', () => {
+    const script = code(fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8'), '//');
+    // 三道范围闸门：必须指定账号、必须给名单、单次上限。
+    assert.ok(/--add 必须配合 --account 使用/.test(script));
+    assert.ok(/--add 必须显式给出 --skus/.test(script));
+    assert.ok(/--add 单次最多 50 件/.test(script));
+    // add 与单件模式互斥，避免两种范围规则同时生效。
+    assert.ok(/--add 与 --sku 互斥/.test(script));
+    // 计划来自显式名单，不是 TARGET 差集。
+    assert.ok(/ADD_MODE\s*\n?\s*\?\s*planFavoriteAdditions\(ONLY_ACCOUNT!, ADD_SKUS/.test(script));
+  });
+
+  it('闭环. 运费拿不到时说出真实原因，不推翻已上架', () => {
+    const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
+    // 原因取自运费脚本自己写下的错误码，不是猜的。
+    assert.ok(/last_error_code/.test(bridge), '必须读运费缓存的错误码');
+    assert.ok(/该商品尚未进入 Dropship 收藏，供应商不返回运费/.test(bridge));
+    assert.ok(/App 可见，但 Checkout 暂无法报价/.test(bridge));
+    // 仍然是 published_but_not_sellable，不是 pipeline_failed —— 商品已经上线这件事不被推翻。
+    const start = bridge.indexOf('async function runBatchPublish');
+    const block = bridge.slice(start, bridge.indexOf('async function readPublishState'));
+    const idx = block.indexOf('Checkout 暂无法报价');
+    assert.ok(/published_but_not_sellable/.test(block.slice(Math.max(0, idx - 200), idx)));
+  });
+
   it('闭环. 批量上架在同一次任务里读库存证据并获取运费', () => {
     const bridge = code(fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8'), '//');
     const start = bridge.indexOf('async function runBatchPublish');

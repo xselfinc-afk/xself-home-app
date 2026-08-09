@@ -1372,6 +1372,39 @@ async function runRecoveryResume(
   });
 }
 
+/** 运费缓存里这几件最近一次失败的错误码。拿不到就返回空 Map，不编造。 */
+async function readDeliveryFeeErrors(client: SupabaseClient, skus: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!skus.length) return out;
+  const { data, error } = await client.from('giga_delivery_fee_cache')
+    .select('supplier_product_id,last_error_code,charged_fee_cents')
+    .in('supplier_product_id', skus);
+  if (error) throw new Error(`READ_FAILED:giga_delivery_fee_cache:${error.message}`);
+  for (const row of (data ?? []) as Array<{ supplier_product_id: string; last_error_code: string | null; charged_fee_cents: number | null }>) {
+    if (row.charged_fee_cents == null && row.last_error_code) out.set(row.supplier_product_id, row.last_error_code);
+  }
+  return out;
+}
+
+/** 运费失败码翻成运营能据以行动的话。词汇来自既有脚本写下的 last_error_code。 */
+function describeFeeFailure(code: string | null): string {
+  switch (code) {
+    case 'no_mapping':
+      // 官方接口不认这件商品（多半是没加进 Dropship 收藏），门户兜底又缺 portal id。
+      return '该商品尚未进入 Dropship 收藏，供应商不返回运费';
+    case 'official_api_error':
+      return '供应商运费接口拒绝了本次查询';
+    case 'session_expired':
+      return 'Dropship 门户登录已失效，需要重新登录';
+    case 'aliyun_captcha':
+      return '供应商要求验证码，需要人工处理';
+    case null:
+      return '运费尚未生成';
+    default:
+      return `运费获取失败（${code}）`;
+  }
+}
+
 async function runBatchPublish(
   request: OnboardingRequest,
   client: SupabaseClient,
@@ -1433,6 +1466,23 @@ async function runBatchPublish(
     );
     closingSteps.push({ step: 'refresh_availability', skus: closable.length, exit_code: scan.status });
 
+    // 补 Dropship 收藏 —— 运费的前置条件，不是可选装饰。
+    //
+    // GIGA 官方文档写得很清楚：product/price/v1 只能查「该账号 Saved Items 里的商品」，
+    // 否则返回 B20003（Error Description: The SKU is not added to Saved Items List）。
+    // 而运费必须取 Dropship 账号的值：同一个 SKU，Dropship 报 27.16、Pickup 报 3.68 ——
+    // 后者是自提履约费，拿它结算会少收七倍。详见 docs/product-supply/GIGA_OPEN_API_REFERENCE.md。
+    //
+    // 范围严格限定在本批：脚本的 --add 必须显式给出 --skus，它不会去算 TARGET 差集
+    // （那是 322 件历史欠账）。逐件发送、逐件回读官方收藏验证，失败软处理。
+    progress('sync_dropship_favorite', `正在把 ${closable.length} 件商品加入 Dropship 收藏`);
+    const fav = runScript(
+      'scripts/syncSupplierFavoritesToPublished.ts',
+      ['--add', '--account=dropship', `--skus=${closable.join(',')}`, '--execute', '--json'],
+      1_800_000,
+    );
+    closingSteps.push({ step: 'sync_dropship_favorite', skus: closable.length, exit_code: fav.status });
+
     progress('refresh_delivery_fee', `正在获取 ${closable.length} 件商品的配送费用`);
     // 与 orchestrator 一致：软失败。运费拿不到不推翻「商品已经上线」这件事。
     const fee = runScript(
@@ -1446,6 +1496,8 @@ async function runBatchPublish(
   const facts = await readProgressFacts(client, readySkus);
   const factsBySku = new Map(facts.map((f) => [f.supplier_product_id, f]));
   const availabilityFailure = describeAvailabilityFailure(readLatestTargetedAvailabilityReport());
+  // 运费为什么没拿到 —— 用脚本自己写下的错误码说话，不猜。
+  const feeError = await readDeliveryFeeErrors(client, readySkus);
 
   const results = readySkus.map((sku) => {
     const f = factsBySku.get(sku);
@@ -1456,7 +1508,11 @@ async function runBatchPublish(
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku, outcome: 'verified_visible', reason: null };
     if (verdict.state === 'awaiting_delivery_fee') {
-      return { sku, outcome: 'published_but_not_sellable', reason: 'App 可见，但还没有配送费用，Checkout 会显示需要报价' };
+      return {
+        sku,
+        outcome: 'published_but_not_sellable',
+        reason: `App 可见，但 Checkout 暂无法报价：${describeFeeFailure(feeError.get(sku) ?? null)}`,
+      };
     }
     if (verdict.state === 'awaiting_evidence') {
       return {
