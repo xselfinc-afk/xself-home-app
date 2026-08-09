@@ -28,6 +28,10 @@ import {
   isStale,
   isUsableMapping,
   resolvePortalMapping,
+  savedFactsFromSupplierProduct,
+  candidateFromBaseInfos,
+  type SavedListingFacts,
+  type CandidateListing,
   type PortalResolution,
   type StoredPortalMapping,
 } from '../src/services/supplierPortalMapping';
@@ -149,13 +153,31 @@ async function main(): Promise<void> {
     try {
       const candidates = await searchProductCandidates(sku, session);
       let portalSku: string | null = null;
+      let saved: SavedListingFacts | null = null;
+      let details: CandidateListing[] | null = null;
       // Only worth a detail call when the search was unambiguous.
       if (candidates.length === 1 && /^\d+$/.test(candidates[0])) {
         await pace();
         const base = await fetchBaseInfos(candidates[0], session);
         portalSku = base?.data?.product_info?.sku ?? null;
+      } else if (candidates.length > 1) {
+        // 同 SKU 的多条 listing 里，只有被收藏的那条算数。用收藏记录自身的资料反查。
+        const { data: savedRow } = await sb.from('supplier_products')
+          .select('title,images,raw_payload').eq('supplier_product_id', sku).maybeSingle();
+        saved = savedRow ? savedFactsFromSupplierProduct(savedRow as never) : null;
+        details = [];
+        for (const raw of candidates.slice(0, 6)) {
+          if (!/^\d+$/.test(raw)) continue;
+          if (!spend(1)) break;
+          await pace();
+          const parsed = candidateFromBaseInfos(raw, await fetchBaseInfos(raw, session));
+          if (parsed) details.push(parsed);
+        }
       }
-      const resolution = resolvePortalMapping({ supplier_product_id: sku, candidates, portal_sku: portalSku });
+      const resolution = resolvePortalMapping({
+        supplier_product_id: sku, candidates, portal_sku: portalSku,
+        saved, candidate_details: details,
+      });
       results.push(resolution);
       consecutiveFailures = resolution.status === 'resolved' ? 0 : consecutiveFailures + 1;
       console.log(`  ${String(index + 1).padStart(3)}. ${sku.padEnd(18)} ${resolution.status}${resolution.website_product_id ? ` → ${resolution.website_product_id}` : ''}`);

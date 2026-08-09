@@ -37,7 +37,7 @@ import {
   type CleanupProgressEvent,
   type CleanupCheckpoint,
 } from '../src/services/supplierFavoriteCleanupExecutor';
-import { resolvePortalMapping, PORTAL_MAPPING_CONFIDENCE, PORTAL_MAPPING_SOURCE, type StoredPortalMapping } from '../src/services/supplierPortalMapping';
+import { resolvePortalMapping, PORTAL_MAPPING_CONFIDENCE, PORTAL_MAPPING_SOURCE, savedFactsFromSupplierProduct, candidateFromBaseInfos, type StoredPortalMapping, type SavedListingFacts, type CandidateListing } from '../src/services/supplierPortalMapping';
 import { type ProductIdMapping } from '../src/services/supplierFavoriteProductId';
 import { endpointFor, type RemovalFetcher } from '../src/services/supplierFavoriteRemoval';
 import type { SyncAccount } from '../src/services/supplierFavoriteSync';
@@ -273,6 +273,34 @@ async function main(): Promise<void> {
   // already mapped never even touches the portal module.
   let portalDeps: { session: unknown; search: (sku: string, s: unknown) => Promise<string[]>; base: (id: string, s: unknown) => Promise<{ data?: { product_info?: { sku?: string } } } | null> } | null = null;
   const now = () => new Date().toISOString();
+  /**
+   * 收藏那条 listing 自身的资料。supplier_products 装的就是 Pickup Saved Items 的导入结果，
+   * 所以这一行天然只描述被收藏的 listing —— 它是身份的 Source of Truth。
+   */
+  const loadSavedFacts = async (sku: string): Promise<SavedListingFacts | null> => {
+    const { data, error } = await sb.from('supplier_products')
+      .select('title,images,raw_payload').eq('supplier_product_id', sku).maybeSingle();
+    if (error || !data) return null;
+    return savedFactsFromSupplierProduct(data as { title?: string | null; images?: unknown; raw_payload?: unknown });
+  };
+
+  /** 每个候选各取一次详情，用来和收藏记录比对。上限防止一个坏搜索把配额打光。 */
+  const MAX_DISAMBIGUATION_CANDIDATES = 6;
+  const loadCandidateDetails = async (
+    candidates: readonly string[],
+    deps: { session: unknown; base: (id: string, s: unknown) => Promise<{ data?: { product_info?: { sku?: string } } } | null> },
+  ): Promise<CandidateListing[]> => {
+    const out: CandidateListing[] = [];
+    for (const raw of candidates.slice(0, MAX_DISAMBIGUATION_CANDIDATES)) {
+      if (!/^\d+$/.test(raw)) continue;
+      await sleep(MIN_DELAY_MS + Math.floor((MAX_DELAY_MS - MIN_DELAY_MS) * 0.5));
+      const detail = await deps.base(raw, deps.session);
+      const parsed = candidateFromBaseInfos(raw, detail);
+      if (parsed) out.push(parsed);
+    }
+    return out;
+  };
+
   const portalResolve = async (sku: string): Promise<ProductIdMapping> => {
     // A full dry run never scrapes the portal (that would be ~2 calls × every unmapped extra SKU);
     // unmapped SKUs are reported as "needs resolution" instead. Single-item mode is the exception:
@@ -288,12 +316,22 @@ async function main(): Promise<void> {
     try {
       const candidates = await portalDeps.search(sku, portalDeps.session);
       let portalSku: string | null = null;
+      let saved: SavedListingFacts | null = null;
+      let details: CandidateListing[] | null = null;
       if (candidates.length === 1 && /^\d+$/.test(candidates[0])) {
         await sleep(MIN_DELAY_MS + Math.floor((MAX_DELAY_MS - MIN_DELAY_MS) * 0.5));
         const detail = await portalDeps.base(candidates[0], portalDeps.session);
         portalSku = detail?.data?.product_info?.sku ?? null;
+      } else if (candidates.length > 1) {
+        // 门户全局搜索会把同 SKU 的其它 listing 一起返回，但用户只收藏了其中一条。
+        // 拉齐每个候选的详情，交给 resolvePortalMapping 按收藏记录自身的资料反查。
+        saved = await loadSavedFacts(sku);
+        details = await loadCandidateDetails(candidates, portalDeps);
       }
-      const resolution = resolvePortalMapping({ supplier_product_id: sku, candidates, portal_sku: portalSku });
+      const resolution = resolvePortalMapping({
+        supplier_product_id: sku, candidates, portal_sku: portalSku,
+        saved, candidate_details: details,
+      });
       if (resolution.status === 'resolved' && resolution.website_product_id !== null) {
         // Persist the freshly proven mapping (the one production write this round permits — but this
         // round is Production Write=No, so writes are skipped unless executing).

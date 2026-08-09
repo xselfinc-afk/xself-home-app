@@ -81,6 +81,39 @@ SAFE_CLEAN_COLOR_VARIANT 12 → 12 不变，HOLD_PRICE 2 → 2 不变** —— �
 （需人工给 `--new-sku` / `--live-sku` / `--target-family-key`），也没有检测器发现「新收藏的 SKU
 与某个在售 SKU 同属一个变体组」。自动化是独立的后续工作。
 
+### 2.1c 用户收藏的那条 listing 永远是身份的 Source of Truth（2026-08-09 业务规则，已批准）
+
+同一个 Supplier SKU 在 GIGA 上可以有**多条 listing** —— 不同卖家目录、不同版本、不同渠道。
+**SKU 相同不代表 listing 相同。** 用户收藏了哪一条，哪一条就是这个 SKU 在本系统里的身份。
+
+未被收藏的同 SKU listing：不参与身份匹配、不参与商品资料选择、不参与 Family 判断、
+不参与上架候选、不参与 Dropship 映射、不得制造 `multiple_product_ids`、
+**不得阻止已收藏商品上架**。
+
+解析顺序（`resolvePortalMapping`）：
+
+1. 已确认的映射（`supplier_portal_product_mappings`）直接复用；
+2. 门户搜索只有一个候选 → 反查 `portal_sku` 一致即成立；
+3. 门户搜索多个候选 → **用收藏记录自身的资料反查**：主图内容哈希（决定性）、标题、
+   图片数、组装尺寸、入仓日期。唯一胜出且证据充分才认定；
+4. 收藏范围内部仍然并列或证据不足 → `multiple_candidates` → 人工身份确认。
+
+> 门户没有「只搜收藏夹」的接口。`scene` 1–4、`dimension_type` 2、`is_wish` 都试过，
+> 返回的是同一份全局结果；`account/wishlist/*` 只有增删，没有列表读取。所以收藏范围
+> 只能在客户端用收藏记录自身的资料还原 —— 这就是第 3 步存在的原因。
+
+> 翻车史：W1826P308991 在门户上有两条 listing —— 收藏的是 $670 / Qty 13 / `1096253`，
+> 未收藏的是 $630 / Qty 3 / `1022040`。全局搜索把两条都当成候选，解析器据此判定
+> 「身份不唯一」，商品被卡在人工确认。收藏记录里的主图哈希、标题、图片数（23 vs 17）、
+> 组装高度（35.70 vs 36.00）、入仓日期（2025-08-15 vs 2025-10-28）**五项全部指向 1096253**，
+> 本来就不该有歧义。
+
+库存链同样受此约束：`syncGigaInventoryXhr` 先查已确认的映射，只有没有确认过才退回门户
+全局搜索 —— 否则读到的可能是未被收藏那条 listing 的库存。
+
+**1096253 不支持 Dropship 这件事不因此改变**：它只对自提渠道开放，加 Dropship 收藏被
+供应商拒绝（`code 0`），因此没有自动运费。**不得为了拿运费改用未收藏的 1022040。**
+
 ### 2.2 范围只能收窄，不能放大
 
 - 预览按 `request.skus` 收窄候选；
@@ -139,6 +172,7 @@ XOne 只能**新增薄层**调用它们，不得反向依赖。
 | `npx tsx src/__tests__/commerceTaxonomyExpansion.test.ts` | Home Décor / Indoor Décor 类目，以及既有分类零回归（这一套没有 npm 脚本，直接跑文件） |
 | `test:onboarding-recovery` | 上架未完成的判定与续跑，运费缺失属于未完成 |
 | `test:golden-path-freeze` | Terminal 链的 CLI 契约与独立性 |
+| `npx tsx src/__tests__/supplierPortalMapping.test.ts` | 收藏是身份的 Source of Truth：多 listing 反查、证据不足仍交人工、库存链优先用已确认映射 |
 | `verify:xone-bridge-schema` | 桥接里每条 select 的列名对不对（单测抓不到，只有数据库说了算） |
 
 ---

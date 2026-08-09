@@ -85,6 +85,29 @@ async function loadTargetSkus(supabase: SupabaseClient): Promise<string[]> {
   return (data ?? []).map(r => String(r.supplier_product_id));
 }
 
+/**
+ * 已确认的 SKU → 网站 product_id 映射。
+ *
+ * 没有它时，identity 只能靠门户全局搜索的第一条命中；而同一个 Supplier SKU 在 GIGA 上可能有
+ * 多条 listing（用户只收藏了其中一条），搜索顺序不受我们控制 —— 读到的可能是**未被收藏的那条**
+ * 的库存。已确认的映射永远优先于全局搜索。
+ */
+async function loadConfirmedProductIds(supabase: SupabaseClient, skus: readonly string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (skus.length === 0) return out;
+  const { data, error } = await supabase
+    .from('supplier_portal_product_mappings')
+    .select('supplier_product_id,website_product_id')
+    .in('supplier_product_id', [...skus]);
+  if (error) throw new Error(`supplier_portal_product_mappings: ${error.message}`);
+  for (const r of data ?? []) {
+    const id = (r as { website_product_id?: unknown }).website_product_id;
+    if (id === null || id === undefined) continue;
+    out.set(String((r as { supplier_product_id: string }).supplier_product_id), String(id));
+  }
+  return out;
+}
+
 async function upsertRows(supabase: SupabaseClient, rows: NormalizedRow[]): Promise<{ written: number; error: string | null }> {
   if (rows.length === 0) return { written: 0, error: null };
   const { error } = await supabase
@@ -206,6 +229,7 @@ async function run() {
 
   const allSkus = await loadTargetSkus(supabase);
   const skus = allSkus.slice(0, isFinite(INVENTORY_LIMIT) ? INVENTORY_LIMIT : allSkus.length);
+  const confirmedIds = await loadConfirmedProductIds(supabase, skus);
 
   console.log('═══════════════════════════════════════════════════════════');
   console.log(' GIGA XHR INVENTORY SYNC');
@@ -232,7 +256,11 @@ async function run() {
     const prefix = `[${i + 1}/${skus.length}] ${sku}`;
 
     try {
-      const { productId, sku: resolvedSku } = await resolveProductId(sku);
+      // 已确认的收藏 listing 优先；没有确认过才退回门户全局搜索。
+      const confirmed = confirmedIds.get(sku);
+      const { productId, sku: resolvedSku } = confirmed
+        ? { productId: confirmed, sku }
+        : await resolveProductId(sku);
       const supplierId = resolvedSku ?? sku; // fallback to the supplier_product_id we started with
       const { rows, total, result } = await fetchWarehouseRows(productId, supplierId);
 

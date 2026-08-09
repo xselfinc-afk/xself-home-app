@@ -51,6 +51,92 @@ export interface PortalObservation {
   candidates: readonly (string | number)[];
   /** The SKU the single candidate's own detail page reports. Null when detail was unreadable. */
   portal_sku: string | null;
+  /** 被收藏那条 listing 自身的资料。有它才能在多候选里认出正确的一条。 */
+  saved?: SavedListingFacts | null;
+  /** 每个候选的详情。仅在候选多于一个时需要。 */
+  candidate_details?: readonly CandidateListing[] | null;
+}
+
+
+/**
+ * 被收藏的那条 listing 自身的资料。来源是 Pickup Saved Items 导入的 supplier_products 行 ——
+ * 它描述的就是用户实际收藏的 listing，是身份的 Source of Truth。
+ */
+export interface SavedListingFacts {
+  title: string | null;
+  /** 主图 URL。比对时只取文件名 —— GIGA 的图片文件名是内容哈希，同图必同名。 */
+  primary_image: string | null;
+  image_count: number | null;
+  /** 组装尺寸 L×W×H，各保留两位。 */
+  dimensions: string | null;
+  first_arrival_date: string | null;
+}
+
+/** 门户搜索返回的一个候选 listing 的详情。 */
+export interface CandidateListing {
+  product_id: number;
+  portal_sku: string | null;
+  title: string | null;
+  main_image: string | null;
+  image_count: number | null;
+  dimensions: string | null;
+  first_available_date: string | null;
+}
+
+/** 图片 URL → 文件名（去查询串）。GIGA 的文件名是内容哈希。 */
+export function imageFingerprint(url: string | null | undefined): string | null {
+  const raw = String(url ?? '').split('?')[0].split('/').pop() ?? '';
+  return raw.trim() ? raw.trim().toLowerCase() : null;
+}
+
+const normTitle = (t: string | null | undefined) => String(t ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * 一个候选与收藏记录的吻合度。主图指纹一致是决定性证据（内容哈希）；其余各计一分。
+ * 返回 -1 表示存在硬冲突（portal_sku 与目标 SKU 不同），该候选直接出局。
+ */
+export function scoreCandidate(saved: SavedListingFacts, c: CandidateListing, sku: string): number {
+  if (c.portal_sku && c.portal_sku.trim() !== sku.trim()) return -1;
+  let score = 0;
+  const savedImg = imageFingerprint(saved.primary_image);
+  const candImg = imageFingerprint(c.main_image);
+  if (savedImg && candImg && savedImg === candImg) score += 10;      // 决定性
+  if (saved.title && c.title && normTitle(saved.title) === normTitle(c.title)) score += 3;
+  if (saved.image_count != null && c.image_count != null && saved.image_count === c.image_count) score += 2;
+  if (saved.dimensions && c.dimensions && saved.dimensions === c.dimensions) score += 2;
+  if (saved.first_arrival_date && c.first_available_date && saved.first_arrival_date === c.first_available_date) score += 2;
+  return score;
+}
+
+/** 认定唯一匹配所需的最低证据量：要么主图指纹命中，要么至少三个字段一致。 */
+const MIN_DECISIVE_SCORE = 6;
+
+/**
+ * 在多个候选里认出「用户实际收藏的那一条」。
+ *
+ * 业务原则：用户收藏的 listing 永远是 Source of Truth。同一个 Supplier SKU 在 GIGA 上可能有
+ * 多条 listing（不同渠道、不同版本），**SKU 相同不代表 listing 相同**。未被收藏的那条不该
+ * 参与身份判定，更不该把商品判成「身份不唯一」而拦住上架。
+ *
+ * 门户没有「只搜收藏夹」的接口（scene / dimension_type 都试过，返回一样），所以这里用收藏记录
+ * 自己的资料去反查：主图内容哈希、标题、图片数、尺寸、入仓日期。唯一胜出且证据充分才认定；
+ * 并列或证据不足时仍然交给人工确认 —— 不猜。
+ */
+export function matchSavedListing(
+  saved: SavedListingFacts,
+  candidates: readonly CandidateListing[],
+  sku: string,
+): { product_id: number; score: number; runnerUp: number } | null {
+  const scored = candidates
+    .map((c) => ({ c, score: scoreCandidate(saved, c, sku) }))
+    .filter((x) => x.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length === 0) return null;
+  const best = scored[0];
+  const runnerUp = scored.length > 1 ? scored[1].score : -1;
+  if (best.score < MIN_DECISIVE_SCORE) return null;   // 证据不足
+  if (best.score === runnerUp) return null;           // 并列，无法区分
+  return { product_id: best.c.product_id, score: best.score, runnerUp };
 }
 
 function numericId(value: string | number): number | null {
@@ -59,6 +145,60 @@ function numericId(value: string | number): number | null {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : null;
 }
+
+const twoDp = (v: unknown): string | null => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(2) : null;
+};
+
+/** L×W×H（组装尺寸，各两位）。任一维缺失就返回 null —— 半份尺寸不能当证据。 */
+const dimsOf = (length: unknown, width: unknown, height: unknown): string | null => {
+  const l = twoDp(length), w = twoDp(width), h = twoDp(height);
+  return l && w && h ? `${l}x${w}x${h}` : null;
+};
+
+/**
+ * 从 supplier_products 行取出收藏 listing 的资料。
+ * 这张表装的就是 Pickup Saved Items 导入的那条 listing —— 它是身份的 Source of Truth。
+ */
+export function savedFactsFromSupplierProduct(row: {
+  title?: string | null;
+  images?: unknown;
+  raw_payload?: unknown;
+}): SavedListingFacts {
+  const images = Array.isArray(row.images) ? (row.images as unknown[]).map(String) : [];
+  const p = (row.raw_payload ?? {}) as Record<string, unknown>;
+  return {
+    title: row.title ?? (typeof p.productName === 'string' ? p.productName : null),
+    primary_image: (typeof p.mainImageUrl === 'string' && p.mainImageUrl) || images[0] || null,
+    image_count: images.length > 0 ? images.length : null,
+    dimensions: dimsOf(p.assembledLength, p.assembledWidth, p.assembledHeight),
+    first_arrival_date: typeof p.firstArrivalDate === 'string' && p.firstArrivalDate.trim() ? p.firstArrivalDate.trim() : null,
+  };
+}
+
+/** 从门户 baseInfos 响应取出一个候选 listing 的资料。字段缺失一律给 null，不臆造。 */
+export function candidateFromBaseInfos(productId: string | number, baseInfos: unknown): CandidateListing | null {
+  const id = numericId(productId);
+  if (id === null) return null;
+  const info = ((baseInfos as { data?: { product_info?: Record<string, unknown> } } | null)?.data?.product_info ?? {}) as Record<string, unknown>;
+  const mainImage = info.main_image as { popup?: string; thumb?: string } | undefined;
+  const imageList = Array.isArray(info.image_list) ? info.image_list : null;
+  const assemble = ((info.specification as { product_dimensions?: { assemble_info?: Record<string, unknown> } } | undefined)
+    ?.product_dimensions?.assemble_info ?? {}) as Record<string, unknown>;
+  const firstAvailable = typeof info.first_available_date === 'string' ? info.first_available_date.trim() : '';
+  return {
+    product_id: id,
+    portal_sku: typeof info.sku === 'string' && info.sku.trim() ? info.sku.trim() : null,
+    title: typeof info.product_name === 'string' && info.product_name.trim() ? info.product_name.trim() : null,
+    main_image: mainImage?.popup ?? mainImage?.thumb ?? null,
+    image_count: imageList ? imageList.length : null,
+    dimensions: dimsOf(assemble.length_show, assemble.width_show, assemble.height_show),
+    // 门户对本账号不可见时会返回 "**"，那不是日期，不能当证据。
+    first_available_date: firstAvailable && !firstAvailable.includes('*') ? firstAvailable : null,
+  };
+}
+
 
 /**
  * Turn one observation into a mapping or an exception.
@@ -83,10 +223,29 @@ export function resolvePortalMapping(observation: PortalObservation): PortalReso
     return { ...base, status: 'no_candidate', detail: '门户搜索无结果' };
   }
   if (candidates.length > 1) {
+    // 门户全局搜索会把同 SKU 的其它 listing 一并返回，但用户只收藏了其中一条。
+    // 先用收藏记录自身的资料把它认出来；认不出来才算真的身份不唯一。
+    const saved = observation.saved ?? null;
+    const details = observation.candidate_details ?? null;
+    if (saved && details && details.length > 0) {
+      const hit = matchSavedListing(saved, details, sku);
+      if (hit) {
+        const chosen = details.find((d) => d.product_id === hit.product_id)!;
+        return {
+          supplier_product_id: sku,
+          website_product_id: hit.product_id,
+          portal_sku: chosen.portal_sku ?? sku,
+          source: PORTAL_MAPPING_SOURCE,
+          confidence: PORTAL_MAPPING_CONFIDENCE,
+          status: 'resolved',
+          detail: `${candidates.length} 个同 SKU 候选，按收藏记录资料认定 ${hit.product_id}（吻合度 ${hit.score}，次优 ${hit.runnerUp}）`,
+        };
+      }
+    }
     return {
       ...base,
       status: 'multiple_candidates',
-      detail: `门户搜索返回 ${candidates.length} 个候选，拒绝自动选取`,
+      detail: `门户搜索返回 ${candidates.length} 个候选，收藏记录无法区分，拒绝自动选取`,
     };
   }
 
