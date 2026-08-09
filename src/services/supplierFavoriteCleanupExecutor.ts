@@ -23,7 +23,7 @@ import {
   type FavoriteSyncItem,
   type SyncAccount,
 } from './supplierFavoriteSync';
-import { executeSyncOperation, type RemovalFetcher } from './supplierFavoriteRemoval';
+import { executeSyncOperation, type RemovalFetcher, type WishlistOperation } from './supplierFavoriteRemoval';
 import { isStale, isUsableMapping, toUsableMapping, type StoredPortalMapping } from './supplierPortalMapping';
 import { type ProductIdMapping } from './supplierFavoriteProductId';
 
@@ -33,7 +33,8 @@ export type CleanupItemStatus =
   | 'exception'        // no usable mapping — never sent
   | 'send_failed'      // XHR did not return success
   | 'verified_removed' // gone from official Favorites
-  | 'verification_failed' // code 200 but still favourited
+  | 'verified_added'   // present in official Favorites（add 方向的成功语义）
+  | 'verification_failed' // code 200 but the item did not end up in the intended state
   | 'timeout'          // this item exceeded its watchdog — recorded, run continues
   | 'global_stop';     // run halted before this item was processed
 
@@ -94,6 +95,56 @@ export interface CleanupPlan {
   exceptions: Record<SyncAccount, Array<{ supplier_product_id: string; reason: string }>>;
   /** Union of extra SKUs across both accounts — the ONLY SKUs mapping resolution may touch. */
   extra_skus: string[];
+  /**
+   * Per account: 要**新增**的收藏。只有 options.operation === 'add' 时才会被执行。
+   *
+   * 它刻意不是「TARGET − 收藏」的差集：那个差集当前是 322 件历史欠账，一次开闸就是 322 次
+   * 对外写入。这里只接受调用方显式给出的名单（例如「本次批量上架的这几件」）。
+   */
+  additions?: Record<SyncAccount, FavoriteSyncItem[]>;
+}
+
+/**
+ * 为一份**显式 SKU 名单**构造新增收藏计划。纯函数，不做集合运算、不查 TARGET。
+ *
+ * 这是范围控制的关键：调用方必须自己说清楚要加哪几件，执行器不会替它推断。
+ * 身份仍然照删除那一套要求 —— 唯一且反查一致，否则进 exceptions，永不发送。
+ */
+export function planFavoriteAdditions(
+  account: SyncAccount,
+  skus: readonly string[],
+  mappingFor: (sku: string) => ProductIdMapping,
+): ResolvedCleanupPlan {
+  const additions: FavoriteSyncItem[] = [];
+  const exceptions: Array<{ supplier_product_id: string; reason: string }> = [];
+  for (const sku of [...new Set(skus.map(String))].sort()) {
+    const mapping = mappingFor(sku);
+    if (mapping.status === 'unique' && mapping.product_id !== null && mapping.verified_sku === sku) {
+      additions.push({ supplier_product_id: sku, operation: 'add', product_id: mapping.product_id, verified_sku: mapping.verified_sku });
+    } else {
+      exceptions.push({ supplier_product_id: sku, reason: mapping.status === 'unique' ? 'identity_mismatch' : `mapping_${mapping.status}` });
+    }
+  }
+  const empty = { pickup: [] as FavoriteSyncItem[], dropship: [] as FavoriteSyncItem[] };
+  const emptyEx = { pickup: [] as Array<{ supplier_product_id: string; reason: string }>, dropship: [] as Array<{ supplier_product_id: string; reason: string }> };
+  // 新增方向没有「人工保留/人工取消」这套裁决 —— 那是取消收藏才有的概念，这里一律为 0。
+  const noCounts = {
+    current_favorites: 0, extra: 0, automatic_remove: 0, manual_keep: 0, manual_remove: 0,
+    manual_remove_blocked: 0, manual_no_action: 0, unresolved_exception: 0, executable_remove: 0,
+  };
+  return {
+    target_count: additions.length,
+    removals: { ...empty },
+    exceptions: { ...emptyEx, [account]: exceptions },
+    extra_skus: [],
+    additions: { ...empty, [account]: additions },
+    manual: { auto_removals: 0, manual_keep: 0, manual_remove: 0, manual_remove_blocked: 0, manual_no_action: 0, unresolved_exceptions: exceptions.length },
+    accounts: {
+      pickup: { ...noCounts },
+      dropship: { ...noCounts },
+      [account]: { ...noCounts, unresolved_exception: exceptions.length },
+    },
+  };
 }
 
 /**
@@ -156,14 +207,14 @@ export function extraSkuSet(
 
 /** Structured twin of a progress line, so callers can render state without parsing text. */
 export interface CleanupProgressEvent {
-  phase: 'resolve' | 'remove' | 'verify';
+  phase: 'resolve' | 'remove' | 'add' | 'verify';
   index: number;
   total: number;
   account?: SyncAccount;
   supplier_product_id?: string;
   outcome:
     | 'started' | 'resolved' | 'exception' | 'timeout' | 'skipped_checkpoint'
-    | 'send_failed' | 'verified_removed' | 'verification_failed' | 'global_stop';
+    | 'send_failed' | 'verified_removed' | 'verified_added' | 'verification_failed' | 'global_stop';
 }
 
 export interface ResolvedMappings {
@@ -474,6 +525,14 @@ export interface ExecuteOptions {
   perItemTimeoutMs: number;
   /** Watchdog for one batch's official Favorites re-read. Default 90s. */
   verifyTimeoutMs: number;
+  /**
+   * 这一轮执行哪个方向。默认 'remove'，删除链的行为一字未变。
+   *
+   * 'add' 时执行的是 plan.additions（显式名单），不是 plan.removals（TARGET 差集）——
+   * 两者永远不会在同一次运行里混着跑。成功语义也随之翻转：删除是「读回来没有了」，
+   * 新增是「读回来有了」。
+   */
+  operation?: WishlistOperation;
 }
 
 export interface CleanupRunResult {
@@ -533,7 +592,10 @@ export async function executeCleanup(
   const accounts: SyncAccount[] = ['pickup', 'dropship'];
   for (const account of accounts) {
     if (globalStop) break;
-    const removals = plan.removals[account] ?? [];
+    // add 走显式名单，remove 走 TARGET 差集。两者永不混跑。
+    const direction: WishlistOperation = options.operation ?? 'remove';
+    const removals = (direction === 'add' ? plan.additions?.[account] : plan.removals[account]) ?? [];
+    const doneStatus: CleanupItemStatus = direction === 'add' ? 'verified_added' : 'verified_removed';
     // Exceptions were never executable — surface them and move on.
     for (const ex of plan.exceptions[account] ?? []) {
       record({ account, supplier_product_id: ex.supplier_product_id, product_id: null, status: 'exception', attempts: 0, last_error: ex.reason, verified_at: null });
@@ -547,13 +609,13 @@ export async function executeCleanup(
       for (const [indexInBatch, item] of batch.entries()) {
         const position = `[${start + indexInBatch + 1}/${removals.length}]`;
         const ev = (outcome: CleanupProgressEvent['outcome']): CleanupProgressEvent => ({
-          phase: 'remove', index: start + indexInBatch + 1, total: removals.length,
+          phase: direction === 'add' ? 'add' : 'remove', index: start + indexInBatch + 1, total: removals.length,
           account, supplier_product_id: item.supplier_product_id, outcome,
         });
         const key = checkpointKey(account, item.supplier_product_id);
         const prior = checkpoint.items[key];
-        if (prior?.status === 'verified_removed') {
-          // Already proven gone on a previous run. Never re-send.
+        if (prior?.status === doneStatus) {
+          // 上一轮已经验证到位（删除=已消失／新增=已存在）。永不重发。
           deps.onProgress?.(`${position} ${account} ${item.supplier_product_id} skipped_checkpoint`, ev('skipped_checkpoint'));
           record({ account, supplier_product_id: item.supplier_product_id, product_id: item.product_id, status: 'skipped_checkpoint', attempts: prior.attempts, last_error: null, verified_at: prior.verified_at });
           deps.saveCheckpoint(checkpoint);
@@ -587,7 +649,7 @@ export async function executeCleanup(
             executeSyncOperation(
               {
                 supplier_product_id: item.supplier_product_id,
-                operation: 'remove',
+                operation: direction,
                 product_id: mapping.product_id,
                 verified_sku_for_product_id: mapping.verified_sku,
                 session_present: deps.sessionPresent(account),
@@ -660,11 +722,11 @@ export async function executeCleanup(
         if (stillSaved) {
           for (const [verifyIndex, sent] of sentThisBatch.entries()) {
             const idx = items.findIndex((r) => r.account === account && r.supplier_product_id === sent.sku && r.status === 'verification_failed');
-            const gone = !stillSaved.has(sent.sku);
+            const reached = direction === 'add' ? stillSaved.has(sent.sku) : !stillSaved.has(sent.sku);
             const rec = idx >= 0 ? items[idx] : null;
             if (rec) {
-              rec.status = gone ? 'verified_removed' : 'verification_failed';
-              rec.last_error = gone ? null : 'still_favorited_after_removal';
+              rec.status = reached ? doneStatus : 'verification_failed';
+              rec.last_error = reached ? null : (direction === 'add' ? 'not_favorited_after_add' : 'still_favorited_after_removal');
               rec.verified_at = deps.now();
               deps.onProgress?.(`${account} ${sent.sku} ${rec.status}`, {
             phase: 'verify', index: verifyIndex + 1, total: sentThisBatch.length,

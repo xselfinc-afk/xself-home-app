@@ -19,6 +19,7 @@ import {
   checkpointKey,
   executeCleanup,
   planFavoriteCleanup,
+  planFavoriteAdditions,
   resolveExtraMappings,
   resumableVerdict,
   countResumable,
@@ -504,6 +505,97 @@ async function main(): Promise<void> {
     const src = fs.readFileSync('src/services/supplierFavoriteRemoval.ts', 'utf8');
     assert.equal(src.includes('?? response.status'), false, '不得再把 HTTP 状态当业务码回退');
     assert.ok(src.includes('data.totalNum'), '成功判定必须要求 data.totalNum');
+  });
+
+  // ── 新增收藏方向（add）───────────────────────────────────────────────────────
+  //
+  // 起因：GIGA 的 product/price/v1 只返回「该账号 Saved Items 里的商品」的运费。新品只收藏在
+  // Pickup，Dropship 查不到，于是 Checkout 永远报不出价。执行器因此从只支持 remove 参数化为
+  // add/remove —— 同一套单件、反查、验证、断点，只是方向不同。
+
+  const addPlan = (skus: string[] = [SKU]) => {
+    const mappings = new Map<string, ProductIdMapping>(
+      skus.map((s) => [s, { product_id: PRODUCT_ID, verified_sku: s, status: 'unique' as const }]),
+    );
+    const plan = planFavoriteAdditions('dropship', skus, (s) => mappings.get(s)
+      ?? { product_id: null, verified_sku: null, status: 'not_mapped' as const });
+    return { plan, mappings };
+  };
+  const addOpts = { ...opts, operation: 'add' as const };
+
+  await itAsync('add. 只执行调用方给的名单，不碰 TARGET 差集', async () => {
+    const { plan } = addPlan(['A1', 'A2']);
+    assert.deepEqual(plan.additions!.dropship.map((i) => i.supplier_product_id), ['A1', 'A2']);
+    assert.equal(plan.removals.dropship.length, 0, 'add 计划里不得出现任何删除');
+    assert.equal(plan.removals.pickup.length, 0);
+    assert.equal(plan.extra_skus.length, 0, 'add 不参与 extra 集合运算');
+  });
+
+  await itAsync('add. 身份不唯一的一律进异常，永不发送', async () => {
+    const plan = planFavoriteAdditions('dropship', ['BAD'], () => ({ product_id: null, verified_sku: null, status: 'not_mapped' }));
+    assert.equal(plan.additions!.dropship.length, 0);
+    assert.equal(plan.exceptions.dropship[0].reason, 'mapping_not_mapped');
+    // 反查 SKU 对不上也一样。
+    const mismatch = planFavoriteAdditions('dropship', ['X1'], () => ({ product_id: 9, verified_sku: 'OTHER', status: 'unique' }));
+    assert.equal(mismatch.additions!.dropship.length, 0);
+    assert.equal(mismatch.exceptions.dropship[0].reason, 'identity_mismatch');
+  });
+
+  await itAsync('add. 打到的是 addProductsToWish，不是删除端点', async () => {
+    const sink = { headers: [] as Record<string, string>[], urls: [] as string[] };
+    const { plan, mappings } = addPlan();
+    await executeCleanup(plan, mappings, deps({
+      fetcherFor: () => fetcherReturning({ code: 200 }, 200, sink),
+      readFavorites: async () => new Set([SKU]),
+    }), addOpts);
+    assert.equal(sink.urls.length, 1, '单件发送');
+    assert.match(sink.urls[0], /addProductsToWish/);
+    assert.equal(/delProductsFromWish/.test(sink.urls[0]), false, '新增方向绝不得打到删除端点');
+  });
+
+  await itAsync('add. 成功语义是「读回来有了」→ verified_added', async () => {
+    const { plan, mappings } = addPlan();
+    const result = await executeCleanup(plan, mappings, deps({
+      readFavorites: async () => new Set([SKU]),   // 加完之后确实在收藏里
+    }), addOpts);
+    const rec = result.items.find((r) => r.supplier_product_id === SKU)!;
+    assert.equal(rec.status, 'verified_added');
+    assert.equal(rec.last_error, null);
+  });
+
+  await itAsync('add. 回读里没有它 → verification_failed，不谎报成功', async () => {
+    const { plan, mappings } = addPlan();
+    const result = await executeCleanup(plan, mappings, deps({
+      readFavorites: async () => new Set<string>(),   // 200 了但其实没加上
+    }), addOpts);
+    const rec = result.items.find((r) => r.supplier_product_id === SKU)!;
+    assert.equal(rec.status, 'verification_failed');
+    assert.equal(rec.last_error, 'not_favorited_after_add');
+  });
+
+  await itAsync('add. 关闸时只出计划，一个请求都不发', async () => {
+    const sink = { headers: [] as Record<string, string>[], urls: [] as string[] };
+    const { plan, mappings } = addPlan();
+    const result = await executeCleanup(plan, mappings, deps({
+      env: {},                                        // 开关未开
+      fetcherFor: () => fetcherReturning({ code: 200 }, 200, sink),
+    }), addOpts);
+    assert.equal(sink.urls.length, 0);
+    assert.equal(result.xhr_sends, 0);
+    assert.equal(result.items.find((r) => r.supplier_product_id === SKU)!.status, 'planned');
+  });
+
+  await itAsync('add. 已验证加入的不再重发（断点幂等）', async () => {
+    const sink = { headers: [] as Record<string, string>[], urls: [] as string[] };
+    const { plan, mappings } = addPlan();
+    const checkpoint = { run_id: 'run-add', items: {
+      [checkpointKey('dropship', SKU)]: { account: 'dropship' as SyncAccount, supplier_product_id: SKU, product_id: PRODUCT_ID, status: 'verified_added' as const, attempts: 1, last_error: null, verified_at: '2026-08-08T00:00:00.000Z' },
+    } };
+    const result = await executeCleanup(plan, mappings, deps({
+      fetcherFor: () => fetcherReturning({ code: 200 }, 200, sink),
+    }), addOpts, checkpoint);
+    assert.equal(sink.urls.length, 0, '已验证的绝不重发');
+    assert.equal(result.items.find((r) => r.supplier_product_id === SKU)!.status, 'skipped_checkpoint');
   });
 
   console.log(`\n${passed} passed`);
