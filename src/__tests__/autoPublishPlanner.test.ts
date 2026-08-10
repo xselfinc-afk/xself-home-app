@@ -147,4 +147,45 @@ it('家族的 cost 字段只进报告，执行器不读它，定价仍然逐 SKU
   assert.equal(/cost/.test(line), false, '执行器不得读家族层面的 cost');
 });
 
+
+// ── 执行器：dry-run 必须与 apply 同语义；scope 必须锁死 ──────────────────────
+
+it('dry-run 不再有家族成本门禁 —— 它曾是 apply 从来没有的一条陈旧规则', () => {
+  const runner = readFileSync('scripts/runGigaAutoPublish.ts', 'utf8');
+  // 只查真正会产出的字符串字面量：注释里保留这段历史是刻意的，不能被断言误伤。
+  assert.equal(/'within_family_cost_mismatch'/.test(runner), false, '不得再产出这个扣留码');
+  assert.equal(/costWithinTol/.test(runner), false, '不得再保留这条门禁的实现');
+  assert.equal(/COST_TOL_ABS|COST_TOL_PCT/.test(runner), false, '不得再保留它的容差常量');
+});
+
+it('执行器的其余门禁一条没动', () => {
+  const runner = readFileSync('scripts/runGigaAutoPublish.ts', 'utf8');
+  // dry-run 的逐 SKU 门禁。
+  for (const gate of ['missing_supplier_row', 'normalize_error', 'normalize_incomplete', 'title_not_ready', 'below_cost', 'no_image_source']) {
+    assert.ok(runner.includes(gate), `${gate} 必须仍在`);
+  }
+  // apply 的硬门禁：非 SAFE 桶拒绝、逐阶段数量校验、below_cost 中止。
+  assert.ok(/non_safe_skus/.test(runner), 'apply 必须仍拒绝非 SAFE 桶');
+  assert.ok(/fail\('pricing', `below_cost/.test(runner), 'apply 必须仍在 below_cost 时中止');
+  assert.ok(/results\.published !== planned\.length/.test(runner), '逐阶段数量校验必须仍在');
+});
+
+it('scope 锁：调用方说了 N 件，计划就必须恰好是这 N 件，否则停机', () => {
+  const runner = readFileSync('scripts/runGigaAutoPublish.ts', 'utf8');
+  assert.ok(/--only=/.test(runner), 'runner 必须支持 --only');
+  assert.ok(/SCOPE_MISMATCH/.test(runner), '不匹配时必须明确报错');
+  // 必须是「断言后停机」，不是「过滤后继续」—— 过滤会把陈旧计划悄悄用下去。
+  const lock = runner.slice(runner.indexOf('if (EXPECT_SKUS)'), runner.indexOf('const famInBatch'));
+  assert.ok(/process\.exit\(1\)/.test(lock), 'scope 不符必须退出，不能降级继续');
+  assert.equal(/planned = planned\.filter/.test(lock), false, '不得把计划过滤成子集');
+  // 校验发生在 loadPlan 里，因此 dry-run 与 apply 共用，且早于任何写入。
+  assert.ok(runner.indexOf('if (EXPECT_SKUS)') < runner.indexOf('async function runDryRun'), '必须在两条路径之前');
+});
+
+it('XOne 两条执行路径都把自己的名单交给执行器校验', () => {
+  const bridge = readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+  assert.ok(/`--only=\$\{readySkus\.join\(','\)\}`/.test(bridge), '批量上架必须带 --only');
+  assert.ok(/`--only=\$\{resumeScope\.join\(','\)\}`/.test(bridge), '续跑必须带 --only');
+});
+
 console.log(`\n${passed} passed`);

@@ -38,6 +38,15 @@ const WANT_APPLY = argv.includes('--apply');
 const planArg = argv.find(a => a.startsWith('--plan='))?.split('=')[1]
   ?? (argv.includes('--plan') ? argv[argv.indexOf('--plan') + 1] : undefined);
 const PLAN_FILE = planArg ?? path.join('reports', 'giga-auto-publish', 'latest-plan.json');
+// Scope lock. When the caller states which SKUs it is publishing (`--only=A,B,C`), the plan file
+// must contain EXACTLY that set — otherwise we abort before touching anything.
+//
+// Why an assertion and not a filter: the plan file is a report artifact that ANY planner run
+// rewrites. On 2026-08-10 a scoped 5-SKU plan was silently replaced by a full-catalogue plan
+// between two commands, and the dry-run then reported 10 SKUs. Filtering down would have hidden
+// that; aborting makes the stale plan impossible to act on. Regenerate the plan and re-run.
+const onlyArg = argv.find(a => a.startsWith('--only='))?.split('=')[1];
+const EXPECT_SKUS = onlyArg ? onlyArg.split(',').map(s => s.trim()).filter(Boolean) : null;
 
 const REPORT_DIR = path.join(process.cwd(), 'reports', 'giga-auto-publish');
 const DRY_JSON = path.join(REPORT_DIR, 'latest-dry-run.json');
@@ -55,15 +64,18 @@ if (WANT_DRY === WANT_APPLY) {
 const PAYMENT_FEE_RATE = 0.029;
 const markup = (c: number) => c <= 50 ? 2.20 : c <= 150 ? 1.80 : c <= 400 ? 1.55 : c <= 800 ? 1.40 : 1.28;
 const buffer = (c: number) => c <= 100 ? 20 : c <= 300 ? 30 : c <= 800 ? 50 : 80;
-// Within-family cost tolerance — MUST mirror planGigaAutoPublish.ts (COST_TOL_ABS / COST_TOL_PCT).
-// Clean color families whose per-color cost differs only by rounding noise (≤ $1 OR ≤ 2%) pass;
-// larger spreads still hold as within_family_cost_mismatch.
-const COST_TOL_ABS = 1;     // dollars
-const COST_TOL_PCT = 0.02;  // 2%
-const costWithinTol = (costs: number[]) => {
-  const minC = Math.min(...costs), maxC = Math.max(...costs);
-  return (maxC - minC) <= COST_TOL_ABS || (minC > 0 && (maxC - minC) / minC <= COST_TOL_PCT);
-};
+// BUSINESS RULE (approved 2026-08-09): members of one family MAY carry different supplier cost /
+// selling price / inventory / delivery fee. The old `within_family_cost_mismatch` gate lived ONLY
+// here in the dry-run simulation — the apply path never had it — so after the planner dropped the
+// rule the simulator kept predicting a hold that apply would not perform. A simulator that
+// contradicts the executor is worse than no simulator, so the gate is gone.
+//
+// What still protects pricing is per-SKU and unchanged: Stage 4 prices every SKU from its OWN cost
+// via the deployed dynamic-pricing function, `pred < cost` holds the unit here, and apply aborts on
+// `below_cost`. A SKU whose own cost is missing or <= 0 never reaches a family (planner REJECTs it).
+//
+// Verified against the real 2026-08-10 apply of cb-vg-n710p318989b-2drawer-w24: costs 178.2 / 198 /
+// 198 / 198 → prices 349 / 379 / 379 / 379, all four live, hold_skus=0.
 function psychRound(p: number): number {
   if (p < 100) return Math.floor(p) + 0.99;
   if (p < 300) { const d = Math.floor(p / 10) * 10 + 9; return d >= p ? d : d + 10; }
@@ -120,6 +132,20 @@ function loadPlan(): { plan: any; planned: string[]; planFamilies: { key: string
   const planned: string[] = plan?.proposed_batch?.skus ?? [];
   const planFamilies: { key: string; skus: string[] }[] = plan?.proposed_batch?.families ?? plan?.safe_variant_families ?? [];
   if (planned.length === 0) { console.error('[run] plan has no proposed_batch.skus'); process.exit(1); }
+  if (EXPECT_SKUS) {
+    const want = [...new Set(EXPECT_SKUS)].sort();
+    const got = [...new Set(planned)].sort();
+    if (want.join(',') !== got.join(',')) {
+      const extra = got.filter(s => !want.includes(s));
+      const missing = want.filter(s => !got.includes(s));
+      console.error('[run] SCOPE_MISMATCH: plan does not match --only');
+      console.error(`[run]   expected=${want.length} got=${got.length}`);
+      if (extra.length) console.error(`[run]   unexpected in plan: ${extra.join(',')}`);
+      if (missing.length) console.error(`[run]   missing from plan: ${missing.join(',')}`);
+      console.error(`[run]   plan_file=${PLAN_FILE} — regenerate it for exactly these SKUs and retry`);
+      process.exit(1);
+    }
+  }
   const famInBatch = planFamilies.filter(f => f.skus.every(s => planned.includes(s)));
   const famSkus = new Set(famInBatch.flatMap(f => f.skus));
   const units: Unit[] = [
@@ -161,7 +187,6 @@ async function runDryRun() {
       if (pred < cost) { hold(u, 'pricing', 'below_cost'); break; }
       if (!imgReady) { hold(u, 'mirror', 'no_image_source'); break; }
     }
-    if (!u.held && u.kind === 'family' && costs.length > 1 && !costWithinTol(costs)) hold(u, 'pricing', 'within_family_cost_mismatch');
   }
   console.log = silence;
 

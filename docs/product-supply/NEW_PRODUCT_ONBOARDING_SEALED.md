@@ -1,6 +1,6 @@
 # 新品首次上架主链 —— 封版
 
-**状态：已封版（2026-08-09）。这条链已经真实跑通，不要重新设计它。**
+**状态：已正式封版（2026-08-10）。这条链已经两次真实跑通，不要重新设计它。**
 
 想改这条链之前，先读完本文。它记录的不是设想，是一次真实成功执行的形状，以及三次翻车换来的约束。
 
@@ -19,6 +19,20 @@
 结果 `verified_visible: 3, published_but_not_sellable: 0, pipeline_failed: 0`。
 运费来源 `giga_openapi_price_v1`、账号 `dropship_82482447`，供应商履约费 $14.87 + 8% buffer。
 每件 5 条冷启动评价。执行前这三件在 Dropship 一条记录都没有。
+
+2026-08-10 00:44–00:51，第二批 5 件（一个 4 色家族 + 一个新类目单品）同样一次点击走完全链：
+
+| SKU | 颜色 | 供应商成本 | 售价 | 库存 | Dropship 收藏 | Delivery Fee |
+|---|---|---|---|---|---|---|
+| N710P318989B | Black | **$178.20** | **$349** | 100 | verified_added (1133144) | $55.00 |
+| N710P318989C | Blue | $198.00 | $379 | 30 | verified_added (1416315) | $55.00 |
+| N710P318989F | Green | $198.00 | $379 | 19 | verified_added (1133130) | $55.00 |
+| N710P318989K | White | $198.00 | $379 | 63 | verified_added (1133113) | $55.00 |
+| W3859P528052 | Black White | $179.10 | $349 | 400 | verified_added (1519196) | $41.00 |
+
+八阶段 5/5、`hold_skus=0`、sellable 346 → 351、Checkout 5/5 `fulfillmentStatus=ok`。
+这一批证明了两条新规则：**同族可以逐 SKU 定价**（B 比其余三色便宜 $20，因此单独定 $349），
+以及**新类目可以按需开**（泳池罩走 Outdoor & Garden → Pools → Pool Covers & Enclosures）。
 
 **链路形状：**
 
@@ -114,6 +128,37 @@ SAFE_CLEAN_COLOR_VARIANT 12 → 12 不变，HOLD_PRICE 2 → 2 不变** —— �
 **1096253 不支持 Dropship 这件事不因此改变**：它只对自提渠道开放，加 Dropship 收藏被
 供应商拒绝（`code 0`），因此没有自动运费。**不得为了拿运费改用未收藏的 1022040。**
 
+### 2.1d 同一 Family 的成员可以各自不同（2026-08-09 业务规则，2026-08-10 真实验证）
+
+同族不同 SKU 允许各自不同的 **supplier cost / selling price / inventory / Delivery Fee**。
+成本相等从来不是安全属性，只是对「from $X」单卡展示的担心。
+
+仍然保留的门禁一条没动：**每个 SKU 自身成本缺失或 <= 0**（`baseBucketOf` → REJECT `no_price`，
+发生在分组之前，所以家族不可能由没有有效成本的 SKU 组成）、**duplicate_color**、
+**config / dimension mismatch**、**identity conflict**、**pricing failure**（Stage 4 逐 SKU 定价，
+`below_cost` 直接中止 apply）。
+
+> 翻车史：这条规则原本写在两个地方 —— planner 的 `per_color_cost_mismatch`，和
+> `runGigaAutoPublish` **dry-run 独有**的 `within_family_cost_mismatch`。apply 路径从来没有它。
+> 2026-08-09 只改了 planner，于是 dry-run 继续预测「held」而 apply 会照常放行 ——
+> 一个与执行器矛盾的模拟器比没有模拟器更糟。2026-08-10 删掉了这条陈旧镜像。
+> 家族的 `cost` 字段只进报告：执行器只读 `{ key, skus }`。
+
+### 2.1e 计划文件会被重写，所以名单必须显式声明
+
+`reports/giga-auto-publish/latest-plan.json` 是报告产物，**任何一次 planner 运行都会重写它**。
+因此调用方必须用 `--only=A,B,C` 声明自己要处理的名单，执行器在 `loadPlan()` 里断言
+`plan.proposed_batch.skus` 与它**完全相等**，不等就 `SCOPE_MISMATCH` 退出 1 —— 早于任何写入，
+dry-run 与 apply 共用。
+
+**是断言，不是过滤。** 过滤会把一份陈旧计划悄悄用下去；停机则强制重新生成。
+
+XOne 两条执行路径都已接上：批量上架传 `readySkus`（来自快照的 `proposed_batch`），
+续跑传刚写出的续跑计划的 `proposed_batch`。名单与计划文件在同一口气里产生，中途被改写必被拦下。
+
+> 翻车史：2026-08-10 一次 5 件的 scoped 计划在两条命令之间被一次全量 planner 覆盖，
+> dry-run 于是报 `requested_skus=10`。当时靠人工发现并改用独立路径的副本才没有扩大写入。
+
 ### 2.2 范围只能收窄，不能放大
 
 - 预览按 `request.skus` 收窄候选；
@@ -171,7 +216,9 @@ XOne 只能**新增薄层**调用它们，不得反向依赖。
 | `test:supplier-wishlist-protocol` | 收藏新增方向：显式名单、身份门、addProductsToWish、`verified_added`、断点幂等、关闸只出计划 |
 | `npx tsx src/__tests__/commerceTaxonomyExpansion.test.ts` | Home Décor / Indoor Décor 类目，以及既有分类零回归（这一套没有 npm 脚本，直接跑文件） |
 | `test:onboarding-recovery` | 上架未完成的判定与续跑，运费缺失属于未完成 |
-| `test:golden-path-freeze` | Terminal 链的 CLI 契约与独立性 |
+| `test:golden-path-freeze` | Terminal 链的 CLI 契约与独立性；批量上架的 `--only` 只能是 `readySkus` |
+| `npx tsx src/__tests__/autoPublishPlanner.test.ts` | 同族成本可不同、其余家族门禁未松、执行器 scope 锁、dry-run 与 apply 同语义 |
+| `npx tsx src/__tests__/commerceTaxonomyExpansion.test.ts` | Pools / Pool Covers & Enclosures，且不误伤台球桌与家具 |
 | `npx tsx src/__tests__/supplierPortalMapping.test.ts` | 收藏是身份的 Source of Truth：多 listing 反查、证据不足仍交人工、库存链优先用已确认映射 |
 | `verify:xone-bridge-schema` | 桥接里每条 select 的列名对不对（单测抓不到，只有数据库说了算） |
 
@@ -186,5 +233,8 @@ XOne 只能**新增薄层**调用它们，不得反向依赖。
 3. **`.env.local` 里的 OpenAPI 凭据已失效**（400004 Invalid sign），当前生效的是
    `.env.giga-alt.local`（Pickup）与 `.env.giga-delivery.local`（Dropship）。
 4. **`package.json` 的 `test:manual-product-command`** 指向一个从未存在的文件，跑必失败。
-5. **门户兜底拿不到 product_id**：`pickProductId` 不查 `supplier_portal_product_mappings`。
+5. **供应商只开放自提的商品**走 `pickup_only` 终态（已可售 + 无运费 + 不在 Dropship 收藏 +
+   运费连续失败 >=3 次），显示「已上线 · 仅支持自提」，不进续跑、不再重试、不下架。
+   W1826P308991 是这一类的第一件。
+6. **门户兜底拿不到 product_id**：`pickProductId` 不查 `supplier_portal_product_mappings`。
    官方接口通的时候用不上它，但这是个真实接线缺口。

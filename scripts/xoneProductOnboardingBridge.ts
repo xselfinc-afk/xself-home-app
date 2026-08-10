@@ -1380,7 +1380,13 @@ async function runRecoveryResume(
       const plan = buildRecoveryPlan(previous, pipeline);
       if (!plan) return failure('NO_RECOVERY_PLAN', '找不到可用于续跑的计划快照');
       fs.writeFileSync(XONE_RECOVERY_PLAN, JSON.stringify(plan, null, 2));
-      const run = runScript('scripts/runGigaAutoPublish.ts', ['--plan', XONE_RECOVERY_PLAN, '--apply', '--summary'], 1_800_000);
+      // 名单与计划文件在同一口气里产生，执行器再用 --only 校验一次 —— 中途被改写就直接停。
+      const resumeScope = ((plan as { proposed_batch?: { skus?: unknown[] } }).proposed_batch?.skus ?? []).map(String);
+      const run = runScript(
+        'scripts/runGigaAutoPublish.ts',
+        ['--plan', XONE_RECOVERY_PLAN, `--only=${resumeScope.join(',')}`, '--apply', '--summary'],
+        1_800_000,
+      );
       steps.push({ step: 'resume_pipeline', skus: pipeline.length, exit_code: run.status });
       continue;
     }
@@ -1593,7 +1599,8 @@ async function runBatchPublish(
   progress('publish', `正在上架 ${readySkus.length} 件商品`);
   const run = runScript(
     'scripts/runGigaAutoPublish.ts',
-    ['--plan', XONE_PLAN_SNAPSHOT, '--apply', '--summary'],
+    // 界面展示的就是 readySkus，执行器必须只处理这一份 —— 计划文件被重写就 SCOPE_MISMATCH 停机。
+    ['--plan', XONE_PLAN_SNAPSHOT, `--only=${readySkus.join(',')}`, '--apply', '--summary'],
     1_800_000,
   );
   // 死在哪一阶段、为什么 —— 执行器自己的报告里有，读出来给人看。

@@ -141,7 +141,13 @@ function main(): void {
     // 界面数量与计划不一致时拒绝执行。
     assert.ok(/PLAN_CHANGED/.test(block));
     // 不得自己挑 SKU。
-    assert.equal(/--only=/.test(block), false, '批量上架不得绕开 proposed_batch 自己指定 SKU');
+    //
+    // 原来的写法是「禁止出现 --only」。2026-08-10 之后执行器要求调用方显式声明名单
+    // （--only 与计划不符就 SCOPE_MISMATCH 停机），所以这里改成更严的表述：--only 可以有，
+    // 但它只能是 readySkus —— 而 readySkus 上面已经断言过必须来自 proposed_batch.skus。
+    // 净效果是把「不得绕开计划」从「不许带这个参数」升级成「带的必须正是计划那一份」。
+    const onlyArgs = [...block.matchAll(/--only=\$\{([^}]+)\}/g)].map((m) => m[1].trim());
+    assert.deepEqual(onlyArgs, ["readySkus.join(',')"], '批量上架不得绕开 proposed_batch 自己指定 SKU');
   });
 
   console.log(`\n${passed} passed`);
