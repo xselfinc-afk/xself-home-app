@@ -36,6 +36,7 @@ import { isStale, isUsableMapping, type StoredPortalMapping } from '../src/servi
 import {
   buildRecoveryPlan,
   deriveRecoveryState,
+  PICKUP_ONLY_LABEL,
   isResumable,
   stageCompletion,
   STAGE_LABELS,
@@ -676,7 +677,9 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   low_price: '成本价过低，需要人工确认',
   duplicate_color: '同系列出现重复颜色，需要人工确认',
   config_mismatch: '同系列规格不一致，需要人工确认',
-  per_color_cost_mismatch: '同系列各颜色成本不一致，需要人工确认',
+  // 2026-08-09 批准：同系列各颜色成本可以不同，不再扣留。代号保留成本差异这个事实，
+  // 但它现在挂在已放行的商品上，说法要跟着改 —— 不能再让用户以为它被拦下了。
+  per_color_cost_differs: '同系列各颜色成本不同，各自按自己的成本定价',
   // 这条出现在放行的商品上（各颜色成本差在取整误差内），不会作为拦截原因显示。
   cost_within_tolerance: '同系列成本差异在允许范围内',
   brand_prefix: '标题以品牌型号开头，需要人工整理',
@@ -1057,7 +1060,7 @@ export function describeApplyFailure(report: Record<string, any> | null): { stag
 /** 读齐续跑判定需要的全部事实。 */
 async function readProgressFacts(client: SupabaseClient, skus: string[]): Promise<OnboardingProgressFacts[]> {
   if (!skus.length) return [];
-  const [sp, std, sell, reviews, avail, fees] = await Promise.all([
+  const [sp, std, sell, reviews, avail, fees, dropshipSaved] = await Promise.all([
     client.from('supplier_products').select('supplier_product_id,published').in('supplier_product_id', skus),
     client.from('standardized_products')
       .select('supplier_product_id,published,normalization_status,optimized_title,selling_price,primary_image_mirror_status,primary_image_blurhash,inventory_status,total_available_qty')
@@ -1066,13 +1069,22 @@ async function readProgressFacts(client: SupabaseClient, skus: string[]): Promis
     client.from('product_reviews').select('supplier_product_id').eq('status', 'active').in('supplier_product_id', skus),
     client.from('product_availability_current').select('supplier_product_id').in('supplier_product_id', skus),
     // 运费缓存：Checkout 读的就是它。没有可用运费就只能显示 Quote required。
-    client.from('giga_delivery_fee_cache').select('supplier_product_id,charged_fee_cents').in('supplier_product_id', skus),
+    // consecutive_failures 一起读出来 —— 「试了很多次仍然拿不到」是判定「只支持自提」的依据。
+    client.from('giga_delivery_fee_cache').select('supplier_product_id,charged_fee_cents,consecutive_failures').in('supplier_product_id', skus),
+    // Dropship 官方收藏：运费接口只对收藏内的商品报价，所以它是「能不能有运费」的前提。
+    client.from('supplier_favorite_memberships')
+      .select('supplier_product_id,supplier_account,is_saved,sync_status')
+      .eq('supplier_account', 'dropship').in('supplier_product_id', skus),
   ]);
   const supplierPub = new Map((sp.data ?? []).map((r: any) => [r.supplier_product_id, r.published === true]));
   const stdById = new Map((std.data ?? []).map((r: any) => [r.supplier_product_id, r]));
   const sellSet = new Set((sell.data ?? []).map((r: any) => r.supplier_product_id));
   const availSet = new Set((avail.data ?? []).map((r: any) => r.supplier_product_id));
   const feeSet = new Set((fees.data ?? []).filter((r: any) => r.charged_fee_cents != null).map((r: any) => r.supplier_product_id));
+  const feeFailures = new Map((fees.data ?? []).map((r: any) => [r.supplier_product_id, Number(r.consecutive_failures ?? 0)]));
+  const dropshipSet = new Set((dropshipSaved.data ?? [])
+    .filter((r: any) => r.is_saved === true && r.sync_status === 'ok')
+    .map((r: any) => r.supplier_product_id));
   const reviewCount = new Map<string, number>();
   for (const r of (reviews.data ?? []) as any[]) {
     reviewCount.set(r.supplier_product_id, (reviewCount.get(r.supplier_product_id) ?? 0) + 1);
@@ -1095,6 +1107,8 @@ async function readProgressFacts(client: SupabaseClient, skus: string[]): Promis
       has_availability_evidence: availSet.has(sku),
       in_sellable: sellSet.has(sku),
       has_delivery_fee: feeSet.has(sku),
+      saved_in_dropship: dropshipSet.has(sku),
+      delivery_fee_failures: feeFailures.get(sku) ?? 0,
     };
   });
 }
@@ -1250,13 +1264,22 @@ async function runRecoveryList(client: SupabaseClient): Promise<Record<string, u
       blocked_reason: verdict.state === 'awaiting_evidence' ? availabilityFailure.reason : null,
       blocked_detail: verdict.state === 'awaiting_evidence' ? availabilityFailure.detail : null,
     };
-  }).filter((row) => row.state !== 'not_started' && row.state !== 'complete');
+  });
+  // 终态一律不进「上架未完成」：complete 是完整可售，pickup_only 是已上线但供应商只开放自提。
+  // 后者单独报出来，界面才能显示「已上线 · 仅支持自提」，而不是让它凭空消失。
+  const pickupOnly = rows.filter((row) => row.state === 'pickup_only');
+  const pending = rows.filter((row) => (
+    row.state !== 'not_started' && row.state !== 'complete' && row.state !== 'pickup_only'
+  ));
 
   return envelope('onboarding-recovery-list', {
     production_write_attempted: false,
-    total: rows.length,
-    resumable_count: rows.filter((r) => r.resumable).length,
-    rows,
+    total: pending.length,
+    resumable_count: pending.filter((r) => r.resumable).length,
+    rows: pending,
+    pickup_only_count: pickupOnly.length,
+    pickup_only_label: PICKUP_ONLY_LABEL,
+    pickup_only_skus: pickupOnly.map((row) => row.supplier_product_id),
   });
 }
 
@@ -1416,6 +1439,10 @@ async function runRecoveryResume(
   const results = after.map((f) => {
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: null };
+    // 供应商只开放自提：商品已上线可售，没有配送报价是既成事实，不是本次执行的失败。
+    if (verdict.state === 'pickup_only') {
+      return { sku: f.supplier_product_id, outcome: 'verified_visible', reason: PICKUP_ONLY_LABEL };
+    }
     // App 能看到、只差运费。登录失效时必须直说「重新登录」——
     // 会话过期会一路表现成 302 / no_mapping，那些话会把用户引去查商品映射，方向完全错了。
     if (verdict.state === 'awaiting_delivery_fee') {
@@ -1651,6 +1678,7 @@ async function runBatchPublish(
     }
     const verdict = deriveRecoveryState(f);
     if (verdict.state === 'complete') return { sku, outcome: 'verified_visible', reason: null };
+    if (verdict.state === 'pickup_only') return { sku, outcome: 'verified_visible', reason: PICKUP_ONLY_LABEL };
     if (verdict.state === 'awaiting_delivery_fee') {
       return {
         sku,

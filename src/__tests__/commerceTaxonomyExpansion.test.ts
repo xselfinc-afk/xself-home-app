@@ -219,4 +219,48 @@ it('花瓶规则不吃掉配件，也不碰既有家具分类', () => {
   assert.equal(type('24" Lion Statue, Resin Outdoor Guardian Sculpture'), 'statues-sculptures');
 });
 
+
+// ── Pools（Outdoor & Garden）——只开真实在库的泳池盖 / 罩棚 ──
+// 真实商品 W3859P528052：供应商类目 "Pools"，此前整条都落到 needs-review，
+// 被上架 planner 当成 junk 直接 REJECT。
+
+const POOL_DOME = 'New 15 FT Round Multifunctional All Weather Cover Pool Dome Enclosure for Outdoor Pools, Compatible Clean & Warm Water, Suitable for 15 foot Round Frame Pools';
+
+it('Pools 类目挂在 Outdoor & Garden 下，类型不孤儿', () => {
+  const dept = new Map(CATEGORIES.map(c => [c.id, c.department]));
+  assert.equal(dept.get('pools'), 'outdoor-garden');
+  const cat = new Map(PRODUCT_TYPES.map(t => [t.id, t.category]));
+  assert.equal(cat.get('pool-covers-enclosures'), 'pools');
+  assert.deepEqual(validateRegistry(), []);
+});
+
+it('W3859P528052 落到 Outdoor & Garden → Pools → Pool Covers & Enclosures', () => {
+  const c = classifyCommerce({ name: POOL_DOME, category: 'Pools', categoryLabel: 'Other' });
+  assert.equal(c.department, 'outdoor-garden');
+  assert.equal(c.category, 'pools');
+  assert.equal(c.productType, 'pool-covers-enclosures');
+});
+
+it('只开这一个泳池品类：泳池本体 / 水泵 / 梯子仍然 needs-review', () => {
+  for (const name of ['Above Ground Swimming Pool Pump', 'Pool Ladder Stainless Steel', 'Inflatable Swimming Pool 12ft']) {
+    assert.equal(
+      classifyCommerce({ name, category: 'Pools', categoryLabel: 'Other' }).productType,
+      'needs-review',
+      `${name} 不该被顺手归类`,
+    );
+  }
+});
+
+it('台球桌不会被泳池规则抢走', () => {
+  assert.equal(type('8FT Pool Table with Cue Rack'), 'pool-tables');
+  assert.equal(type('Billiard Table Cover Waterproof'), 'pool-tables');
+  assert.equal(classifyCommerce({ name: '7FT Billiard Table', category: 'Pool Tables', categoryLabel: '' }).productType, 'pool-tables');
+});
+
+it('泳池关键词不会误伤家具标题', () => {
+  for (const name of ['Sofa Cover Stretch Slipcover', 'Outdoor Patio Bench with Cover', 'Dome Ceiling Light Fixture']) {
+    assert.notEqual(type(name), 'pool-covers-enclosures');
+  }
+});
+
 console.log(`\n${passed} passed`);

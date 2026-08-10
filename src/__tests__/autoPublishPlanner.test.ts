@@ -107,4 +107,44 @@ it('cfgmissing_fragmented 这个扣留码已经不再产生', () => {
   assert.equal(/cfgmissing_fragmented/.test(emitted), false, '不得再产出 cfgmissing_fragmented');
 });
 
+
+// ── 家族内成本可以不同（2026-08-09 批准的业务语义变更）──────────────────────
+//
+// 同一 Family 的不同 SKU 允许各自不同的 supplier cost / selling price / inventory /
+// Delivery Fee。成本相等从来不是安全属性，只是对「from $X」单卡展示的担心；
+// 每个 SKU 仍由 Stage 4 按自己的成本单独定价。
+
+it('per-color 成本不一致不再扣留：HOLD_PRICE 不再被赋给任何商品', () => {
+  const src = readFileSync('scripts/planGigaAutoPublish.ts', 'utf8');
+  assert.equal(/bucket = 'HOLD_PRICE'/.test(src), false, '不得再把商品判进 HOLD_PRICE');
+  assert.equal(/per_color_cost_mismatch/.test(src), false, '不得再产出 per_color_cost_mismatch');
+  // 差异本身仍然记在原因码里，报告上看得见。
+  assert.ok(/per_color_cost_differs/.test(src), '成本差异必须仍然可见');
+});
+
+it('其余家族安全门一条都没松：重复颜色 / 配置 / 尺寸仍然扣留', () => {
+  const src = readFileSync('scripts/planGigaAutoPublish.ts', 'utf8');
+  assert.ok(/dupColor \? 'duplicate_color' : 'config_mismatch'/.test(src), '重复颜色与配置不符必须仍然扣留');
+  // sameConfig 同时管类目、尺寸、抽屉、门数 —— 尺寸不一致照样进 HOLD_PHASE2。
+  assert.ok(/const sameConfig = cats\.size === 1 && dims\.size <= 1 && draw\.size <= 1 && door\.size <= 1/.test(src));
+});
+
+it('每个 SKU 自己的成本仍然是硬门槛：缺失或 <= 0 直接 REJECT', () => {
+  const withCost = (normCost: number) => baseBucketOf({
+    img: true, normCost, title: '5-Drawer Chest of Drawers Dresser',
+    normTitle: '5-Drawer Chest of Drawers Dresser', commerceCanonical: true,
+  });
+  assert.deepEqual(withCost(0), { bucket: 'REJECT', reason: 'no_price' });
+  assert.deepEqual(withCost(-1), { bucket: 'REJECT', reason: 'no_price' });
+  assert.deepEqual(withCost(Number.NaN), { bucket: 'REJECT', reason: 'no_price' });
+  // 于是家族永远不可能由一个没有有效成本的 SKU 组成 —— 它在分组之前就被踢掉了。
+});
+
+it('家族的 cost 字段只进报告，执行器不读它，定价仍然逐 SKU', () => {
+  const runner = readFileSync('scripts/runGigaAutoPublish.ts', 'utf8');
+  const line = runner.split('\n').find((l) => l.includes('safe_variant_families')) ?? '';
+  assert.ok(/\{ key: string; skus: string\[\] \}/.test(line), '执行器只认 key + skus');
+  assert.equal(/cost/.test(line), false, '执行器不得读家族层面的 cost');
+});
+
 console.log(`\n${passed} passed`);

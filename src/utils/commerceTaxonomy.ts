@@ -89,6 +89,9 @@ export const CATEGORIES: CategoryDef[] = [
   { id: 'kids-furniture', label: 'Kids & Baby Furniture', department: 'kids-baby' },
   // ── Commerce Semantic Layer expansion (additive) ──
   { id: 'outdoor-decor', label: 'Outdoor Décor', department: 'outdoor-garden' },
+  // 泳池。与 outdoor-decor 同属 Outdoor & Garden，按「有货才开类目」的既有做法，
+  // 目前只开真实在库的那一个品类，泳池本体 / 水泵 / 梯子等一律仍走 needs-review。
+  { id: 'pools', label: 'Pools', department: 'outdoor-garden' },
   { id: 'fitness', label: 'Fitness', department: 'fitness-sports' },
   { id: 'sports', label: 'Sports', department: 'fitness-sports' },
   // 室内装饰。与 outdoor-decor 对称：那一条只收户外摆件，室内的一直无处可去，
@@ -151,6 +154,8 @@ export const PRODUCT_TYPES: ProductTypeDef[] = [
   // Outdoor Décor (Garden & Outdoor)
   { id: 'water-fountains', label: 'Water Fountains', category: 'outdoor-decor', rooms: [] },
   { id: 'statues-sculptures', label: 'Statues & Sculptures', category: 'outdoor-decor', rooms: [] },
+  // Pools (Outdoor & Garden) —— 只开泳池盖 / 罩棚这一个真实在库的品类。
+  { id: 'pool-covers-enclosures', label: 'Pool Covers & Enclosures', category: 'pools', rooms: [] },
   // Indoor Décor (Home Décor) —— 只按真实在库品类开，与「categories/types get added as
   // inventory lands」一致：目前供应商侧唯一未覆盖的室内装饰品类是 Vases & Jars（4 件）。
   { id: 'vases-vessels', label: 'Vases & Vessels', category: 'indoor-decor', rooms: ['living-room', 'bedroom', 'dining-room', 'entryway'] },
@@ -228,6 +233,11 @@ const TITLE_RULES: { type: string; kw: string[]; exclude?: string[]; excludeWord
   { type: 'table-tennis-tables',  kw: ['table tennis table', 'ping pong table', 'ping-pong table'] },
   { type: 'soccer-tables',        kw: ['foosball table', 'soccer table', 'table football'] },
   { type: 'pool-tables',          kw: ['pool table', 'billiard table', 'billiards table'] },
+  // 泳池盖 / 罩棚。刻意排在 pool-tables 之后：台球桌先命中，"pool" 不会被泳池规则抢走。
+  // 关键词全是多词短语，不含裸 'pool'/'cover'/'dome'，碰不到家具标题；泳池本体、水泵、
+  // 梯子没有对应关键词，照旧落到 needs-review —— 只开当前真实需要的这一个类目。
+  { type: 'pool-covers-enclosures', kw: ['pool cover', 'pool dome', 'pool enclosure', 'pool canopy', 'swimming pool cover'],
+    excludeWord: ['billiard', 'billiards'] },
   { type: 'basketball-hoops',     kw: ['basketball hoop', 'basketball goal', 'basketball system', 'portable basketball'] },
   { type: 'golf-bag-push-carts',  kw: ['golf push cart', 'golf bag cart', 'golf bag push cart', 'golf trolley', 'golf pull cart'] },
   { type: 'golf-sets',            kw: ['golf set', 'golf club set', 'complete golf set', 'golf clubs', 'junior golf set'],

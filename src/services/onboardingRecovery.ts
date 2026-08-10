@@ -39,6 +39,37 @@ export interface OnboardingProgressFacts {
   in_sellable: boolean;
   /** giga_delivery_fee_cache 里有可用的运费。没有它，Checkout 只能显示 Quote required。 */
   has_delivery_fee: boolean;
+  /** 该 SKU 是否在 Dropship 账号的官方收藏里。运费接口只对收藏内的商品报价。 */
+  saved_in_dropship: boolean;
+  /** giga_delivery_fee_cache.consecutive_failures —— 连续取运费失败的次数。 */
+  delivery_fee_failures: number;
+}
+
+/**
+ * 「只支持自提」的判定门槛：连续失败到这个次数才下结论。
+ *
+ * 一次失败可能是会话过期或网络抖动，不能据此宣布商品不支持 Dropship。
+ */
+export const PICKUP_ONLY_MIN_FAILURES = 3;
+
+/** 终态文案。它是结论，不是错误。 */
+export const PICKUP_ONLY_LABEL = '已上线 · 仅支持自提';
+
+/**
+ * 这件商品是不是「只走自提」的终态。
+ *
+ * 供应商侧的事实是：`product/price/v1` 只给**该账号 Saved Items 内**的商品报价，而有些商品
+ * 供应商根本不允许加入 Dropship 收藏（加收藏请求返回业务码 0）。这类商品永远拿不到配送运费，
+ * 但它本身已经上线、可售、可自提 —— 既不该反复重试，也不该被当成「上架未完成」，更不该下架。
+ *
+ * 判定只用已经落库的事实：已可售、没有运费、不在 Dropship 收藏、且运费已经连续失败到门槛。
+ * 「试过很多次仍然进不了 Dropship」就是结论本身，不需要额外的人工标记。
+ */
+export function isPickupOnly(facts: OnboardingProgressFacts): boolean {
+  return facts.in_sellable
+    && !facts.has_delivery_fee
+    && !facts.saved_in_dropship
+    && facts.delivery_fee_failures >= PICKUP_ONLY_MIN_FAILURES;
 }
 
 export type OnboardingStage =
@@ -83,6 +114,7 @@ export type RecoveryState =
   | 'awaiting_evidence'    // 阶段都完了，只差库存证据 → 需要一次库存读取
   | 'published_not_visible'// 证据也有了，却仍不在 sellable → 需要人看
   | 'awaiting_delivery_fee'// App 可见了，但 Checkout 报不出运费
+  | 'pickup_only'          // 已上线，但供应商只开放自提渠道 —— 终态，不再重试
   | 'complete';            // App 可见且可结算
 
 /**
@@ -109,6 +141,10 @@ export function deriveRecoveryState(facts: OnboardingProgressFacts): {
   if (facts.in_sellable) {
     // 上架了不等于卖得出去：没有运费缓存，Checkout 只会显示 Quote required。
     // 运费是 Golden Path orchestrator 的第 7 步，发布之后单独跑，软失败不回滚。
+    // 供应商只开放自提的商品：运费永远拿不到，这是结论不是缺口。终态，不进续跑。
+    if (isPickupOnly(facts)) {
+      return { state: 'pickup_only', missing: [], nextAction: 'none' };
+    }
     if (!facts.has_delivery_fee) {
       return { state: 'awaiting_delivery_fee', missing: ['delivery'], nextAction: 'refresh_delivery_fee' };
     }

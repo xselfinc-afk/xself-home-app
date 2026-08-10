@@ -15,7 +15,9 @@ import * as fs from 'node:fs';
 import {
   buildRecoveryPlan,
   deriveRecoveryState,
+  isPickupOnly,
   isResumable,
+  PICKUP_ONLY_MIN_FAILURES,
   stageCompletion,
   type OnboardingProgressFacts,
 } from '../services/onboardingRecovery';
@@ -40,6 +42,9 @@ const afterFullPipeline = (over: Partial<OnboardingProgressFacts> = {}): Onboard
   has_availability_evidence: false,
   in_sellable: false,
   has_delivery_fee: false,
+  // 默认「已在 Dropship 收藏、运费没失败过」—— 既有用例的含义因此完全不变。
+  saved_in_dropship: true,
+  delivery_fee_failures: 0,
   ...over,
 });
 
@@ -183,7 +188,83 @@ function main(): void {
     }
   });
 
-  console.log(`\n${passed} passed`);
+  
+// ── 供应商只开放自提的商品：终态，不进续跑 ──────────────────────────────────
+//
+// 真实案例 W1826P308991：已 published + sellable，portal 身份也解出来了（1096253），
+// 但供应商拒绝把它加入 Dropship 收藏（业务码 0），于是 price/v1 永远报不出运费。
+// 落库的事实是：sellable=true、charged_fee_cents=null、没有 dropship 收藏行、
+// consecutive_failures=4。
+
+const pickupOnlyFacts = (over: Partial<OnboardingProgressFacts> = {}) => afterFullPipeline({
+  supplier_product_id: 'W1826P308991',
+  has_availability_evidence: true,
+  in_sellable: true,
+  has_delivery_fee: false,
+  saved_in_dropship: false,
+  delivery_fee_failures: 4,
+  ...over,
+});
+
+it('只支持自提 → 终态 pickup_only，不再重试，也不下架', () => {
+  const facts = pickupOnlyFacts();
+  assert.equal(isPickupOnly(facts), true);
+
+  const verdict = deriveRecoveryState(facts);
+  assert.equal(verdict.state, 'pickup_only');
+  // 不再有下一步动作：既不补收藏，也不再取运费。
+  assert.equal(verdict.nextAction, 'none');
+  // 运费不是「缺口」，是供应商不提供 —— 不能列进 missing。
+  assert.deepEqual(verdict.missing, []);
+  // 终态不属于「上架未完成」。
+  assert.equal(isResumable(verdict.state), false);
+  // 商品仍然可售，判定没有碰发布位。
+  assert.equal(facts.in_sellable, true);
+  assert.equal(facts.supplier_published, true);
+});
+
+it('失败次数不够时仍然是「等运费」，不提前下结论', () => {
+  const flaky = pickupOnlyFacts({ delivery_fee_failures: PICKUP_ONLY_MIN_FAILURES - 1 });
+  assert.equal(isPickupOnly(flaky), false);
+  assert.equal(deriveRecoveryState(flaky).state, 'awaiting_delivery_fee');
+  assert.equal(deriveRecoveryState(flaky).nextAction, 'refresh_delivery_fee');
+});
+
+it('已经在 Dropship 收藏里的商品永远不算「只支持自提」', () => {
+  // 收藏进去了却还没运费 —— 那是还没取到，不是渠道不支持，必须继续重试。
+  const saved = pickupOnlyFacts({ saved_in_dropship: true, delivery_fee_failures: 9 });
+  assert.equal(isPickupOnly(saved), false);
+  assert.equal(deriveRecoveryState(saved).state, 'awaiting_delivery_fee');
+});
+
+it('有运费的商品是 complete，与自提终态互斥', () => {
+  const withFee = pickupOnlyFacts({ has_delivery_fee: true });
+  assert.equal(isPickupOnly(withFee), false);
+  assert.equal(deriveRecoveryState(withFee).state, 'complete');
+});
+
+it('还没可售的商品不会被判成自提终态 —— 先解决可见性', () => {
+  const notSellable = pickupOnlyFacts({ in_sellable: false, has_availability_evidence: false });
+  assert.equal(isPickupOnly(notSellable), false);
+  assert.equal(deriveRecoveryState(notSellable).state, 'awaiting_evidence');
+});
+
+it('续跑清单与结果映射都认得这个终态', () => {
+  const bridge = fs.readFileSync('scripts/xoneProductOnboardingBridge.ts', 'utf8');
+  // 清单里过滤掉终态，并单独报出来，界面才能显示「已上线 · 仅支持自提」。
+  assert.ok(/row\.state !== 'pickup_only'/.test(bridge), '续跑清单必须排除 pickup_only');
+  assert.ok(/pickup_only_count/.test(bridge) && /pickup_only_skus/.test(bridge), '终态必须单独报出');
+  // 结果映射：已上线，不是失败。
+  assert.ok(
+    /verdict\.state === 'pickup_only'[\s\S]{0,200}?verified_visible[\s\S]{0,80}?PICKUP_ONLY_LABEL/.test(bridge),
+    'pickup_only 必须映射成 verified_visible + 自提文案',
+  );
+  // 事实必须真的从库里读出来，不能凭空造。
+  assert.ok(/consecutive_failures/.test(bridge), '必须读运费连续失败次数');
+  assert.ok(/supplier_favorite_memberships[\s\S]{0,200}?'dropship'/.test(bridge), '必须读 Dropship 收藏');
+});
+
+console.log(`\n${passed} passed`);
 }
 
 main();

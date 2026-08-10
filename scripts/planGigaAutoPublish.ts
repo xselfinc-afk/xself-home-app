@@ -19,10 +19,9 @@
  * Classification buckets (conservative — prefer false negatives over false positives):
  *   SAFE_SINGLETON            clean, imaged, priced, true singleton (title-derived key, no -vg- siblings)
  *   SAFE_CLEAN_COLOR_VARIANT  -vg- family, ≥2 co-present members, same category/dims/config,
- *                             distinct colors (no dup), identical normalized cost within the family
- *   HOLD_PRICE                otherwise-clean -vg- family whose per-color NORMALIZED cost differs
- *                             (would price differently → "from $X" split). Compares the same
- *                             discounted cost normalizeProduct() uses, NOT supplier_products.price.
+ *                             distinct colors (no dup). Per-color cost MAY differ (see below).
+ *   HOLD_PRICE                NO LONGER PRODUCED (2026-08-09, approved). Kept in the report schema
+ *                             so existing consumers keep working; it now always tallies 0.
  *   HOLD_PHASE2               -vg- family with duplicate colors OR differing size/config (dims/drawers/doors),
  *                             OR a fragmented cluster (siblings not co-present among candidates).
  *                             Needs the Phase-2 color+size/config selector before it can go live.
@@ -321,12 +320,28 @@ export async function main() {
 
     if (dupColor || !sameConfig) {
       members.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push(dupColor ? 'duplicate_color' : 'config_mismatch'); });
-    } else if (costs.size > 1 && !costWithinTol) {
-      members.forEach(m => { m.bucket = 'HOLD_PRICE'; m.reasons.push('per_color_cost_mismatch'); });
     } else {
-      // Same cost, or within the rounding-noise tolerance → release. Report the higher cost so any
-      // downstream single-price-per-card stays margin-safe (pricing itself is unchanged, per-SKU).
-      members.forEach(m => { m.bucket = 'SAFE_CLEAN_COLOR_VARIANT'; if (costs.size > 1) m.reasons.push('cost_within_tolerance'); });
+      // BUSINESS RULE (approved 2026-08-09): members of one family MAY carry different supplier
+      // cost / selling price / inventory / delivery fee. Cost equality was never a safety property —
+      // it was a presentation worry about a single "from $X" card. Every member is still priced
+      // independently by Stage 4 from its OWN cost, and a member whose own cost is missing or <= 0
+      // is already rejected per-SKU upstream (baseBucketOf → REJECT no_price), so a family can never
+      // be formed out of an unpriced SKU. What still holds a family is unchanged: duplicate colors,
+      // category/dimension/config mismatch, identity conflicts, and per-SKU pricing failures.
+      //
+      // The reason code still records whether costs differ, and by how much of a margin, so the
+      // effect stays visible in the report: `cost_within_tolerance` (rounding noise) vs
+      // `per_color_cost_differs` (a real per-color price difference, now released).
+      //
+      // Read-only full-catalogue comparison measured the effect at exactly 2 families / 6 SKUs
+      // (cb-vg-n710p318989b-2drawer-w24 ×4, cb-vg-w409p327399-4door-w59 ×2) moving out of HOLD_PRICE.
+      //
+      // `cost: maxCost` below stays REPORT-ONLY — the apply runner reads only { key, skus } from
+      // families (runGigaAutoPublish.ts), so per-SKU pricing is untouched by this field.
+      members.forEach(m => {
+        m.bucket = 'SAFE_CLEAN_COLOR_VARIANT';
+        if (costs.size > 1) m.reasons.push(costWithinTol ? 'cost_within_tolerance' : 'per_color_cost_differs');
+      });
       safeVariantFamilies.push({ key, skus: members.map(m => m.id).sort(), colors: members.map(m => m.color), cost: maxCost });
     }
   }
