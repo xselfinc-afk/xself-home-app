@@ -15,6 +15,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 }
 import ProductCard from './src/components/ProductCard';
 import { NavigationContainer, useNavigationState, createNavigationContainerRef } from '@react-navigation/native';
+import MetaCheckoutLinkHandler from './src/components/MetaCheckoutLinkHandler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -2943,6 +2944,9 @@ export default function App() {
       <ConversationProvider>
       <ConciergeProvider>
       <RootNavigation />
+      {/* Meta Shop 的 checkout Universal Link 消费端。必须在 CartProvider 内（要用 useCart）。
+          它只认 /checkout 路径；magic link 仍由 AuthContext 处理，两者判定互斥。 */}
+      <MetaCheckoutLinkHandler navigator={navigationRef} />
       <ConciergeBannerHost />
       </ConciergeProvider>
       </ConversationProvider>

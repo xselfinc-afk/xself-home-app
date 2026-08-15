@@ -9,11 +9,14 @@
  * 运行：npx tsx src/__tests__/metaCheckoutLink.test.ts
  */
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   IGNORED_UNTRUSTED_PARAMS,
   MAX_ITEMS,
   MAX_QUANTITY_PER_ITEM,
   isMetaCheckoutUrl,
+  isParseFailure,
   parseMetaCheckoutUrl,
   type MetaCheckoutParseError,
 } from '../services/metaCheckoutLink';
@@ -31,14 +34,14 @@ async function it(name: string, fn: () => void | Promise<void>): Promise<void> {
   passed++; console.log(`  ✓ ${name}`);
 }
 
+const readSrc = (p: string) => fs.readFileSync(path.join(__dirname, '..', '..', p), 'utf8');
 const BASE = 'https://xselfhome.com/checkout';
 const ok = (u: string) => { const r = parseMetaCheckoutUrl(u); assert.ok(r.ok, `期望解析成功: ${u}`); return r.request; };
-/** 断言解析失败并取出错误码。显式标注失败分支类型，不依赖控制流收窄。 */
+/** 断言解析失败并取出错误码，用源码提供的类型守卫收窄。 */
 const err = (u: string): MetaCheckoutParseError => {
-  const r = parseMetaCheckoutUrl(u) as { ok: boolean; error?: MetaCheckoutParseError };
-  assert.equal(r.ok, false, `期望解析失败: ${u}`);
-  assert.ok(r.error, `失败结果必须带错误码: ${u}`);
-  return r.error!;
+  const r = parseMetaCheckoutUrl(u);
+  assert.ok(isParseFailure(r), `期望解析失败: ${u}`);
+  return r.error;
 };
 
 const row = (sku: string, spid: string): SellableIdentityRow => ({ sku_custom: sku, supplier_product_id: spid });
@@ -200,6 +203,44 @@ async function main(): Promise<void> {
     // 还原行里没有任何折扣字段 —— 折扣只能由既有服务端体系决定。
     for (const k of ['discount', 'couponCode', 'quoteToken']) {
       assert.ok(!(k in out.lines[0]), `还原行不应带 ${k}`);
+    }
+  });
+
+  // ── 5. Dispatcher 接线（静态源码断言，不渲染 RN 组件）────────────────────
+
+  await it('18. dispatcher 已挂在 CartProvider 内并复用既有 navigationRef', () => {
+    const app = readSrc('App.tsx');
+    assert.match(app, /import MetaCheckoutLinkHandler from '\.\/src\/components\/MetaCheckoutLinkHandler'/);
+    assert.match(app, /<MetaCheckoutLinkHandler navigator=\{navigationRef\} \/>/);
+    // 必须在 CartProvider 内部，否则 useCart 会抛错。
+    const inside = app.slice(app.indexOf('<CartProvider>'), app.indexOf('</CartProvider>'));
+    assert.ok(inside.includes('<MetaCheckoutLinkHandler'), 'dispatcher 必须位于 CartProvider 内');
+  });
+
+  await it('19. AuthContext 未被本次改动触碰 —— magic-link 行为原样保留', () => {
+    const auth = readSrc('src/context/AuthContext.tsx');
+    // 既有两条监听与判定条件必须完好。
+    assert.match(auth, /Linking\.getInitialURL\(\)\.then\(url => \{ if \(url\) handleMagicLink\(url\); \}\)/);
+    assert.match(auth, /Linking\.addEventListener\('url', \(\{ url \}\) => handleMagicLink\(url\)\)/);
+    // 关键：只在有 fragment 且含双 token 时才动作 —— 这正是它对 checkout URL 无害的原因。
+    assert.match(auth, /const hash = url\.split\('#'\)\[1\];\s*\n\s*if \(!hash\) return;/);
+    assert.match(auth, /if \(params\.access_token && params\.refresh_token\)/);
+    // AuthContext 不得引用 checkout 相关模块。
+    assert.ok(!/metaCheckout|metaCartRestore/i.test(auth), 'auth 不应耦合 checkout 逻辑');
+  });
+
+  await it('20. dispatcher 只认 checkout，且不自行计算任何金额', () => {
+    const h = readSrc('src/components/MetaCheckoutLinkHandler.tsx');
+    assert.match(h, /if \(!isMetaCheckoutUrl\(url\)\) return;/);
+    assert.match(h, /navigate\('Checkout', \{ mode: 'cart' \}\)/);
+    // 冷启动 + 前台两条路径都要有。
+    assert.match(h, /Linking\.getInitialURL\(\)/);
+    assert.match(h, /Linking\.addEventListener\('url'/);
+    // 失败即不进结账。
+    assert.match(h, /if \(!outcome\.ok\)/);
+    // 不得出现任何自算金额/运费的痕迹。
+    for (const bad of ['deliveryFee', 'shippingCents', 'subtotal', 'totalCents', 'unitPriceCents']) {
+      assert.ok(!h.includes(bad), `dispatcher 不应涉及金额计算: ${bad}`);
     }
   });
 

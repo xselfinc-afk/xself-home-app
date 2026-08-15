@@ -39,9 +39,14 @@ export type MetaCheckoutParseError =
   | 'too_many_items'
   | 'malformed_url';
 
-export type MetaCheckoutParseResult =
-  | { ok: true; request: MetaCheckoutRequest }
-  | { ok: false; error: MetaCheckoutParseError };
+export type MetaCheckoutParseSuccess = { ok: true; request: MetaCheckoutRequest };
+export type MetaCheckoutParseFailure = { ok: false; error: MetaCheckoutParseError };
+export type MetaCheckoutParseResult = MetaCheckoutParseSuccess | MetaCheckoutParseFailure;
+
+/** 类型守卫。调用点用它收窄，避免在每处重复写断言。 */
+export function isParseFailure(r: MetaCheckoutParseResult): r is MetaCheckoutParseFailure {
+  return r.ok === false;
+}
 
 /** 单件最大数量。防止 URL 传入荒谬数量拖垮还原与履约计算。 */
 export const MAX_QUANTITY_PER_ITEM = 99;
