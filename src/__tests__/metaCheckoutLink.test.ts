@@ -232,7 +232,6 @@ async function main(): Promise<void> {
   await it('20. dispatcher 只认 checkout，且不自行计算任何金额', () => {
     const h = readSrc('src/components/MetaCheckoutLinkHandler.tsx');
     assert.match(h, /if \(!isMetaCheckoutUrl\(url\)\) return;/);
-    assert.match(h, /navigate\('Checkout', \{ mode: 'cart' \}\)/);
     // 冷启动 + 前台两条路径都要有。
     assert.match(h, /Linking\.getInitialURL\(\)/);
     assert.match(h, /Linking\.addEventListener\('url'/);
@@ -242,6 +241,45 @@ async function main(): Promise<void> {
     for (const bad of ['deliveryFee', 'shippingCents', 'subtotal', 'totalCents', 'unitPriceCents']) {
       assert.ok(!h.includes(bad), `dispatcher 不应涉及金额计算: ${bad}`);
     }
+  });
+
+  await it('21. 还原成功后落在购物车，绝不自动进入结账', () => {
+    const h = readSrc('src/components/MetaCheckoutLinkHandler.tsx');
+    // 目标是 Main → Cart 标签。
+    assert.match(h, /navigate\('Main', \{ screen: 'Cart' \}\)/);
+    assert.match(h, /navigateToCart\(\)/);
+    // 整个 dispatcher 里不得再有任何跳向 Checkout 的导航 —— 买家必须自己点。
+    assert.ok(!/navigate\(\s*'Checkout'/.test(h), 'dispatcher 不应导航到 Checkout');
+    assert.ok(!h.includes('navigateToCheckout'), '旧的 navigateToCheckout 应已移除');
+  });
+
+  await it('22. 冷启动/AuthGate 时序：重试保留，终止于最内层路由 CartMain', () => {
+    const h = readSrc('src/components/MetaCheckoutLinkHandler.tsx');
+    // AuthGate 期间 Main 尚不存在，navigate 静默失效，所以重试不可移除。
+    assert.match(h, /const CART_ROUTE_NAME = 'CartMain';/);
+    assert.match(h, /current\?\.name === CART_ROUTE_NAME/);
+    assert.match(h, /setTimeout\(attempt, NAV_RETRY_INTERVAL_MS\)/);
+    // 窗口必须覆盖真实的登录停留时长（真机实测 30 秒不够），且卸载时清理定时器。
+    assert.match(h, /NAV_RETRY_TIMEOUT_MS = 180_000/);
+    assert.match(h, /clearTimeout\(navTimer\.current\)/);
+    // 终止条件必须是最内层路由名，写成标签名 'Cart' 会导致重试永不结束。
+    assert.ok(!/current\?\.name === 'Cart'/.test(h), '终止条件不能用标签名 Cart');
+  });
+
+  await it('23. 还原失败：既不进购物车也不进结账，且不重复还原同一链接', () => {
+    const h = readSrc('src/components/MetaCheckoutLinkHandler.tsx');
+    // 只看真实代码：注释里提到旧路由名不该让断言失败。
+    const stripComments = (s: string) => s.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const failBlock = stripComments(h.slice(h.indexOf('if (!outcome.ok)'), h.indexOf('clearCart();')));
+    assert.ok(failBlock.length > 0, '未定位到失败分支');
+    // 失败分支里唯一的导航是回首页 —— 'MainTabs' 是不存在的路由名，已修正为 'Main'。
+    assert.match(failBlock, /navigate\('Main'\)/);
+    assert.ok(!failBlock.includes("'MainTabs'"), "'MainTabs' 不是真实路由名");
+    assert.ok(!/navigateToCart|screen: 'Cart'|'Checkout'/.test(failBlock), '失败时不得跳购物车或结账');
+    // 失败早于 clearCart 返回，既有购物车不被改动。
+    assert.ok(h.indexOf('if (!outcome.ok)') < h.indexOf('clearCart();'), '失败分支必须在 clearCart 之前返回');
+    // 冷启动与前台事件对同一 URL 只还原一次。
+    assert.match(h, /handledUrls\.current\.has\(url\) \|\| inFlight\.current/);
   });
 
   console.log(`\n${passed} passed`);

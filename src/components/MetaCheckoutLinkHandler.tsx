@@ -31,14 +31,23 @@ export interface MetaCheckoutNavigator {
 
 /**
  * 冷启动时若顾客尚未登录也未选择访客，App 渲染的是 AuthGate 导航器 —— 它只有
- * LoginEntry，没有 Checkout 路由，navigate 会静默失败。等顾客过了这道门，RootStack
- * 才挂载，且落在 initialRouteName='Main'，于是购物车虽已还原却停在首页。
+ * LoginEntry，Main 路由并不存在，navigate 会静默失败。等顾客过了这道门，RootStack
+ * 才挂载并落在 initialRouteName='Main'，于是购物车虽已还原却停在首页。
  *
- * 所以这里重试到 Checkout 真正生效为止。上限 90 秒：顾客可能压根不想登录，
- * 那就让他停在首页（购物车已还原），而不是在他浏览时突然弹去结账。
+ * 所以这里重试到购物车真正打开为止。
+ *
+ * 上限 180 秒，是真机测出来的：把它压到 30 秒时，在登录页停留约 50 秒再点
+ * 「Continue as Guest」就会错过窗口 —— 购物车已还原，人却留在首页。真实买家
+ * 在登录页读条款、犹豫、切出去查收验证码，超过半分钟太常见。
+ *
+ * 之所以敢给这么长的窗口：落地目标是购物车而不是结账。迟到的跳转只是切个标签页，
+ * 不会像突然弹进收款页那样打断人，所以宁可等久一点，也不要让人对着空首页发愣。
  */
 const NAV_RETRY_INTERVAL_MS = 400;
-const NAV_RETRY_TIMEOUT_MS = 90_000;
+const NAV_RETRY_TIMEOUT_MS = 180_000;
+
+/** 购物车标签内层的实际路由名。getCurrentRoute 返回的是最内层，不是标签名 'Cart'。 */
+const CART_ROUTE_NAME = 'CartMain';
 
 interface Props {
   navigator: MetaCheckoutNavigator;
@@ -63,16 +72,16 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
   /** 待重试的导航定时器，卸载时清理。 */
   const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const navigateToCheckout = useCallback(() => {
+  const navigateToCart = useCallback(() => {
     const deadline = Date.now() + NAV_RETRY_TIMEOUT_MS;
     const attempt = () => {
       navTimer.current = null;
       if (navigator.isReady()) {
-        navigator.navigate('Checkout', { mode: 'cart' });
+        navigator.navigate('Main', { screen: 'Cart' });
         // 路由不存在时 navigate 不报错也不生效，只能回读当前路由确认。
         // 拿不到 getCurrentRoute 就视作已生效，避免无谓地反复跳转。
         const current = navigator.getCurrentRoute?.();
-        if (!navigator.getCurrentRoute || current?.name === 'Checkout') return;
+        if (!navigator.getCurrentRoute || current?.name === CART_ROUTE_NAME) return;
       }
       if (Date.now() >= deadline) return;
       navTimer.current = setTimeout(attempt, NAV_RETRY_INTERVAL_MS);
@@ -130,7 +139,10 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
         Alert.alert(
           '部分商品无法购买',
           `${first?.message ?? '这些商品目前无法购买。'}\n\n您可以浏览其它商品。`,
-          [{ text: '好', onPress: () => { if (navigator.isReady()) navigator.navigate('MainTabs'); } }],
+          // 'MainTabs' 从来不是真实路由名（RootStack 里叫 'Main'），所以这个跳转
+          // 一直是静默失效的死代码。改成 'Main' 让它按本意把人送回首页 —— 失败时
+          // 既不进结账也不进购物车。
+          [{ text: '好', onPress: () => { if (navigator.isReady()) navigator.navigate('Main'); } }],
         );
         return;
       }
@@ -143,8 +155,9 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
         addItem(rest, qty);
       }
 
-      // 复用既有 cart 模式的 Checkout，不新建第二套结账状态机。
-      navigateToCheckout();
+      // 落在购物车，不自动进结账：让买家先核对 Meta 上看到的商品、数量与小计，
+      // 由他自己点 Checkout。整车替换因此变得可见且可挽回。
+      navigateToCart();
     } catch (e) {
       console.warn('[MetaCheckout] 还原失败', e instanceof Error ? e.message : e);
       Alert.alert('无法打开结账', '读取商品信息时出了点问题，请稍后再试。');
@@ -152,7 +165,7 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
       inFlight.current = false;
       setRestoring(false);
     }
-  }, [addItem, clearCart, navigator, navigateToCheckout]);
+  }, [addItem, clearCart, navigator, navigateToCart]);
 
   useEffect(() => {
     // 冷启动：App 被这条链接唤起。
