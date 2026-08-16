@@ -25,7 +25,20 @@ import { restoreMetaCheckout, type SellableIdentityRow } from '../services/metaC
 export interface MetaCheckoutNavigator {
   isReady: () => boolean;
   navigate: (screen: string, params?: object) => void;
+  /** 用于确认导航是否真的生效。navigationRef 原生具备，可选是为了让测试替身从简。 */
+  getCurrentRoute?: () => { name: string } | undefined;
 }
+
+/**
+ * 冷启动时若顾客尚未登录也未选择访客，App 渲染的是 AuthGate 导航器 —— 它只有
+ * LoginEntry，没有 Checkout 路由，navigate 会静默失败。等顾客过了这道门，RootStack
+ * 才挂载，且落在 initialRouteName='Main'，于是购物车虽已还原却停在首页。
+ *
+ * 所以这里重试到 Checkout 真正生效为止。上限 90 秒：顾客可能压根不想登录，
+ * 那就让他停在首页（购物车已还原），而不是在他浏览时突然弹去结账。
+ */
+const NAV_RETRY_INTERVAL_MS = 400;
+const NAV_RETRY_TIMEOUT_MS = 90_000;
 
 interface Props {
   navigator: MetaCheckoutNavigator;
@@ -47,6 +60,29 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
   const handledUrls = useRef<Set<string>>(new Set());
   /** 防止两条链接并发还原互相覆盖购物车。 */
   const inFlight = useRef(false);
+  /** 待重试的导航定时器，卸载时清理。 */
+  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const navigateToCheckout = useCallback(() => {
+    const deadline = Date.now() + NAV_RETRY_TIMEOUT_MS;
+    const attempt = () => {
+      navTimer.current = null;
+      if (navigator.isReady()) {
+        navigator.navigate('Checkout', { mode: 'cart' });
+        // 路由不存在时 navigate 不报错也不生效，只能回读当前路由确认。
+        // 拿不到 getCurrentRoute 就视作已生效，避免无谓地反复跳转。
+        const current = navigator.getCurrentRoute?.();
+        if (!navigator.getCurrentRoute || current?.name === 'Checkout') return;
+      }
+      if (Date.now() >= deadline) return;
+      navTimer.current = setTimeout(attempt, NAV_RETRY_INTERVAL_MS);
+    };
+    attempt();
+  }, [navigator]);
+
+  useEffect(() => () => {
+    if (navTimer.current) clearTimeout(navTimer.current);
+  }, []);
 
   const handleUrl = useCallback(async (url: string) => {
     // 极窄判定：不是 /checkout 就原样放过，交给 AuthContext 等其它消费者。
@@ -107,10 +143,8 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
         addItem(rest, qty);
       }
 
-      if (navigator.isReady()) {
-        // 复用既有 cart 模式的 Checkout，不新建第二套结账状态机。
-        navigator.navigate('Checkout', { mode: 'cart' });
-      }
+      // 复用既有 cart 模式的 Checkout，不新建第二套结账状态机。
+      navigateToCheckout();
     } catch (e) {
       console.warn('[MetaCheckout] 还原失败', e instanceof Error ? e.message : e);
       Alert.alert('无法打开结账', '读取商品信息时出了点问题，请稍后再试。');
@@ -118,7 +152,7 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
       inFlight.current = false;
       setRestoring(false);
     }
-  }, [addItem, clearCart, navigator]);
+  }, [addItem, clearCart, navigator, navigateToCheckout]);
 
   useEffect(() => {
     // 冷启动：App 被这条链接唤起。
