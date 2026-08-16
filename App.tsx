@@ -1632,6 +1632,20 @@ function ProductDetailScreen({ route, navigation }) {
 
       </ScrollView>
 
+      {/* Back — floats over the hero. Surface tokens are the DESIGN.md "floating glass pill"
+          (the tab bar's), icon + geometry are the existing searchBackBtn. Sits outside the
+          ScrollView so it stays reachable after scrolling, and lives here at the shared
+          ProductDetail level so every entry path gets it. goBack() only — swipe-back untouched. */}
+      <TouchableOpacity
+        style={[styles.detailBackBtn, { top: insets.top + 8 }]}
+        onPress={() => navigation.goBack()}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+      >
+        <Ionicons name="chevron-back" size={20} color="#1C1917" />
+      </TouchableOpacity>
+
       {/* Floating CTA — fades in after 30% scroll */}
       <Animated.View
         style={[
@@ -3198,6 +3212,21 @@ const styles = StyleSheet.create({
   dotVideo: { width: 10, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.7)' },
   videoPlayOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   videoPlayBtn: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(0,0,0,0.42)', alignItems: 'center', justifyContent: 'center' },
+  // PDP back control. Geometry copied from searchBackBtn (40/20); the surface is the
+  // DESIGN.md floating-glass pill used by floatTabBar — semi-transparent warm white,
+  // hairline border, soft shadow. That combination is what keeps a light chip legible
+  // on dark product photography without resorting to a heavy black circle.
+  // 40pt + 8pt hitSlop = 56pt touch target, matching the hitSlop convention already
+  // used by Share here and by CollectionScreen's back button.
+  detailBackBtn: {
+    position: 'absolute', left: 16,
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.82)',
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 18,
+    elevation: 4,
+  },
   fbtSection: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
   fbtTitle: { fontSize: 15, fontWeight: '600', color: '#1C1917', marginBottom: 14 },
   fbtRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
