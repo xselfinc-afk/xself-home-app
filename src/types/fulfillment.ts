@@ -35,6 +35,9 @@ export type FulfillmentPlan = {
   totalShipping: number;
   /** Server-authoritative Delivery fee (cents) from GIGA product/price/v1; null when unavailable. */
   deliveryFeeCents: number | null;
+  /** Stripe Tax preview (cents) from plan-fulfillment. DISPLAY ONLY — create-checkout-order
+   *  recalculates and charges its own authoritative figure. null = not calculated. */
+  taxCents?: number | null;
   /** True when the server returned a usable Delivery fee. When false, Delivery checkout is blocked. */
   deliveryAvailable: boolean;
   /** Diagnostic reason when Delivery is unavailable (credentials_missing / api_error / sku_unavailable / no_fee / …). */

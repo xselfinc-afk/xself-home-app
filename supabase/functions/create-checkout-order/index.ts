@@ -20,6 +20,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
 import { evaluateCheckoutCart } from '../_shared/checkoutInventoryRevalidation.ts';
+import { calculateTax, extractUsZip, findOrCreatePerformanceLocation, type TaxAddress } from '../_shared/stripeTax.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -497,7 +498,63 @@ serve(async (req: Request) => {
       const legacyDollars = typeof planData.shipping === 'number' ? planData.shipping : LEGACY_DELIVERY_FEE_DOLLARS;
       shippingCents = Math.round(legacyDollars * 100);
     }
-    const taxCents   = 0; // Tax: server charges 0; the app displays 0 to match (see CheckoutScreen).
+    // ── Sales tax (Stripe Tax) ───────────────────────────────────────────────
+    // Delivery is sourced to where the goods land; Pickup to the warehouse the customer collects
+    // from — that is where possession transfers. Both are handed to Stripe as an address; rates,
+    // registrations and shipping taxability live in the account's Tax settings, not here.
+    const pickupWarehouse = planData.usePickup ? planData.selectedWarehouse : null;
+
+    // The customer's own address ALWAYS goes to Stripe — including for Pickup. Stripe needs it for
+    // reverse-charge determination, so swapping in the warehouse would be wrong.
+    const taxAddress: TaxAddress = {
+      line1:      address.line1,
+      line2:      (address as { line2?: string }).line2 ?? null,
+      city:       address.city,
+      state:      address.state,
+      postalCode: address.zip,
+      country:    address.country ?? 'US',
+    };
+
+    // Pickup is an in-person sale: tax belongs at the warehouse where the customer collects. Stripe
+    // expresses that with a `performance_location` on the line item, NOT by rewriting the customer
+    // address (docs: Tax → in-person sales at a specific location). Null → normal destination
+    // sourcing, which is the safe degradation.
+    let performanceLocationId: string | null = null;
+    if (pickupWarehouse) {
+      performanceLocationId = await findOrCreatePerformanceLocation(STRIPE_SECRET_KEY, String(pickupWarehouse.code), {
+        line1:      String(pickupWarehouse.address ?? ''),
+        city:       String(pickupWarehouse.city ?? ''),
+        state:      String(pickupWarehouse.state ?? ''),
+        postalCode: extractUsZip(pickupWarehouse.address) ?? '',
+        country:    'US',
+      });
+      if (!performanceLocationId) {
+        console.error('[create-checkout-order] pickup performance location unavailable for', pickupWarehouse.code);
+      }
+    }
+
+    let taxCents = 0;
+    let taxCalculationId: string | null = null;
+    try {
+      const calc = await calculateTax(STRIPE_SECRET_KEY, {
+        // Authoritative prices only — `items` was already reconciled against the catalogue above.
+        lineItems: items.map((i) => ({ productId: i.productId, qty: i.qty, unitPriceCents: i.unitPriceCents })),
+        shippingCents,
+        address: taxAddress,
+        performanceLocationId,
+      });
+      taxCents = calc.taxCents;
+      taxCalculationId = calc.calculationId;
+      // Logged so the calculation→transaction handoff is auditable: PaymentIntent metadata is
+      // redacted for client-side reads, so this is the only place the id is observable.
+      console.log(`[create-checkout-order] tax calc=${taxCalculationId} cents=${taxCents} pickup=${!!pickupWarehouse} perfLoc=${performanceLocationId ?? 'none'}`);
+    } catch (taxErr) {
+      // Fail closed. Charging an amount whose tax we could not verify is worse than not taking the
+      // order — and silently falling back to 0 would under-collect where we ARE registered.
+      console.error('[create-checkout-order] tax calculation failed:', (taxErr as Error).message);
+      return jsonResponse({ error: 'tax_calculation_failed' }, 422);
+    }
+
     const totalCents = subtotalCents + shippingCents + taxCents;
 
     if (totalCents < 50) {
@@ -675,6 +732,10 @@ serve(async (req: Request) => {
     stripeParams.append('metadata[order_id]',          orderId);
     stripeParams.append('metadata[fulfillment_method]', fulfillmentMethod);
     if (guestToken) stripeParams.append('metadata[guest_token]', guestToken);
+    // Carries the tax quote to the webhook, which turns it into a filed Tax Transaction once the
+    // payment succeeds. Metadata rather than a new orders column: the value is only ever needed
+    // between these two hops, and it keeps the tax wiring out of the order schema.
+    if (taxCalculationId) stripeParams.append('metadata[tax_calculation_id]', taxCalculationId);
     if (customer.email) stripeParams.append('receipt_email', customer.email);
 
     const keyMode = STRIPE_SECRET_KEY.startsWith('sk_live') ? 'LIVE' : 'test';
@@ -749,6 +810,10 @@ serve(async (req: Request) => {
       subtotalCents,
       shippingCents,
       taxCents,
+      // Returned so the tax quote behind this charge is auditable end-to-end. PaymentIntent
+      // metadata is redacted for client-side reads, so this is the only externally observable
+      // handle on the calculation the webhook later files as a Tax Transaction.
+      taxCalculationId,
       isPickup: planData.usePickup ?? false,
       fulfillmentPlan: planData,
     });

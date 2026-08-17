@@ -20,6 +20,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createTaxTransaction } from '../_shared/stripeTax.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -264,6 +265,20 @@ serve(async (req: Request) => {
     if (orderStatus === 'paid' || orderStatus === 'pending_pickup') {
       console.log('[Webhook] Order already finalized — no-op:', orderId, '(', orderStatus, ')');
       return new Response(JSON.stringify({ received: true, action: 'no_op', orderId }), { status: 200 });
+    }
+
+    // File the tax with Stripe. The calculation made at order creation is only a quote until it
+    // becomes a Transaction — that is what lands in Stripe's tax reports. Deliberately NOT fatal:
+    // the money has already moved, so a reporting hiccup must not leave the order unpaid. It is
+    // logged loudly instead, and the Idempotency-Key makes webhook redelivery safe.
+    const taxCalculationId = metadata.tax_calculation_id ?? '';
+    if (taxCalculationId && orderId) {
+      const taxTxn = await createTaxTransaction(STRIPE_SECRET_KEY, taxCalculationId, orderId);
+      if (taxTxn.ok) {
+        console.log('[Webhook] Tax transaction recorded:', taxTxn.transactionId, 'for order', orderId);
+      } else {
+        console.error('[Webhook] TAX TRANSACTION FAILED (order stays paid, needs manual filing):', orderId, taxTxn.error);
+      }
     }
 
     const fulfillmentMethod = metadata.fulfillment_method ?? '';

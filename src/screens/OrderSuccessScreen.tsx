@@ -76,7 +76,7 @@ export default function OrderSuccessScreen({ route, navigation }: any) {
                     color="#CA8A04"
                   />
                   <Text style={styles.fulfillGroupMethod}>
-                    {group.isPickup ? 'Warehouse Pickup — Free' : `Shipping — $${group.shippingFee}`}
+                    {group.isPickup ? 'Pickup — Free' : `Shipping — $${group.shippingFee}`}
                   </Text>
                 </View>
                 <Text style={styles.fulfillGroupWarehouse}>{group.warehouseLabel}</Text>

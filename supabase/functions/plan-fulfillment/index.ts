@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { calculateTax, extractUsZip, findOrCreatePerformanceLocation, type TaxAddress } from '../_shared/stripeTax.ts';
 import { deliveryProductPrice } from '../_shared/gigaDeliveryClient.ts';
 import {
   computeDeliveryFee,
@@ -17,6 +18,9 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 // Set via: supabase secrets set GOOGLE_MAPS_API_KEY=<your-key>
 const GOOGLE_MAPS_API_KEY = Deno.env.get('GOOGLE_MAPS_API_KEY') ?? '';
+// Same secret create-checkout-order uses. Only for the DISPLAY-ONLY tax preview below; when it is
+// absent the plan still returns, just without a tax line.
+const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '').trim();
 
 const STALE_THRESHOLD_HOURS = 24;
 // Delivery fee is computed dynamically from GIGA product/price/v1 — never hardcoded.
@@ -109,6 +113,8 @@ interface PlanResponse {
   deliveryEligible?: boolean;
   usePickup?: boolean;
   shipping?: number | null;
+  /** Stripe Tax preview (cents) for DISPLAY ONLY. null = not calculated; create-checkout-order is the charging authority. */
+  taxCents?: number | null;
   /** Server-authoritative Delivery fee (cents) from GIGA product/price/v1. null = unavailable → client blocks Delivery (no $99 fallback). */
   deliveryFeeCents?: number | null;
   deliveryAvailable?: boolean;
@@ -614,8 +620,73 @@ serve(async (req: Request) => {
       ? null
       : (deliveryAvailable ? null : (deliveryErrorReason ?? deliveryFee?.reason ?? 'api_error'));
 
+    // ── Tax preview ──────────────────────────────────────────────────────────
+    // Checkout shows Tax before the customer pays, but the charge is only assembled later in
+    // create-checkout-order. So the same Stripe Tax call is made here for DISPLAY ONLY, over the
+    // same catalogue prices, so the number on screen matches the one that gets charged.
+    //
+    // This is not a second pricing authority: create-checkout-order re-reads prices, recalculates
+    // tax and charges its own result. And unlike there, a failure here is NOT fatal — the customer
+    // can still check out; they just see no tax line until the authoritative pass runs.
+    let taxCentsPreview: number | null = null;
+    if (STRIPE_SECRET_KEY) {
+      try {
+        const productIds = [...new Set(items.map((i) => i.productId))];
+        const { data: priceRows } = await supabase
+          .from('standardized_products')
+          .select('supplier_product_id, selling_price, price')
+          .in('supplier_product_id', productIds);
+        const centsById = new Map<string, number>();
+        for (const row of priceRows ?? []) {
+          const dollars = (typeof row.selling_price === 'number' && row.selling_price > 0)
+            ? row.selling_price
+            : (typeof row.price === 'number' && row.price > 0 ? row.price : null);
+          if (dollars != null) centsById.set(row.supplier_product_id as string, Math.round(dollars * 100));
+        }
+        const taxLines = items
+          .map((i) => ({ productId: i.productId, qty: i.qty, unitPriceCents: centsById.get(i.productId) ?? 0 }))
+          .filter((l) => l.unitPriceCents > 0);
+
+        // Customer address always — Stripe needs it even when a performance location overrides
+        // where tax is assessed. Pickup expresses "tax at the warehouse" via performance_location,
+        // matching create-checkout-order exactly so preview and charge agree.
+        const shippingCentsForTax = usePickup ? 0 : (deliveryFeeCents ?? 0);
+        const taxAddress: TaxAddress = {
+          line1:      address.line1,
+          line2:      (address as { line2?: string }).line2 ?? null,
+          city:       address.city,
+          state:      address.state,
+          postalCode: address.zip,
+          country:    'US',
+        };
+        const performanceLocationId = usePickup
+          ? await findOrCreatePerformanceLocation(STRIPE_SECRET_KEY, String(selectedEntry.warehouse.code), {
+              line1:      String(selectedEntry.warehouse.address ?? ''),
+              city:       String(selectedEntry.warehouse.city ?? ''),
+              state:      String(selectedEntry.warehouse.state ?? ''),
+              postalCode: extractUsZip(selectedEntry.warehouse.address) ?? '',
+              country:    'US',
+            })
+          : null;
+
+        if (taxLines.length) {
+          const calc = await calculateTax(STRIPE_SECRET_KEY, {
+            lineItems: taxLines,
+            shippingCents: shippingCentsForTax,
+            address: taxAddress,
+            performanceLocationId,
+          });
+          taxCentsPreview = calc.taxCents;
+        }
+      } catch (taxErr) {
+        console.error('[plan-fulfillment] tax preview failed (non-fatal, display only):', (taxErr as Error).message);
+        taxCentsPreview = null;
+      }
+    }
+
     const plan: PlanResponse = {
       valid: true,
+      taxCents: taxCentsPreview,
       fulfillmentStatus: 'ok',
       selectedWarehouse: {
         code: selectedEntry.warehouse.code,

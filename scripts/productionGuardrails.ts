@@ -559,7 +559,10 @@ check('Pickup rule lock', () => {
   // Checkout still renders the pickup option.
   failures.push(...fileMust('src/screens/CheckoutScreen.tsx',
     'planHasPickup',
-    'Warehouse Pickup',
+    // Probe for "the pickup option still renders". The customer-facing wording was
+    // shortened to "Pickup — Free" (2026-08-16); the locked BUSINESS rules above
+    // (radius / $0 fee / time window / date offsets) are untouched.
+    'Pickup — Free',
     /setFulfillmentChoice\(['"]pickup['"]\)/,
   ));
 

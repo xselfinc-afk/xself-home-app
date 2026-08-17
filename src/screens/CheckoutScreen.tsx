@@ -198,9 +198,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const deliveryUnavailable = fulfillmentChoice === 'delivery' && activePlan !== null && !isPickup && !activePlan.deliveryAvailable;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
-  // The server charges $0 tax (create-checkout-order taxCents = 0). Display $0 so the shown
-  // total ALWAYS equals the Stripe charge. (Real tax is a separate, future change.)
-  const tax = 0;
+  // Tax comes from the server (Stripe Tax, via plan-fulfillment's preview over the same catalogue
+  // prices). This screen never computes a rate — it only renders what the server said. The charge
+  // itself is recalculated authoritatively in create-checkout-order, which is why the two agree.
+  // null (not yet planned, or the preview failed) renders as $0 rather than blocking checkout.
+  const tax = (fulfillmentPlan?.taxCents ?? 0) / 100;
   // Cart mode: credit was toggled in CartScreen and passed here.
   // Buy Now mode: user toggles credit directly on this screen.
   // These two states are fully isolated — isBuyNow gates which applies.
@@ -398,6 +400,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
           groups: [group],
           totalShipping: data.usePickup ? 0 : deliveryFeeDollars,
           deliveryFeeCents,
+          taxCents: typeof data.taxCents === 'number' ? data.taxCents : null,
           deliveryAvailable,
           deliveryUnavailableReason,
           isSingleWarehouse: true,
@@ -925,7 +928,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   {fulfillmentChoice === 'pickup' && <View style={styles.radioDot} />}
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.fulfillOptionLabel}>Warehouse Pickup — Free</Text>
+                  <Text style={styles.fulfillOptionLabel}>Pickup — Free</Text>
                   {fulfillmentPlan.groups.filter(g => g.isPickup).map(g => (
                     <View key={g.warehouse.code}>
                       <Text style={styles.fulfillOptionSub}>
