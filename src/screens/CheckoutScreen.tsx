@@ -352,6 +352,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             items: planItems,
             address: planAddress,
             clientSupportsDynamicDelivery: true,
+            // This build renders the server's taxCents, so it opts into real tax.
+            clientSupportsTax: true,
             ...(fulfillmentChoice ? { preferredMethod: fulfillmentChoice } : {}),
           },
         });
@@ -687,6 +689,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
         // Version gate: this build charges the dynamic GIGA Delivery fee (no hardcoded fallback).
         // Old builds omit this flag and keep legacy checkout behavior.
         clientSupportsDynamicDelivery: true,
+        // Tax gate: this build renders the server's taxCents, so the charge may include tax.
+        // Builds that omit this are charged $0 tax — their Checkout cannot show a tax line.
+        clientSupportsTax: true,
         ...(customerName ? { customerName } : {}),
         // Optional: present only when SupportScreen forwarded a special-offer
         // quote on Buy Now, OR when a cart line carries a quoteToken.

@@ -82,6 +82,16 @@ interface RequestBody {
   fulfillmentMethod?: 'delivery' | 'pickup';
   /** 🔒 Version gate: only NEW app builds send true. Absent/false → legacy-compatible behavior. */
   clientSupportsDynamicDelivery?: boolean;
+  /**
+   * 🔒 Tax capability gate. Only builds whose Checkout renders the server's taxCents send this.
+   * Absent → false → tax stays 0, exactly as every already-installed build expects.
+   *
+   * Without this gate the backend charges tax that older Checkout screens never display, so the
+   * customer is billed more than the total they approved. Version numbers are deliberately NOT
+   * consulted: the client declares what it can render, the same way clientSupportsDynamicDelivery
+   * already works.
+   */
+  clientSupportsTax?: boolean;
   /** Authenticated Supabase user ID — omit for guest */
   userId?: string;
   /** Resume token from a previous guest checkout attempt */
@@ -137,6 +147,7 @@ serve(async (req: Request) => {
       customerName,
       quoteToken,
       clientSupportsDynamicDelivery = false,
+      clientSupportsTax = false,
     } = body;
 
     // ── Input validation ──────────────────────────────────────────────────────
@@ -537,7 +548,9 @@ serve(async (req: Request) => {
 
     let taxCents = 0;
     let taxCalculationId: string | null = null;
-    try {
+    // Old clients: no tax, no calculation, no Stripe call. Their Checkout shows $0 and that is
+    // exactly what gets charged — displayed total and PaymentIntent stay equal.
+    if (clientSupportsTax) try {
       const calc = await calculateTax(STRIPE_SECRET_KEY, {
         // Authoritative prices only — `items` was already reconciled against the catalogue above.
         lineItems: items.map((i) => ({ productId: i.productId, qty: i.qty, unitPriceCents: i.unitPriceCents })),

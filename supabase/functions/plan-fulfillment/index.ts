@@ -201,7 +201,7 @@ serve(async (req: Request) => {
 
   try {
     // ── Parse + validate input ───────────────────────────────────────────────
-    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: 'pickup' | 'delivery' | null; clientSupportsDynamicDelivery?: boolean };
+    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: 'pickup' | 'delivery' | null; clientSupportsDynamicDelivery?: boolean; clientSupportsTax?: boolean };
     try {
       body = await req.json();
     } catch {
@@ -213,6 +213,9 @@ serve(async (req: Request) => {
     // (and create-checkout-order's internal call on behalf of an old client) omit it and get
     // the legacy-compatible response. See docs/delivery-architecture.md + deliveryGate.test.ts.
     const clientSupportsDynamicDelivery = body.clientSupportsDynamicDelivery === true;
+    // 🔒 Tax capability gate — mirrors create-checkout-order. Absent → false → no tax line, so a
+    // build that cannot render tax never previews one either.
+    const clientSupportsTax = body.clientSupportsTax === true;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return jsonResponse({ valid: false, error: 'items array is required' }, 400);
@@ -629,7 +632,7 @@ serve(async (req: Request) => {
     // tax and charges its own result. And unlike there, a failure here is NOT fatal — the customer
     // can still check out; they just see no tax line until the authoritative pass runs.
     let taxCentsPreview: number | null = null;
-    if (STRIPE_SECRET_KEY) {
+    if (clientSupportsTax && STRIPE_SECRET_KEY) {
       try {
         const productIds = [...new Set(items.map((i) => i.productId))];
         const { data: priceRows } = await supabase
