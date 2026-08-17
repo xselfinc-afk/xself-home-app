@@ -1223,8 +1223,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
             )}
           </View>
           <View style={styles.summaryTotalBlock}>
-            <Text style={styles.summaryTotalLabel}>Total</Text>
-            <Text style={styles.summaryTotalValue}>${formatAmount(total)}</Text>
+            {/* Hairline between the line items and the figure they add up to. Everything above is
+                detail; everything below is what gets charged. */}
+            <View style={styles.summaryDivider} />
+            <View style={styles.summaryTotalRow}>
+              <Text style={styles.summaryTotalLabel}>Total</Text>
+              <View style={styles.summaryTotalAmountWrap}>
+                <Text style={styles.summaryTotalValue}>${formatAmount(total)}</Text>
+                <Text style={styles.summaryTotalCurrency}>USD</Text>
+              </View>
+            </View>
             {isPickup && <Text style={styles.summaryTotalSub}>Pickup — no shipping fee</Text>}
             {reserveTimeLeft ? (
               <Text style={styles.reserveText}>🔒 Your price is reserved for {reserveTimeLeft}</Text>
@@ -1668,13 +1676,19 @@ const styles = StyleSheet.create({
 
   summaryCard: { marginHorizontal: 20, marginBottom: 8, backgroundColor: 'white', borderRadius: 6, padding: 16 },
   summaryLines: { marginBottom: 4 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
-  summaryLabel: { fontSize: 12, color: '#9CA3AF' },
-  summaryValue: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
-  summaryFree: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
-  summaryTotalBlock: { paddingTop: 16, paddingBottom: 24 },
-  summaryTotalLabel: { fontSize: 12, color: '#9CA3AF', fontWeight: '500', letterSpacing: 0.8, textTransform: 'uppercase' as const, marginBottom: 6 },
-  summaryTotalValue: { fontSize: 28, fontWeight: '700', color: '#111111' },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+  summaryLabel: { fontSize: 13, lineHeight: 20, color: '#9CA3AF' },
+  summaryValue: { fontSize: 13, lineHeight: 20, color: '#4B5563', textAlign: 'right' as const },
+  summaryFree: { fontSize: 13, lineHeight: 20, color: '#4B5563', textAlign: 'right' as const },
+  summaryTotalBlock: { paddingTop: 6, paddingBottom: 20 },
+  summaryDivider: { height: StyleSheet.hairlineWidth, backgroundColor: '#E7E5E4', marginBottom: 14 },
+  summaryTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  summaryTotalAmountWrap: { alignItems: 'flex-end' },
+  summaryTotalCurrency: { fontSize: 11, lineHeight: 14, color: '#9CA3AF', marginTop: 2 },
+  summaryTotalLabel: { fontSize: 16, lineHeight: 28, color: '#1C1917', fontWeight: '600' as const },
+  // 20 rather than 26: still the heaviest figure in the block, but no longer a headline price.
+  // lineHeight matches the label's so both sides of the row sit on the same optical line.
+  summaryTotalValue: { fontSize: 20, lineHeight: 28, fontWeight: '700' as const, color: '#111111' },
   summaryTotalSub: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
 
 
@@ -1746,7 +1760,7 @@ const styles = StyleSheet.create({
   debugBadge: { backgroundColor: '#92660A', paddingVertical: 4, paddingHorizontal: 12, alignSelf: 'center', borderRadius: 4, marginVertical: 4 },
   debugBadgeText: { color: '#FFFBEB', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
 
-  summaryCalculating: { fontSize: 12, color: '#9CA3AF', fontStyle: 'italic' as const },
+  summaryCalculating: { fontSize: 13, lineHeight: 20, color: '#9CA3AF', fontStyle: 'italic' as const },
   fulfillRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#D1CFC9', alignItems: 'center', justifyContent: 'center' },
   radioOuterActive: { borderColor: '#EAB320' },
