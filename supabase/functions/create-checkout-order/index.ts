@@ -461,9 +461,11 @@ serve(async (req: Request) => {
     };
 
     const { data: planData, error: planError } = await supabase.functions.invoke('plan-fulfillment', {
-      // Propagate the client capability flag so plan-fulfillment serves this caller the same
-      // (dynamic vs legacy) behavior the app expects. Old clients omit it → legacy shipping.
-      body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery },
+      // Capability flag: old clients omit it → legacy shipping. preferredMethod: without it the
+      // planner defaults to "pickup whenever eligible", so a customer in the radius who chose
+      // Delivery got planned as Pickup ($0 shipping, warehouse-sourced tax) while the order still
+      // said fulfillment_method='delivery'.
+      body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery, preferredMethod: fulfillmentMethod },
     });
 
     if (planError || !planData?.valid || !planData?.selectedWarehouse) {
