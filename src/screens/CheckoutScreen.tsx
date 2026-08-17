@@ -342,7 +342,18 @@ export default function CheckoutScreen({ route, navigation }: any) {
         const { data, error } = await supabase.functions.invoke('plan-fulfillment', {
           // This (new) build supports the dynamic GIGA Delivery fee — opt into the new server
           // behavior via the version gate. Old builds omit this and get legacy behavior.
-          body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery: true },
+          //
+          // preferredMethod: without it the planner defaults to "pickup whenever eligible", and the
+          // screen then converts the groups to delivery locally. That override moves the shipping
+          // number but not taxCents, so a delivery order inside the pickup radius would display the
+          // warehouse-sourced tax while create-checkout-order charges the destination-sourced one.
+          // Sending the choice keeps both figures from the same server plan.
+          body: {
+            items: planItems,
+            address: planAddress,
+            clientSupportsDynamicDelivery: true,
+            ...(fulfillmentChoice ? { preferredMethod: fulfillmentChoice } : {}),
+          },
         });
 
         if (cancelled) return;
@@ -424,7 +435,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAddress?.id, orderItemsKey, fulfillRetryKey]);
+  }, [selectedAddress?.id, orderItemsKey, fulfillRetryKey, fulfillmentChoice]);
 
   // ── Live inventory verification fallback ──────────────────────────────────
   // Reset verification whenever the plan inputs change (new cart / address / retry).
