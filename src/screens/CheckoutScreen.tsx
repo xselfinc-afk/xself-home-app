@@ -1686,9 +1686,10 @@ const styles = StyleSheet.create({
   summaryTotalAmountWrap: { alignItems: 'flex-end' },
   summaryTotalCurrency: { fontSize: 11, lineHeight: 14, color: '#9CA3AF', marginTop: 2 },
   summaryTotalLabel: { fontSize: 16, lineHeight: 28, color: '#1C1917', fontWeight: '600' as const },
-  // 20 rather than 26: still the heaviest figure in the block, but no longer a headline price.
-  // lineHeight matches the label's so both sides of the row sit on the same optical line.
-  summaryTotalValue: { fontSize: 20, lineHeight: 28, fontWeight: '700' as const, color: '#111111' },
+  // Same size as its own label; the emphasis comes from weight, not scale. Three points above
+  // the detail rows is enough to read as "this is the one that matters" without becoming a
+  // headline price.
+  summaryTotalValue: { fontSize: 16, lineHeight: 28, fontWeight: '700' as const, color: '#111111' },
   summaryTotalSub: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
 
 
