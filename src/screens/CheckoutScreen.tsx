@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCart } from '../context/CartContext';
 import { fetchCartPriceUpdates } from '../services/cartPriceService';
-import { formatPrice } from '../data/products';
+import { formatAmount } from '../data/products';
 import { useRewards } from '../context/RewardsContext';
 import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
@@ -858,7 +858,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     // (no address, no fulfillment choice, incomplete card) fall through so
     // the price stays visible and the inline form guides the customer.
     if (selectedAddress && !fulfillmentPlan) return 'Currently Unavailable';
-    return `Place Order · $${formatPrice(total)}`;
+    return `Place Order · $${formatAmount(total)}`;
   })();
 
   return (
@@ -972,7 +972,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.fulfillOptionLabel}>
                     {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
-                      ? `Delivery — $${formatPrice(fulfillmentPlan.deliveryFeeCents / 100)}`
+                      ? `Delivery — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
                       : 'Delivery — Quote required'}
                   </Text>
                   <Text style={styles.fulfillOptionSub}>
@@ -995,7 +995,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
                         {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
-                          ? `Delivery — $${formatPrice(fulfillmentPlan.deliveryFeeCents / 100)}`
+                          ? `Delivery — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
                           : 'Delivery — unavailable'}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>
@@ -1147,7 +1147,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
             {!reviewExpanded ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Text style={styles.summaryLabel}>
-                  {orderItems.length} {orderItems.length === 1 ? 'item' : 'items'} · ${formatPrice(subtotal)}
+                  {orderItems.length} {orderItems.length === 1 ? 'item' : 'items'} · ${formatAmount(subtotal)}
                 </Text>
                 <Ionicons name="chevron-down-outline" size={16} color="#9CA3AF" />
               </View>
@@ -1165,7 +1165,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
                         {[item.color, item.size].filter(Boolean).join(' · ')}
                       </Text>
                       <View style={styles.itemBottom}>
-                        <Text style={styles.itemPrice}>${formatPrice(item.price * item.qty)}</Text>
+                        <Text style={styles.itemPrice}>${formatAmount(item.price * item.qty)}</Text>
                         <Text style={styles.itemQty}>Qty: {item.qty}</Text>
                       </View>
                     </View>
@@ -1184,7 +1184,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
           <View style={styles.summaryLines}>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>${formatPrice(subtotal)}</Text>
+              <Text style={styles.summaryValue}>${formatAmount(subtotal)}</Text>
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>
@@ -1198,11 +1198,11 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     ? <Text style={[styles.summaryFree, { color: '#CA8A04' }]}>Free</Text>
                     : deliveryUnavailable
                       ? <Text style={[styles.summaryCalculating, { color: '#B45309' }]}>Unavailable</Text>
-                      : <Text style={styles.summaryValue}>${formatPrice(shipping)}</Text>}
+                      : <Text style={styles.summaryValue}>${formatAmount(shipping)}</Text>}
             </View>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tax</Text>
-              <Text style={styles.summaryValue}>${formatPrice(tax)}</Text>
+              <Text style={styles.summaryValue}>${formatAmount(tax)}</Text>
             </View>
             {isBuyNow && shoppingCredit > 0 && (
               <TouchableOpacity style={styles.summaryRow} onPress={() => setBuyNowCreditApplied(v => !v)}>
@@ -1218,13 +1218,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
             {appliedCredit > 0 && (
               <View style={styles.summaryRow}>
                 <Text style={[styles.summaryLabel, { color: '#CA8A04' }]}>Shopping credit applied</Text>
-                <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatPrice(appliedCredit)}</Text>
+                <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatAmount(appliedCredit)}</Text>
               </View>
             )}
           </View>
           <View style={styles.summaryTotalBlock}>
             <Text style={styles.summaryTotalLabel}>Total</Text>
-            <Text style={styles.summaryTotalValue}>${formatPrice(total)}</Text>
+            <Text style={styles.summaryTotalValue}>${formatAmount(total)}</Text>
             {isPickup && <Text style={styles.summaryTotalSub}>Pickup — no shipping fee</Text>}
             {reserveTimeLeft ? (
               <Text style={styles.reserveText}>🔒 Your price is reserved for {reserveTimeLeft}</Text>

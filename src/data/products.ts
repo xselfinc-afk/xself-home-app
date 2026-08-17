@@ -119,6 +119,18 @@ export function formatPrice(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+/**
+ * Money as it is actually charged — always two decimals.
+ *
+ * formatPrice rounds to whole dollars, which reads well on product cards but hides cents. At
+ * checkout that is misleading: tax is rarely a round number, so $43.66 rendered as "$44" makes the
+ * displayed total disagree with the amount Stripe charges. Use this wherever the figure is a real
+ * payable amount rather than a browsing price.
+ */
+export function formatAmount(n: number): string {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function recommendationScore(p: Product): number {
   return (
     (p.isBestSeller ? 5 : 0) +
