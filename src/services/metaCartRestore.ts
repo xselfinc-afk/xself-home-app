@@ -30,6 +30,9 @@ export interface RestoredLine {
   productId: string;
   name: string;
   price: number;
+  /** Compare-at price, when the catalogue actually has one. Drives the "You saved" line;
+   *  absent means no claim, never a fabricated one. */
+  originalPrice?: number;
   img: string;
   qty: number;
   color: string;
@@ -69,6 +72,7 @@ export interface ProductFactsLoader {
     sku?: string;
     name: string;
     price: number;
+    originalPrice?: number;
     image?: string;
     images?: string[];
     color?: string;
@@ -187,6 +191,8 @@ function toRestoredLine(
     productId: facts.id,          // = supplier_product_id，购物车的身份
     name: facts.name,
     price: facts.price,           // 权威售价；结账时服务端仍会重读并覆盖
+    // Only when the catalogue carries one. Display-only — it never reaches any total.
+    ...(typeof facts.originalPrice === 'number' ? { originalPrice: facts.originalPrice } : {}),
     img: facts.image ?? facts.images?.[0] ?? '',
     qty: item.quantity,           // URL 唯一被采信的字段
     color: facts.color ?? '',

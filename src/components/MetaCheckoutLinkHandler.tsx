@@ -129,7 +129,7 @@ export default function MetaCheckoutLinkHandler({ navigator }: Props): React.Rea
           // Product 只有 id/name/price/images/image。sku、color、size 不是 Product 的字段
           // （它们属于 ProductVariant），因此这里不伪造：还原层会填空串，与既有
           // 「加入购物车」在无变体时的行为一致。
-          return { id: p.id, name: p.name, price: p.price, image: p.image, images: p.images };
+          return { id: p.id, name: p.name, price: p.price, originalPrice: p.originalPrice, image: p.image, images: p.images };
         },
       );
 
