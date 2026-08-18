@@ -2296,7 +2296,7 @@ function CartScreen({ navigation }) {
             )}
           </View>
           {/* Primary: Total */}
-          <View style={styles.summaryTotalBlock}>
+          <View style={[styles.summaryTotalBlock, styles.summaryTotalRow]}>
             <Text style={styles.summaryTotalLabel}>Total</Text>
             <Text style={styles.summaryTotalValue}>${formatPrice(total)}</Text>
           </View>
@@ -3080,13 +3080,15 @@ const styles = StyleSheet.create({
   summaryFree: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'right' as const },
   summaryMuted: { fontSize: 12, color: '#C4C0BA', textAlign: 'right' as const },
   summaryTotalBlock: { paddingTop: 14, paddingBottom: 16 },
+  summaryTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCheckoutBtn: { backgroundColor: '#EAB320', height: 56, borderRadius: 14, alignItems: 'center', justifyContent: 'center', shadowColor: '#EAB320', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3 },
   summaryCheckoutBtnText: { color: 'white', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
   floatingCtaContainer: { position: 'absolute', left: 16, right: 16, zIndex: 10 },
   floatingCheckoutBtn: { backgroundColor: '#EAB320', paddingVertical: 16, borderRadius: 14, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 6 },
   floatingCheckoutBtnText: { color: 'white', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
-  summaryTotalLabel: { fontSize: 12, fontWeight: '500', color: '#9CA3AF', marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: 0.8 },
-  summaryTotalValue: { fontSize: 21, fontWeight: '600', color: '#111111' },
+  summaryTotalLabel: { fontSize: 16, lineHeight: 24, fontWeight: '600' as const, color: '#1C1917' },
+  // 与 CheckoutScreen 同一档：和自己的 label 同尺寸，强调交给字重。
+  summaryTotalValue: { fontSize: 16, lineHeight: 24, fontWeight: '700' as const, color: '#111111' },
   summaryTotalSub: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
   checkoutBtn: { backgroundColor: '#EAB320', paddingVertical: 13, borderRadius: 6, alignItems: 'center' },
   checkoutBtnText: { color: 'white', fontSize: 15, fontWeight: '600' },
