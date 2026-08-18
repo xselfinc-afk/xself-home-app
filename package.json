@@ -142,7 +142,9 @@
     "test:golden-path-freeze": "tsx src/__tests__/goldenPathFreeze.test.ts",
     "test:onboarding-recovery": "tsx src/__tests__/onboardingRecovery.test.ts",
     "verify:xone-bridge-schema": "tsx scripts/verifyXoneBridgeSchema.ts",
-    "reviews:reconcile": "tsx scripts/reconcileReviewCoverage.ts"
+    "reviews:reconcile": "tsx scripts/reconcileReviewCoverage.ts",
+    "reviews:schedule:install": "bash scripts/reviewScheduleInstall.sh install",
+    "reviews:schedule:uninstall": "bash scripts/reviewScheduleInstall.sh uninstall"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.0.2",
