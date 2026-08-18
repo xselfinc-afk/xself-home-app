@@ -22,6 +22,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
+import { orderSavings } from './src/utils/orderSavings';
 import { LinearGradient } from 'expo-linear-gradient';
 import { products, Product, ProductVariant, MediaItem, formatPrice } from './src/data/products';
 import { loadProductDetail, loadProductFamily } from './src/services/productFamilyService';
@@ -2275,6 +2276,12 @@ function CartScreen({ navigation }) {
               <Text style={styles.summaryLabel}>Subtotal</Text>
               <Text style={styles.summaryValue}>${formatPrice(rawTotal)}</Text>
             </View>
+            {orderSavings(cart) > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>You saved</Text>
+                <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatPrice(orderSavings(cart))}</Text>
+              </View>
+            )}
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Shipping</Text>
               <Text style={styles.summaryMuted}>Calculated at checkout</Text>

@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useCart } from '../context/CartContext';
 import { fetchCartPriceUpdates } from '../services/cartPriceService';
 import { formatAmount } from '../data/products';
+import { orderSavings } from '../utils/orderSavings';
 import { useRewards } from '../context/RewardsContext';
 import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
@@ -107,6 +108,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     name: string;
     img: string;
     price: number;
+    originalPrice?: number;
     qty: number;
     color?: string;
     size?: string;
@@ -126,6 +128,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         // price the server will charge, so display it here in preference to the
         // catalog list price. quoteToken is still forwarded for server override.
         price: quotedPrice ?? selectedVariant?.price ?? product?.price ?? 0,
+        originalPrice: selectedVariant?.originalPrice ?? product?.originalPrice,
         qty: buyQty ?? 1,
         color: selectedVariant?.color,
         size: selectedVariant?.size,
@@ -136,6 +139,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
         name: item.name,
         img: item.img,
         price: item.price,
+        originalPrice: item.originalPrice,
         qty: item.qty,
         color: item.color,
         size: item.size,
@@ -198,6 +202,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const deliveryUnavailable = fulfillmentChoice === 'delivery' && activePlan !== null && !isPickup && !activePlan.deliveryAvailable;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
+  // DISPLAY ONLY — deliberately absent from `total` below. See utils/orderSavings.ts.
+  const savedTotal = orderSavings(orderItems);
   // Tax comes from the server (Stripe Tax, via plan-fulfillment's preview over the same catalogue
   // prices). This screen never computes a rate — it only renders what the server said. The charge
   // itself is recalculated authoritatively in create-checkout-order, which is why the two agree.
@@ -1186,6 +1192,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
               <Text style={styles.summaryLabel}>Subtotal</Text>
               <Text style={styles.summaryValue}>${formatAmount(subtotal)}</Text>
             </View>
+            {savedTotal > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>You saved</Text>
+                <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatAmount(savedTotal)}</Text>
+              </View>
+            )}
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>
                 {deliveryLoading ? 'Delivery' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Delivery (${shippingGroupCount} warehouses)` : 'Delivery'}
