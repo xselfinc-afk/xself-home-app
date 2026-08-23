@@ -3,6 +3,13 @@ import { Linking } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
+/**
+ * Apple App Review 审核账号。审核员收不到邮件验证码，这个邮箱的验证走服务端
+ * review-login（官方 generateLink→verifyOtp 换真实 Session）。邮箱不是机密（它就写在
+ * App Store Connect 里），固定验证码只存在于服务端 Secret，客户端从不持有。
+ */
+const REVIEW_LOGIN_EMAIL = 'test@xselfhome.com';
+
 export type AuthUser = {
   /** Supabase user UUID — stable identity for ledger self-referral checks */
   id: string;
@@ -130,6 +137,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const verifyOtp = async (email: string, token: string): Promise<{ error: string | null }> => {
     console.log('[Auth] Verifying OTP for', email);
+
+    // Apple App Review 专用固定码：审核账号收不到邮件验证码，改由服务端 review-login
+    // 用官方 generateLink→verifyOtp 换取真实 Session。分支只对这一个邮箱生效；固定码
+    // 不在客户端存储或判断 —— 用户在验证码框输入什么，就原样当 `code` 交给服务端去比。
+    // 其它所有邮箱走下面完全未改动的原生流程。
+    if (email === REVIEW_LOGIN_EMAIL) {
+      const { data, error } = await supabase.functions.invoke('review-login', {
+        body: { email, code: token },
+      });
+      if (error || (data as { error?: string })?.error) {
+        return { error: 'Invalid or expired code. Please try again.' };
+      }
+      const { access_token, refresh_token } = (data ?? {}) as { access_token?: string; refresh_token?: string };
+      if (!access_token || !refresh_token) {
+        return { error: 'Invalid or expired code. Please try again.' };
+      }
+      const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token });
+      // setSession 成功后 onAuthStateChange 会触发并调用 applySession。
+      return { error: setErr?.message ?? null };
+    }
+
     const { data, error } = await supabase.auth.verifyOtp({
       email,
       token,

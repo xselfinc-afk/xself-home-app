@@ -405,6 +405,11 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 [functions.plan-fulfillment]
 verify_jwt = false
 
+# Apple Review 固定码登录：审核员尚未登录，调用时只带 anon key，没有平台 JWT。
+# 认证边界是 REVIEW_LOGIN_CODE Secret + 单邮箱白名单，不是平台 JWT。
+[functions.review-login]
+verify_jwt = false
+
 [functions.validate-checkout-inventory]
 verify_jwt = false
 
