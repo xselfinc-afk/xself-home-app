@@ -127,6 +127,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ── OTP flow ───────────────────────────────────────────────────────────────
   const sendOtp = async (email: string): Promise<{ error: string | null }> => {
     console.log('[Auth] Sending OTP to', email);
+
+    // Apple App Review 审核账号：审核员收不到邮件，这里绝不发真实 OTP 邮件——
+    // 直接返回成功让 UI 进入验证码页，真正的校验在 verifyOtp 走服务端 review-login。
+    // 固定码不在这一步出现，也不在客户端存储。其它所有邮箱走下面未改动的原生流程。
+    if (email === REVIEW_LOGIN_EMAIL) {
+      return { error: null };
+    }
+
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: { shouldCreateUser: true },
