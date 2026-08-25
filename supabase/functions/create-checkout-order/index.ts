@@ -21,6 +21,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
 import { evaluateCheckoutCart } from '../_shared/checkoutInventoryRevalidation.ts';
 import { calculateTax, extractUsZip, findOrCreatePerformanceLocation, type TaxAddress } from '../_shared/stripeTax.ts';
+import { buildSetupIntentParams, shouldUsePayAfterPickup } from '../_shared/pickup/pickupDomain.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -30,6 +31,38 @@ const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
 
 const SUPABASE_URL             = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+// Stripe API base — overridable ONLY for local integration tests (fake Stripe). Defaults to the
+// real API, so production behaviour (Delivery included) is byte-identical.
+const STRIPE_API_BASE = Deno.env.get('STRIPE_API_BASE') ?? 'https://api.stripe.com';
+
+/** Reuse the caller's existing Stripe customer if any prior order carries one; else create. */
+// deno-lint-ignore no-explicit-any — supabase-js query builders are thenable at runtime; their
+// generic type under Deno's strict resolution doesn't model Promise (same friction as the
+// existing quote-rollback code). `any` here keeps this private helper free of that type noise.
+async function getOrCreateStripeCustomer(
+  supabase: any,
+  opts: { userId: string | null; email: string | null },
+): Promise<string> {
+  if (opts.userId || opts.email) {
+    const q = supabase.from('orders').select('stripe_customer_id').not('stripe_customer_id', 'is', null).limit(1);
+    const { data } = opts.userId
+      ? await q.eq('user_id', opts.userId)
+      : await q.eq('customer_email', opts.email as string);
+    const existing = data?.[0]?.stripe_customer_id as string | undefined;
+    if (existing) return existing;
+  }
+  const params = new URLSearchParams();
+  if (opts.email) params.append('email', opts.email);
+  const res = await fetch(`${STRIPE_API_BASE}/v1/customers`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const json = await res.json() as Record<string, unknown>;
+  if (!res.ok) throw new Error(`stripe customer create failed: ${(json?.error as Record<string, unknown>)?.message ?? res.status}`);
+  return json.id as string;
+}
 // Needed only for the quote-redemption path: we verify the caller's JWT to
 // match the quote's customer_email server-side. Set this in Function Secrets.
 const SUPABASE_ANON_KEY         = Deno.env.get('SUPABASE_ANON_KEY')         ?? '';
@@ -82,6 +115,13 @@ interface RequestBody {
   fulfillmentMethod?: 'delivery' | 'pickup';
   /** 🔒 Version gate: only NEW app builds send true. Absent/false → legacy-compatible behavior. */
   clientSupportsDynamicDelivery?: boolean;
+  /**
+   * 🔒 Pay-After-Pickup capability gate. ONLY a build whose Checkout can drive the SetupIntent
+   * (save-card, $0-today) flow sends true. Absent/false → the order takes the existing
+   * automatic-capture PaymentIntent path, exactly as today. This never affects Delivery: the
+   * Pay-After-Pickup branch also requires fulfillmentMethod==='pickup' AND a pickup plan.
+   */
+  clientSupportsPayAfterPickup?: boolean;
   /**
    * 🔒 Tax capability gate. Only builds whose Checkout renders the server's taxCents send this.
    * Absent → false → tax stays 0, exactly as every already-installed build expects.
@@ -148,6 +188,7 @@ serve(async (req: Request) => {
       quoteToken,
       clientSupportsDynamicDelivery = false,
       clientSupportsTax = false,
+      clientSupportsPayAfterPickup = false,
     } = body;
 
     // ── Input validation ──────────────────────────────────────────────────────
@@ -490,6 +531,117 @@ serve(async (req: Request) => {
 
     // ── Compute totals ────────────────────────────────────────────────────────
     const subtotalCents = items.reduce((sum, i) => sum + i.qty * i.unitPriceCents, 0);
+
+    // ── Pay-After-Pickup branch ($0 today, save card, capture after pickup) ──────
+    // Enters ONLY for pickup + declared capability + a real pickup plan. Everything below
+    // this block (Delivery fee, tax, automatic-capture PaymentIntent) is untouched: Delivery
+    // and pickup-without-capability fall straight through. No charge is created here.
+    if (shouldUsePayAfterPickup(fulfillmentMethod, clientSupportsPayAfterPickup, planData.usePickup === true)) {
+      const puOrderId    = crypto.randomUUID();
+      const puGuestToken = userId ? null : (providedGuestToken ?? crypto.randomUUID());
+      const puNow        = new Date().toISOString();
+      const puDeadline   = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // pickup_hold: 24h
+      const puOrderNumber = `ORD-${puOrderId.slice(0, 8).toUpperCase()}`;
+      const puOrderDate   = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      // Provisional amount: subtotal only. Shipping is $0 for pickup and final tax is re-confirmed
+      // at BOL-ready (authorization step), where the amount actually charged is computed. Nothing
+      // is charged now, so this figure never bills the customer.
+      const puTotalCents = subtotalCents;
+
+      let stripeCustomerId: string;
+      try {
+        stripeCustomerId = await getOrCreateStripeCustomer(supabase, { userId: userId ?? null, email: customer.email ?? null });
+      } catch (e) {
+        console.error('[create-checkout-order] pickup customer setup failed:', e instanceof Error ? e.message : e);
+        return jsonResponse({ error: 'pickup_setup_failed' }, 502);
+      }
+
+      // Insert the order FIRST (pending_pickup, NOT paid) so a SetupIntent always has a home.
+      const { error: puOrderErr } = await supabase.from('orders').insert({
+        order_id:           puOrderId,
+        order_number:       puOrderNumber,
+        user_id:            userId ?? null,
+        guest_token:        puGuestToken,
+        customer_email:     customer.email ?? null,
+        customer_phone:     customer.phone ?? null,
+        status:             'pending_pickup',
+        payment_status:     'pending',            // 🔒 NOT paid — $0 collected; card only saved after SetupIntent succeeds
+        fulfillment_method: 'pickup',
+        fulfillment_plan:   planData,
+        pickup_stage:       'AWAITING_SUPPLIER_ORDER',
+        stripe_customer_id: stripeCustomerId,
+        subtotal_cents:     subtotalCents,
+        shipping_cents:     0,
+        tax_cents:          0,                     // re-confirmed at authorization (BOL ready)
+        total_cents:        puTotalCents,
+        total:              puTotalCents / 100,
+        subtotal:           subtotalCents / 100,
+        shipping_total:     0,
+        tax:                0,
+        date:               puOrderDate,
+        address_json:       address,
+        items_json:         items.map(i => ({ sku: i.sku, name: i.title, img: '', price: i.unitPriceCents / 100, qty: i.qty })),
+        fulfillment_groups_json: [],
+        created_at:         puNow,
+        updated_at:         puNow,
+      });
+      if (puOrderErr) {
+        console.error('[create-checkout-order] pickup order insert failed:', puOrderErr.message);
+        return jsonResponse({ error: 'Failed to create order record' }, 500);
+      }
+
+      await supabase.from('order_items').insert(items.map(i => ({
+        order_id: puOrderId, product_id: i.productId, supplier_sku: i.sku, title: i.title,
+        quantity: i.qty, unit_price_cents: i.unitPriceCents, total_cents: i.qty * i.unitPriceCents, created_at: puNow,
+      })));
+
+      // pickup_hold reservation: held past the 10-min payment sweep (which only touches
+      // reservation_policy='payment_10min'); a supplier order later takes over, else the 24h
+      // deadline releases it. expires_at is NOT NULL, so it mirrors the deadline.
+      const puWhCode = planData.selectedWarehouse?.code ?? 'UNKNOWN';
+      await supabase.from('inventory_reservations').insert(items.map(i => ({
+        order_id: puOrderId, product_id: i.productId, supplier_sku: i.sku,
+        warehouse_code: warehouseMap.get(i.productId) ?? puWhCode, quantity: i.qty,
+        status: 'reserved', reservation_policy: 'pickup_hold',
+        expires_at: puDeadline, pickup_release_deadline: puDeadline,
+        created_at: puNow, updated_at: puNow,
+      })));
+
+      // SetupIntent — $0 today. Idempotency-Key keeps a retry from creating a second one.
+      const siRes = await fetch(`${STRIPE_API_BASE}/v1/setup_intents`, {
+        method: 'POST',
+        headers: {
+          'Authorization':  `Bearer ${STRIPE_SECRET_KEY}`,
+          'Content-Type':   'application/x-www-form-urlencoded',
+          'Stripe-Version': '2024-06-20',
+          'Idempotency-Key': `${puOrderId}:setup`,
+        },
+        body: buildSetupIntentParams(puOrderId, stripeCustomerId).toString(),
+      });
+      const siJson = await siRes.json() as Record<string, unknown>;
+      if (!siRes.ok) {
+        console.error('[create-checkout-order] SetupIntent create failed:', (siJson?.error as Record<string, unknown>)?.message ?? siRes.status);
+        await supabase.from('orders').update({ status: 'abandoned', updated_at: new Date().toISOString() }).eq('order_id', puOrderId);
+        await supabase.from('inventory_reservations').update({ status: 'released', updated_at: new Date().toISOString() }).eq('order_id', puOrderId).eq('status', 'reserved');
+        return jsonResponse({ error: 'pickup_setup_failed' }, 502);
+      }
+
+      await supabase.from('orders').update({ setup_intent_id: siJson.id as string, updated_at: new Date().toISOString() }).eq('order_id', puOrderId);
+
+      // mode='setup' tells the client to confirm a SetupIntent (save card), NOT pay.
+      return jsonResponse({
+        mode:            'setup',
+        orderId:         puOrderId,
+        orderNumber:     puOrderNumber,
+        guestToken:      puGuestToken,
+        setupClientSecret: siJson.client_secret as string,
+        setupIntentId:   siJson.id as string,
+        stripeCustomerId,
+        isPickup:        true,
+        subtotalCents,
+      });
+    }
+
     // Delivery fee is SERVER-AUTHORITATIVE from plan-fulfillment (GIGA product/price/v1).
     // 🔒 Pickup is always free ($0) — the `usePickup ? 0 :` form is required by the Pickup-lock guard.
     const pickupShippingCents = planData.usePickup ? 0 : null;
@@ -756,7 +908,7 @@ serve(async (req: Request) => {
     const keyMode = STRIPE_SECRET_KEY.startsWith('sk_live') ? 'LIVE' : 'test';
     console.log('[create-checkout-order] Creating Stripe PI — mode:', keyMode, '| amount:', totalCents, '| order:', orderId);
 
-    const stripeRes = await fetch('https://api.stripe.com/v1/payment_intents', {
+    const stripeRes = await fetch(`${STRIPE_API_BASE}/v1/payment_intents`, {
       method: 'POST',
       headers: {
         'Authorization':  `Bearer ${STRIPE_SECRET_KEY}`,

@@ -355,3 +355,58 @@ export function evaluateCaptureEligibility(input: CaptureEligibilityInput): Capt
   }
   return { capturable: true, reason: `Capturable: original PI ${authorization.provider_payment_intent_id ?? '?'}.` };
 }
+
+// ── Checkout + webhook routing (shared by create-checkout-order & stripe-webhook) ──
+
+/**
+ * Pay-After-Pickup is taken ONLY when all three hold: the customer chose pickup, the client
+ * declared the SetupIntent capability, and the planner produced a pickup plan. Any false → the
+ * unchanged automatic-capture path (Delivery included).
+ */
+export function shouldUsePayAfterPickup(
+  fulfillmentMethod: string,
+  clientSupportsPayAfterPickup: boolean,
+  planUsePickup: boolean,
+): boolean {
+  return fulfillmentMethod === 'pickup' && clientSupportsPayAfterPickup === true && planUsePickup === true;
+}
+
+/**
+ * SetupIntent params for the $0-today, save-card pickup flow. No `amount` — a SetupIntent never
+ * charges. usage=off_session so the saved method can back a later manual-capture authorization.
+ */
+export function buildSetupIntentParams(orderId: string, customerId: string): URLSearchParams {
+  const p = new URLSearchParams();
+  p.append('customer', customerId);
+  p.append('usage', 'off_session');
+  p.append('payment_method_types[]', 'card');
+  p.append('metadata[order_id]', orderId);
+  p.append('metadata[phase]', 'checkout_setup');
+  return p;
+}
+
+export type WebhookPhase =
+  | 'checkout_setup' | 'pickup_authorization' | 'pickup_capture'
+  | 'delivery_payment' | 'admin_link' | 'unknown';
+
+/**
+ * What a Stripe event means, and whether it may set payment_status='paid'.
+ * INVARIANT: only the admin Payment Link, a Delivery PaymentIntent success, and a Pay-After-Pickup
+ * CAPTURE collect money (setsPaid=true). Card-save (SetupIntent) and the manual-capture
+ * AUTHORIZATION never set paid — a held card is not collected money.
+ */
+export function classifyWebhookEvent(
+  eventType: string,
+  metadata: Record<string, string>,
+): { phase: WebhookPhase; setsPaid: boolean } {
+  const phase = metadata.phase ?? '';
+  if (eventType === 'setup_intent.succeeded') return { phase: 'checkout_setup', setsPaid: false };
+  if (eventType === 'payment_intent.amount_capturable_updated') return { phase: 'pickup_authorization', setsPaid: false };
+  if (eventType === 'checkout.session.completed') return { phase: 'admin_link', setsPaid: true };
+  if (eventType === 'payment_intent.succeeded') {
+    if (phase === 'pickup_capture') return { phase: 'pickup_capture', setsPaid: true };
+    if (phase === 'pickup_authorization') return { phase: 'pickup_authorization', setsPaid: false };
+    return { phase: 'delivery_payment', setsPaid: true };
+  }
+  return { phase: 'unknown', setsPaid: false };
+}

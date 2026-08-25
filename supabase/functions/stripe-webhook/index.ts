@@ -21,6 +21,10 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createTaxTransaction } from '../_shared/stripeTax.ts';
+// classifyWebhookEvent documents the paid-invariant; imported from the shared pickup module so the
+// same routing table is unit-tested without booting this function's top-level serve().
+import { classifyWebhookEvent } from '../_shared/pickup/pickupDomain.ts';
+void classifyWebhookEvent; // routing below is explicit; this keeps the shared contract in view + tested
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -126,6 +130,10 @@ serve(async (req: Request) => {
     // Checkout Sessions. PI metadata is not propagated by default for
     // Payment Links, so the session is the authoritative match anchor.
     'checkout.session.completed',
+    // Pay-After-Pickup: card saved ($0) and manual-capture authorization placed.
+    // Neither collects money — see classifyWebhookEvent: setsPaid=false for both.
+    'setup_intent.succeeded',
+    'payment_intent.amount_capturable_updated',
   ];
 
   if (!HANDLED.includes(eventType)) {
@@ -209,6 +217,97 @@ serve(async (req: Request) => {
       }),
       { status: 200 },
     );
+  }
+
+  // ── Pay-After-Pickup: card saved (SetupIntent) — $0, NEVER paid ───────────
+  // Branched BEFORE the payment_intent handler. A SetupIntent success means a card is on
+  // file; it collects nothing. We record it and keep payment_status BELOW paid.
+  if (eventType === 'setup_intent.succeeded') {
+    const si       = (event.data as Record<string, unknown>)?.object as Record<string, unknown>;
+    const siId     = si?.id as string | undefined;
+    const siMeta   = (si?.metadata ?? {}) as Record<string, string>;
+    const orderRef = siMeta.order_id;
+    if (!siId && !orderRef) return new Response(JSON.stringify({ received: true, action: 'no_setup_ref' }), { status: 200 });
+
+    const match = supabase.from('orders').select('order_id, payment_status').limit(1);
+    const { data: rows } = orderRef
+      ? await match.eq('order_id', orderRef)
+      : await match.eq('setup_intent_id', siId as string);
+    const target = rows?.[0]?.order_id as string | undefined;
+    if (!target) return new Response(JSON.stringify({ received: true, action: 'no_order_for_setup' }), { status: 200 });
+
+    // card_saved is strictly below paid (CHECK-enforced). Do NOT touch order.status.
+    const { error } = await supabase.from('orders').update({
+      payment_status:         'card_saved',
+      payment_method_saved_at: new Date().toISOString(),
+      setup_intent_id:        siId ?? undefined,
+      updated_at:             new Date().toISOString(),
+    }).eq('order_id', target).eq('payment_status', 'pending'); // idempotent: only advance from pending
+    if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    console.log('[Webhook] card saved (NOT paid) for order', target);
+    return new Response(JSON.stringify({ received: true, action: 'card_saved', orderId: target }), { status: 200 });
+  }
+
+  // ── Pay-After-Pickup: authorization hold placed — AUTHORIZED, NEVER paid ──
+  // A manual-capture PaymentIntent that reaches amount_capturable_updated is a HELD hold, not a
+  // charge. Record AUTHORIZED; payment_status stays 'authorized' (below paid). Capture is separate.
+  if (eventType === 'payment_intent.amount_capturable_updated') {
+    const pi     = (event.data as Record<string, unknown>)?.object as Record<string, unknown>;
+    const piId   = pi?.id as string | undefined;
+    const piMeta = (pi?.metadata ?? {}) as Record<string, string>;
+    const orderRef = piMeta.order_id;
+    const capturable = Number(pi?.amount_capturable ?? 0);
+    if (!orderRef) return new Response(JSON.stringify({ received: true, action: 'no_auth_order' }), { status: 200 });
+
+    const { error } = await supabase.from('orders').update({
+      authorization_payment_intent_id: piId ?? undefined,
+      authorization_status:            'AUTHORIZED',
+      authorization_amount_cents:      capturable,
+      pickup_stage:                    'AUTHORIZED',
+      payment_status:                  'authorized',   // 🔒 held funds — NOT paid
+      updated_at:                      new Date().toISOString(),
+    }).eq('order_id', orderRef).not('payment_status', 'in', '(paid)'); // never downgrade a captured order
+    if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+
+    await supabase.from('pickup_payment_authorizations')
+      .update({ status: 'AUTHORIZED', provider_payment_intent_id: piId ?? null, updated_at: new Date().toISOString() })
+      .eq('order_id', orderRef).eq('provider_payment_intent_id', piId ?? '');
+    console.log('[Webhook] authorization AUTHORIZED (NOT paid) for order', orderRef);
+    return new Response(JSON.stringify({ received: true, action: 'authorized', orderId: orderRef }), { status: 200 });
+  }
+
+  // ── Pay-After-Pickup: CAPTURE succeeded — the ONLY pickup event that sets paid ──
+  // Guarded by metadata.phase so it runs ONLY for a pickup capture. Delivery PIs (no phase, or
+  // phase='delivery_payment') skip this and hit the existing handler below UNCHANGED.
+  {
+    const capPi   = (event.data as Record<string, unknown>)?.object as Record<string, unknown>;
+    const capMeta = (capPi?.metadata ?? {}) as Record<string, string>;
+    if (eventType === 'payment_intent.succeeded' && capMeta.phase === 'pickup_capture') {
+      const orderRef = capMeta.order_id;
+      const capPiId  = capPi?.id as string | undefined;
+      if (!orderRef) return new Response(JSON.stringify({ received: true, action: 'no_capture_order' }), { status: 200 });
+
+      // Idempotent: only pending→paid transition writes; a redelivered capture is a no-op.
+      const { data: capRows, error: capErr } = await supabase.from('orders').update({
+        payment_status:       'paid',            // capture is the ONLY thing that sets paid for pickup
+        authorization_status: 'CAPTURED',
+        pickup_stage:         'CAPTURED',
+        updated_at:           new Date().toISOString(),
+      }).eq('order_id', orderRef).not('payment_status', 'in', '(paid)').select('order_id');
+      if (capErr) return new Response(JSON.stringify({ error: capErr.message }), { status: 500 });
+
+      await supabase.from('pickup_payment_authorizations')
+        .update({ status: 'CAPTURED', updated_at: new Date().toISOString() })
+        .eq('order_id', orderRef).eq('provider_payment_intent_id', capPiId ?? '');
+
+      // File the tax transaction once (only if a fresh row transitioned to paid).
+      if (capRows && capRows.length > 0 && capMeta.tax_calculation_id) {
+        const taxTxn = await createTaxTransaction(STRIPE_SECRET_KEY, capMeta.tax_calculation_id, orderRef);
+        if (!taxTxn.ok) console.error('[Webhook] pickup capture tax filing failed (order stays paid):', orderRef, taxTxn.error);
+      }
+      console.log('[Webhook] pickup CAPTURED → paid for order', orderRef);
+      return new Response(JSON.stringify({ received: true, action: 'captured', orderId: orderRef }), { status: 200 });
+    }
   }
 
   // ── payment_intent.* events (existing flow, unchanged below this line) ────
