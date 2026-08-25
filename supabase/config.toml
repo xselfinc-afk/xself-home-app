@@ -455,3 +455,7 @@ verify_jwt = false
 # the user's Bearer JWT explicitly via supabase.auth.getUser before reading.
 [functions.get-active-quote]
 verify_jwt = false
+[functions.pickup-orders-list]
+verify_jwt = false
+[functions.pickup-order-get]
+verify_jwt = false
