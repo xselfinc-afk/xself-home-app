@@ -420,6 +420,11 @@ verify_jwt = false
 verify_jwt = false
 [functions.pickup-capture]
 verify_jwt = false
+# BOL storage: ops upload (X-Pickup-Token) + authorized customer/ops download (internal auth).
+[functions.pickup-bol-upload]
+verify_jwt = false
+[functions.pickup-bol-download]
+verify_jwt = false
 
 [functions.validate-checkout-inventory]
 verify_jwt = false
