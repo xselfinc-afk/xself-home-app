@@ -78,7 +78,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const { shoppingCredit, recordCreditSpend } = useRewards();
   const { user, isGuest, continueAsGuest, sendOtp, verifyOtp } = useAuth();
   const { addOrder } = useOrders();
-  const { confirmPayment, confirmPlatformPayPayment } = useStripe();
+  const { confirmPayment, confirmPlatformPayPayment, confirmSetupIntent } = useStripe();
   const insets = useSafeAreaInsets();
   const [reserveTimeLeft, setReserveTimeLeft] = useState('');
 
@@ -652,6 +652,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
     clientSecret: string;
     guestToken: string | null;
     paymentIntentId: string;
+    /** 'setup' for Pay-After-Pickup (confirm a SetupIntent); 'payment' otherwise. */
+    mode: 'setup' | 'payment';
+    /** Present only when mode==='setup'. */
+    setupClientSecret: string | null;
   } | null> {
     const items = orderItems.map(i => ({
       sku: i.sku,
@@ -698,13 +702,18 @@ export default function CheckoutScreen({ route, navigation }: any) {
         // Tax gate: this build renders the server's taxCents, so the charge may include tax.
         // Builds that omit this are charged $0 tax — their Checkout cannot show a tax line.
         clientSupportsTax: true,
+        // Pay-After-Pickup gate: this build can drive the SetupIntent ($0-today, save-card) flow.
+        // ONLY sent for pickup; delivery never enters Pay-After-Pickup on the server.
+        clientSupportsPayAfterPickup: (fulfillmentChoice ?? 'delivery') === 'pickup',
         ...(customerName ? { customerName } : {}),
         // Optional: present only when SupportScreen forwarded a special-offer
         // quote on Buy Now, OR when a cart line carries a quoteToken.
         ...(effectiveQuoteToken ? { quoteToken: effectiveQuoteToken } : {}),
       },
     });
-    if (error || !data?.clientSecret) {
+    // Pay-After-Pickup pickup returns mode='setup' with a setupClientSecret and NO clientSecret
+    // (no charge today). Treat that as success; only a missing BOTH is a real failure.
+    if (error || (!data?.clientSecret && !data?.setupClientSecret)) {
       // Structured price_changed (409): the server catalog price rose above the
       // cart snapshot. Refresh the displayed lines and let the caller surface a
       // review-and-retry message instead of the generic failure copy.
@@ -735,6 +744,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
       clientSecret: data.clientSecret,
       guestToken: data.guestToken ?? null,
       paymentIntentId: data.paymentIntentId,
+      // Pay-After-Pickup: present only for pickup. mode==='setup' → confirm a SetupIntent (save
+      // card, $0 today) instead of a payment. Absent/'payment' → the unchanged charge flow.
+      mode: (data.mode as 'setup' | 'payment' | undefined) ?? 'payment',
+      setupClientSecret: (data.setupClientSecret as string | undefined) ?? null,
     };
   }
 
@@ -1315,6 +1328,51 @@ export default function CheckoutScreen({ route, navigation }: any) {
               }
 
               const { clientSecret, paymentIntentId } = result;
+
+              // ── Pay-After-Pickup: $0 today, save the card via SetupIntent ─────────
+              // No money is taken now. confirmSetupIntent handles any requires_action (3DS)
+              // interaction itself. The order is already pending_pickup / card_saved on the
+              // server; capture happens later after pickup. Delivery never reaches this branch.
+              if (result.mode === 'setup') {
+                if (!result.setupClientSecret) {
+                  setRecheckError('Unable to start pickup checkout. Please try again.');
+                  setPlacing(false);
+                  return;
+                }
+                const { error: setupError } = await confirmSetupIntent(result.setupClientSecret, {
+                  paymentMethodType: 'Card',
+                  paymentMethodData: {
+                    billingDetails: selectedAddress ? {
+                      name: `${selectedAddress.first_name} ${selectedAddress.last_name}`,
+                      address: {
+                        line1: selectedAddress.address_line_1,
+                        line2: selectedAddress.address_line_2 ?? undefined,
+                        city: selectedAddress.city,
+                        state: selectedAddress.state,
+                        postalCode: selectedAddress.zip,
+                        country: selectedAddress.country ?? 'US',
+                      },
+                    } : undefined,
+                  },
+                });
+                if (setupError) {
+                  setRecheckError(setupError.message ?? 'Could not save your card. Please try again.');
+                  setPlacing(false);
+                  return;
+                }
+                // Card saved ($0 charged). The webhook marks the order card_saved (NOT paid).
+                if (!isBuyNow) clearCart();
+                navigation.navigate('OrderSuccess', {
+                  total: 0,                         // $0 due today for pickup
+                  orderId: orderId.current,
+                  orderNumber: orderNumber.current,
+                  checkoutSessionId: checkoutSessionId.current,
+                  userEmail: user?.email ?? '',
+                  paymentIntentId: null,
+                });
+                setPlacing(false);
+                return;
+              }
 
               const _stripeKeyMode = (process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '').startsWith('pk_live') ? 'LIVE' : 'test';
               if (_stripeKeyMode === 'test') { console.warn('[Payment] Stripe is in test mode — set pk_live key before App Store submission'); }
