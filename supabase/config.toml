@@ -459,3 +459,5 @@ verify_jwt = false
 verify_jwt = false
 [functions.pickup-order-get]
 verify_jwt = false
+[functions.pickup-supplier-order-create]
+verify_jwt = false
