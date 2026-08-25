@@ -331,20 +331,23 @@ export function evaluateReleaseGate(input: ReleaseGateInput): GateResult {
 
 // ── Capture eligibility ───────────────────────────────────────────────────────
 export interface CaptureEligibilityInput {
-  order: { order_id: string; pickup_stage: string | null; pickup_confirmed_at: string | null };
+  order: { order_id: string; pickup_stage: string | null; pickup_confirmed_at: string | null; payment_due_at?: string | null };
   authorization: AuthorizationRecord | undefined;
   hasOpenIssue: boolean;
+  /** When true, capture may run before payment_due_at (e.g. the hold is about to lapse). */
+  allowBeforeDue?: boolean;
   at?: Date;
 }
 export interface CaptureEligibility { capturable: boolean; reason: string }
 
 /**
- * Capture is allowed only when: pickup was CONFIRMED (24h basis exists), a live AUTHORIZED
- * hold is present, and no OPEN issue blocks it. Fail-closed on expiry. Idempotency (only
- * the original PI, never a second) is enforced at the call site via the stored PI id.
+ * Capture is allowed only when: pickup was CONFIRMED, the 24h payment window is due (unless the
+ * hold is about to lapse — allowBeforeDue), a live AUTHORIZED hold is present, and no OPEN issue
+ * blocks it. Fail-closed on expiry. Idempotency (only the original PI, never a second) is enforced
+ * at the call site via the stored PI id.
  */
 export function evaluateCaptureEligibility(input: CaptureEligibilityInput): CaptureEligibility {
-  const { order, authorization, hasOpenIssue, at = new Date() } = input;
+  const { order, authorization, hasOpenIssue, allowBeforeDue = false, at = new Date() } = input;
   if (hasOpenIssue) return { capturable: false, reason: 'An open issue blocks capture.' };
   if (!order.pickup_confirmed_at) return { capturable: false, reason: 'Pickup not confirmed; 24h window has not started.' };
   if (!authorization) return { capturable: false, reason: 'No authorization to capture.' };
@@ -352,6 +355,9 @@ export function evaluateCaptureEligibility(input: CaptureEligibilityInput): Capt
   if (authorization.status !== 'AUTHORIZED') return { capturable: false, reason: `Authorization is ${authorization.status}, not AUTHORIZED.` };
   if (authorization.capture_before && new Date(authorization.capture_before).getTime() <= at.getTime()) {
     return { capturable: false, reason: 'Authorization has lapsed; capture window closed (fail-closed).' };
+  }
+  if (!allowBeforeDue && order.payment_due_at && new Date(order.payment_due_at).getTime() > at.getTime()) {
+    return { capturable: false, reason: `Capture not due until ${order.payment_due_at} (24h after pickup confirmation).` };
   }
   return { capturable: true, reason: `Capturable: original PI ${authorization.provider_payment_intent_id ?? '?'}.` };
 }
@@ -409,4 +415,140 @@ export function classifyWebhookEvent(
     return { phase: 'delivery_payment', setsPaid: true };
   }
   return { phase: 'unknown', setsPaid: false };
+}
+
+// ── E/H/I/K domain: authorization amount, intent reuse, confirm, approve, reservations ──
+
+/**
+ * Final Pay-After-Pickup authorization amount. Pickup shipping is always $0, so the held amount
+ * is subtotal + final pickup tax. Amount is SERVER-COMPUTED — never taken from the client.
+ */
+export function computeFinalPickupAmountCents(subtotalCents: number, taxCents: number): number {
+  const shippingCents = 0; // pickup is always free
+  return subtotalCents + taxCents + shippingCents;
+}
+
+/**
+ * On a re-authorization request, decide what to do with any existing authorization row so a retry
+ * never abandons a live hold or spawns a duplicate:
+ *   - 'reuse'    : an unfinished intent (needs the customer to finish authentication) — return its
+ *                  client_secret again instead of creating a new PaymentIntent.
+ *   - 'terminal' : already AUTHORIZED/CAPTURED — nothing to create; caller returns current state.
+ *   - 'create'   : none, or the last attempt VOIDED/FAILED — create a fresh PaymentIntent.
+ */
+export function authorizationIntentReuseDecision(
+  existing: { status: AuthorizationRecord['status'] } | undefined,
+): 'reuse' | 'terminal' | 'create' {
+  if (!existing) return 'create';
+  switch (existing.status) {
+    case 'REQUIRES_ACTION':
+    case 'REQUIRES_CONFIRMATION': return 'reuse';
+    case 'AUTHORIZED':
+    case 'CAPTURED':              return 'terminal';
+    case 'VOIDED':
+    case 'FAILED':               return 'create';
+    default:                     return 'create';
+  }
+}
+
+/** Manual-capture PaymentIntent params for a pickup authorization. amount is server-provided. */
+export function buildAuthorizationPaymentIntentParams(input: {
+  orderId: string;
+  customerId: string;
+  paymentMethodId: string | null;
+  amountCents: number;
+  taxCalculationId: string | null;
+}): URLSearchParams {
+  const p = new URLSearchParams();
+  p.append('amount', String(input.amountCents));
+  p.append('currency', 'usd');
+  p.append('customer', input.customerId);
+  p.append('capture_method', 'manual');          // 🔒 hold, not charge
+  p.append('confirm', 'true');
+  p.append('off_session', 'true');
+  if (input.paymentMethodId) p.append('payment_method', input.paymentMethodId);
+  p.append('metadata[order_id]', input.orderId);
+  p.append('metadata[phase]', 'pickup_authorization');
+  if (input.taxCalculationId) p.append('metadata[tax_calculation_id]', input.taxCalculationId);
+  return p;
+}
+
+/** Ops "Confirm Pickup" precondition: a Signed/Completed BOL must exist. Idempotent upstream. */
+export function evaluatePickupConfirm(input: {
+  order: { fulfillment_method: string | null; pickup_confirmed_at: string | null };
+  signedBolExists: boolean;
+}): { ok: boolean; reason: string } {
+  if (input.order.fulfillment_method !== 'pickup') return { ok: false, reason: 'Not a pickup order.' };
+  if (input.order.pickup_confirmed_at) return { ok: false, reason: 'Pickup already confirmed (idempotent no-op).' };
+  if (!input.signedBolExists) return { ok: false, reason: 'No Signed/Completed BOL on file; cannot confirm pickup.' };
+  return { ok: true, reason: 'Confirmable.' };
+}
+
+/**
+ * admin-approve-order gate. Delivery is UNCHANGED (requires payment_status='paid'). Pay-After-Pickup
+ * may proceed to the supplier flow once the card is saved / authorized — but never on a bare pending
+ * order, so the gate is not loosened wholesale.
+ */
+export function canApproveForSupplierFlow(order: {
+  fulfillment_method: string | null;
+  payment_status: string | null;
+}): { ok: boolean; reason: string } {
+  if (order.fulfillment_method === 'pickup') {
+    const ok = order.payment_status === 'card_saved' || order.payment_status === 'authorized' || order.payment_status === 'paid';
+    return { ok, reason: ok ? `pickup ${order.payment_status}` : `pickup not ready (${order.payment_status})` };
+  }
+  // Delivery / legacy: unchanged hard requirement.
+  const ok = order.payment_status === 'paid';
+  return { ok, reason: ok ? 'delivery paid' : `delivery requires paid (${order.payment_status})` };
+}
+
+/**
+ * Whether a pickup_hold reservation should be released. Two triggers, per the fixed policy:
+ *   - a supplier order now exists → the supplier order owns the inventory fact.
+ *   - no supplier order within 24h → the hold lapses.
+ * Delivery reservations (policy='payment_10min') are never evaluated here.
+ */
+export function pickupReservationReleaseDecision(input: {
+  reservationPolicy: string;
+  status: string;
+  supplierOrderExists: boolean;
+  pickupReleaseDeadline: string | null;
+  at?: Date;
+}): { release: boolean; reason: string } {
+  const at = input.at ?? new Date();
+  if (input.reservationPolicy !== 'pickup_hold') return { release: false, reason: 'not a pickup_hold reservation' };
+  if (input.status !== 'reserved') return { release: false, reason: `status ${input.status}` };
+  if (input.supplierOrderExists) return { release: true, reason: 'supplier order took over the inventory fact' };
+  if (input.pickupReleaseDeadline && new Date(input.pickupReleaseDeadline).getTime() <= at.getTime()) {
+    return { release: true, reason: '24h elapsed with no supplier order' };
+  }
+  return { release: false, reason: 'held: supplier order pending, within 24h' };
+}
+
+/**
+ * Extract the authorization hold's real expiry from a Stripe manual-capture object.
+ *
+ * For a `capture_method='manual'` PaymentIntent that reaches `requires_capture`, Stripe reports
+ * the exact instant the hold lapses on the CHARGE:
+ *   charge.payment_method_details.card.capture_before   (Unix seconds)
+ * The value is read from the charge — either passed directly, or found under the PI's
+ * `charges.data[0]` / `latest_charge` (when expanded). Returns an ISO string, or null when Stripe
+ * did not report one (caller then treats expiry as unknown; capture stays gated by the 24h due).
+ *
+ * Never fabricated: if Stripe gives no capture_before, we do NOT invent a 7-day window.
+ */
+// deno-lint-ignore no-explicit-any
+export function extractCaptureBeforeIso(source: any): string | null {
+  if (!source || typeof source !== 'object') return null;
+  const fromCard = (charge: any): number | null => {
+    const cb = charge?.payment_method_details?.card?.capture_before;
+    return typeof cb === 'number' && cb > 0 ? cb : null;
+  };
+  // (a) source is a charge object
+  let unixSec = fromCard(source);
+  // (b) source is a PaymentIntent with expanded charges
+  if (unixSec === null && source.charges?.data?.length) unixSec = fromCard(source.charges.data[0]);
+  // (c) source is a PaymentIntent with an expanded latest_charge object
+  if (unixSec === null && source.latest_charge && typeof source.latest_charge === 'object') unixSec = fromCard(source.latest_charge);
+  return unixSec === null ? null : new Date(unixSec * 1000).toISOString();
 }

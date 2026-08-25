@@ -17,6 +17,7 @@ import {
   computePaymentDue,
   evaluateCaptureEligibility,
   evaluateReleaseGate,
+  extractCaptureBeforeIso,
   hasAuthorizationLapsed,
   isAuthorizationLive,
   isPastDue,
@@ -169,6 +170,29 @@ function main(): void {
     assert.equal(s.basis, 'CUSTOMER_DEADLINE');
     assert.equal(s.shortenedByAuthorization, false);
     assert.equal(s.captureDueAt, due);
+  });
+
+  // ── capture_before extraction (real Stripe object shapes) ─────────────────────
+  it('capture_before: read from PI.charges.data[0], latest_charge object, or a charge — else null', () => {
+    const unix = 1756900800; // 2026-09-03T12:00:00Z
+    const iso = new Date(unix * 1000).toISOString();
+    // (a) PI with expanded charges array
+    assert.equal(extractCaptureBeforeIso({ charges: { data: [{ payment_method_details: { card: { capture_before: unix } } }] } }), iso);
+    // (b) PI with expanded latest_charge object
+    assert.equal(extractCaptureBeforeIso({ latest_charge: { payment_method_details: { card: { capture_before: unix } } } }), iso);
+    // (c) a charge object directly
+    assert.equal(extractCaptureBeforeIso({ payment_method_details: { card: { capture_before: unix } } }), iso);
+    // (d) not present → null (never fabricated)
+    assert.equal(extractCaptureBeforeIso({ latest_charge: 'ch_unexpanded' }), null);
+    assert.equal(extractCaptureBeforeIso({}), null);
+    assert.equal(extractCaptureBeforeIso(null), null);
+  });
+
+  it('capture_before feeds the fail-closed expiry: extracted past deadline → lapsed', () => {
+    const pastUnix = Math.floor(NOW.getTime() / 1000) - 3600;
+    const cb = extractCaptureBeforeIso({ payment_method_details: { card: { capture_before: pastUnix } } });
+    assert.ok(cb);
+    assert.equal(hasAuthorizationLapsed({ status: 'AUTHORIZED', amount_cents: 1, capture_before: cb, provider_payment_intent_id: 'pi' }, NOW), true);
   });
 
   console.log(`\n${passed} passed`);

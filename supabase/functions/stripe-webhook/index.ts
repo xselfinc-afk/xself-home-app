@@ -23,7 +23,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createTaxTransaction } from '../_shared/stripeTax.ts';
 // classifyWebhookEvent documents the paid-invariant; imported from the shared pickup module so the
 // same routing table is unit-tested without booting this function's top-level serve().
-import { classifyWebhookEvent } from '../_shared/pickup/pickupDomain.ts';
+import { classifyWebhookEvent, extractCaptureBeforeIso } from '../_shared/pickup/pickupDomain.ts';
 void classifyWebhookEvent; // routing below is explicit; this keeps the shared contract in view + tested
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
@@ -259,10 +259,14 @@ serve(async (req: Request) => {
     const capturable = Number(pi?.amount_capturable ?? 0);
     if (!orderRef) return new Response(JSON.stringify({ received: true, action: 'no_auth_order' }), { status: 200 });
 
+    // Real hold expiry from the charge on the event PI (never guessed). Null when Stripe omitted it.
+    const captureBefore = extractCaptureBeforeIso(pi);
+
     const { error } = await supabase.from('orders').update({
       authorization_payment_intent_id: piId ?? undefined,
       authorization_status:            'AUTHORIZED',
       authorization_amount_cents:      capturable,
+      capture_before:                  captureBefore ?? undefined,
       pickup_stage:                    'AUTHORIZED',
       payment_status:                  'authorized',   // 🔒 held funds — NOT paid
       updated_at:                      new Date().toISOString(),
@@ -270,7 +274,7 @@ serve(async (req: Request) => {
     if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
 
     await supabase.from('pickup_payment_authorizations')
-      .update({ status: 'AUTHORIZED', provider_payment_intent_id: piId ?? null, updated_at: new Date().toISOString() })
+      .update({ status: 'AUTHORIZED', provider_payment_intent_id: piId ?? null, capture_before: captureBefore ?? undefined, updated_at: new Date().toISOString() })
       .eq('order_id', orderRef).eq('provider_payment_intent_id', piId ?? '');
     console.log('[Webhook] authorization AUTHORIZED (NOT paid) for order', orderRef);
     return new Response(JSON.stringify({ received: true, action: 'authorized', orderId: orderRef }), { status: 200 });

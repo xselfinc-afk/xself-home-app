@@ -23,7 +23,9 @@
  * returns 0 — that is the correct answer, not a failure.
  */
 
-const STRIPE_API = 'https://api.stripe.com/v1';
+// Base is env-overridable ONLY for local integration tests (fake Stripe). Default is the real API,
+// so the Delivery tax path is byte-identical in production.
+const STRIPE_API = `${Deno.env.get('STRIPE_API_BASE') ?? 'https://api.stripe.com'}/v1`;
 /** Performance locations are gated on this API version (Stripe docs, in-person sales guide). */
 const TAX_API_VERSION = '2025-05-28.basil';
 

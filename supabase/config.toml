@@ -410,6 +410,17 @@ verify_jwt = false
 [functions.review-login]
 verify_jwt = false
 
+# Pay-After-Pickup ops endpoints. Auth boundary is the PICKUP_ADMIN_TOKEN header
+# (X-Pickup-Token), not a platform JWT — same pattern as agent-create-quote.
+[functions.pickup-authorization-create]
+verify_jwt = false
+[functions.pickup-bol-release]
+verify_jwt = false
+[functions.pickup-confirm]
+verify_jwt = false
+[functions.pickup-capture]
+verify_jwt = false
+
 [functions.validate-checkout-inventory]
 verify_jwt = false
 

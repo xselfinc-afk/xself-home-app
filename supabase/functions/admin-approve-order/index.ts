@@ -60,6 +60,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { canApproveForSupplierFlow } from '../_shared/pickup/pickupDomain.ts';
 
 // ── Env ────────────────────────────────────────────────────────────────────
 const SUPABASE_URL              = Deno.env.get('SUPABASE_URL') ?? '';
@@ -87,6 +88,7 @@ interface OrderRow {
   order_id:                string;
   status:                  string;
   payment_status:          string | null;
+  fulfillment_method:      string | null;
   admin_approval_status:   string | null;
   supplier_sync_status:    string | null;
   supplier_order_id:       string | null;
@@ -178,7 +180,7 @@ serve(async (req: Request) => {
   // ── 3. Pre-flight: read current row state ────────────────────────────────
   const { data: orderRow, error: orderErr } = await supabase
     .from('orders')
-    .select('order_id, status, payment_status, admin_approval_status, supplier_sync_status, supplier_order_id')
+    .select('order_id, status, payment_status, fulfillment_method, admin_approval_status, supplier_sync_status, supplier_order_id')
     .eq('order_id', order_id)
     .maybeSingle();
 
@@ -203,10 +205,13 @@ serve(async (req: Request) => {
   let failureStatus = 409;
   let failureHint   = '';
 
-  if (row.payment_status !== 'paid') {
+  // Delivery: unchanged — requires payment_status='paid'. Pay-After-Pickup: may proceed once the
+  // card is saved / authorized (never on a bare pending order). The gate is NOT loosened wholesale.
+  const approvalGate = canApproveForSupplierFlow({ fulfillment_method: row.fulfillment_method, payment_status: row.payment_status });
+  if (!approvalGate.ok) {
     failureReason = 'payment_not_complete';
     failureStatus = 400;
-    failureHint   = "Approve is only permitted after payment_status='paid'.";
+    failureHint   = `Approve blocked: ${approvalGate.reason}.`;
   } else if (row.admin_approval_status !== 'pending') {
     failureReason = 'not_in_pending_state';
     failureHint   = "Approve is only permitted while admin_approval_status='pending'. Order may already be approved/rejected.";
@@ -274,7 +279,9 @@ serve(async (req: Request) => {
       updated_at:            nowIso,
     })
     .eq('order_id',                   order_id)
-    .eq('payment_status',             'paid')
+    // Race-belt pinned to the exact value we validated (still race-safe; works for delivery 'paid'
+    // and pickup 'card_saved'/'authorized' alike without loosening the gate).
+    .eq('payment_status',             row.payment_status as string)
     .eq('admin_approval_status',      'pending')
     .eq('supplier_sync_status',       'not_submitted')
     .is('supplier_order_id',          null)
