@@ -46,6 +46,9 @@ const LATEST_REPORT = path.join(REPORT_DIR, 'latest-availability-scan.json');
 const SCAN_LOCK = path.join(REPORT_DIR, '.scan.lock');
 const APPLY_LOCK = path.join(REPORT_DIR, '.lifecycle-apply.lock');
 const SCHEDULER_SCRIPT = path.join(REPO, 'scripts', 'installAvailabilityScanScheduler.sh');
+// 手动「立即检查库存」跑的总 runner —— launchd 定时任务调用的是同一个脚本。
+const TOTAL_RUNNER_SCRIPT = path.join(REPO, 'scripts', 'runAvailabilityScan.sh');
+const LIFECYCLE_REPORT = path.join(REPO, 'reports', 'inventory-lifecycle', 'latest-lifecycle-run.json');
 const SCHEDULER_LABEL = 'com.xselfhome.inventory-availability-scan';
 const SCHEDULER_PLIST = path.join(
   process.env.HOME ?? '',
@@ -97,7 +100,10 @@ export type InventoryLifecycleBridgeRequest =
     approved_by: string;
     source_run_id: string;
   }
-  | { schema_version: '1.0'; operation: 'run-now' };
+  | { schema_version: '1.0'; operation: 'run-now' }
+  | { schema_version: '1.0'; operation: 'scan-inventory-now' }
+  | { schema_version: '1.0'; operation: 'search-products'; query: string; limit?: number }
+  | { schema_version: '1.0'; operation: 'manual-delist'; skus: string[]; approved_by: string };
 
 type WorkflowRow = {
   supplier_product_id: string;
@@ -224,6 +230,10 @@ export function parseInventoryLifecycleBridgeRequest(raw: string): InventoryLife
     // eligible / evidence / safety_passed 这类结论一律不接受，由后台重新判断。
     'approve-publication': new Set(['schema_version', 'operation', 'sku', 'action', 'approved_by', 'source_run_id']),
     'run-now': new Set(['schema_version', 'operation']),
+    'scan-inventory-now': new Set(['schema_version', 'operation']),
+    'search-products': new Set(['schema_version', 'operation', 'query', 'limit']),
+    // 前端只被允许说「谁、下架哪些 SKU」。是否允许、结果如何由后端重新判断。
+    'manual-delist': new Set(['schema_version', 'operation', 'skus', 'approved_by']),
   };
   if (typeof operation !== 'string' || !allowedByOperation[operation]) throw new Error('INVALID_REQUEST');
   if (Object.keys(value).some((key) => !allowedByOperation[operation].has(key))) throw new Error('INVALID_REQUEST');
@@ -239,6 +249,22 @@ export function parseInventoryLifecycleBridgeRequest(raw: string): InventoryLife
   if (operation === 'runs') {
     validateBoundedInteger(value.limit, 1, MAX_RUNS_LIMIT, 'INVALID_LIMIT');
     validateBoundedInteger(value.cursor, 0, 1_000_000, 'INVALID_CURSOR');
+  }
+  if (operation === 'search-products') {
+    const query = value.query;
+    if (typeof query !== 'string' || !query.trim() || query.length > 120) throw new Error('INVALID_REQUEST');
+    validateBoundedInteger(value.limit, 1, 200, 'INVALID_LIMIT');
+  }
+  if (operation === 'manual-delist') {
+    const skus = value.skus;
+    if (!Array.isArray(skus) || skus.length === 0 || skus.length > 50) throw new Error('INVALID_REQUEST');
+    for (const sku of skus) {
+      if (typeof sku !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(sku)) throw new Error('INVALID_SKU');
+    }
+    const by = value.approved_by;
+    if (typeof by !== 'string' || !by.trim() || by.length > 40 || /[\u0000-\u001f\u007f]/.test(by)) {
+      throw new Error('INVALID_OPERATOR');
+    }
   }
   if (operation === 'recheck-item') {
     if (typeof value.sku !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.sku)) throw new Error('INVALID_SKU');
@@ -1908,6 +1934,187 @@ function triggerRunNow(): Record<string, unknown> {
   });
 }
 
+/**
+ * 「立即检查库存」—— 手动按钮的入口。
+ *
+ * 它调用的是 launchd 定时任务调用的**同一个脚本** runAvailabilityScan.sh，
+ * 只是加 AVAILABILITY_SCAN_FORCE=1 跳过节流，因为这是人明确要求现在就看。
+ * 按钮和定时任务因此不可能跑出两套判定 —— 它们本来就是一个程序。
+ */
+function triggerInventoryScanNow(): Record<string, unknown> {
+  const activeLock = [readActiveLock(SCAN_LOCK), readActiveLock(APPLY_LOCK)].find((lock) => lock.active);
+  if (activeLock) return failure('RUN_LOCKED', '库存检查已有运行正在执行');
+  const baseline = readLatestReport();
+
+  // 这个桥接自己在启动时 loadEnv('.env.local') + loadEnv('.env')，两者都带**主账号**的
+  // SUPPLIER_CLIENT_ID/SECRET。而 runner 选账号靠的是
+  //   npx dotenv -e .env.giga-alt.local -e .env.local
+  // 加上 dotenv「绝不覆盖已存在的变量」这一条 —— 所以 alt 必须放前面才会赢。
+  // 一旦父进程已经把这些变量塞进环境，alt 永远赢不了：扫描会拿主账号去调
+  // Open API 的价格接口，而只有 alt 账号有那个权限，于是整批 SKU 全判 api_failed，
+  // 失败率 100% 触发中止门，脚本 exit 2 —— 表现就是 TRIGGER_FAILED。
+  // 从子进程环境里摘掉这三个变量，把账号选择权交还给 runner 自己的 dotenv 分层。
+  const childEnv = { ...process.env };
+  delete childEnv.SUPPLIER_CLIENT_ID;
+  delete childEnv.SUPPLIER_CLIENT_SECRET;
+  delete childEnv.SUPPLIER_API_BASE_URL;
+
+  const result = spawnSync('/bin/bash', [TOTAL_RUNNER_SCRIPT], {
+    cwd: REPO,
+    encoding: 'utf8',
+    timeout: 45 * 60_000,
+    env: {
+      ...childEnv,
+      AVAILABILITY_SCAN_FORCE: '1',
+      LIFECYCLE_LIVE: process.env.LIFECYCLE_LIVE ?? '1',
+      LIFECYCLE_ACTOR: process.env.LIFECYCLE_ACTOR ?? 'ca_lifecycle_runner',
+    },
+  });
+  // exit 5 = 可用性段正常、CA 段失败。两段独立，不算整体失败，
+  // 各自的 stage 状态会在报告里如实呈现。
+  if (result.status !== 0 && result.status !== 5) {
+    return failure('TRIGGER_FAILED', `库存检查执行失败（exit ${result.status ?? 'null'}）`);
+  }
+  const lifecycleReport = readLifecycleReport();
+  return success('scan-inventory-now', {
+    // 诚实声明：Stage 3 在 live 模式下会真的改 published。默认 false 是给只读操作用的，
+    // 这里必须覆盖，否则上游的写入保护校验形同虚设。
+    production_write_attempted: (lifecycleReport as { live?: boolean } | null)?.live === true,
+    trigger_status: 'completed',
+    baseline_upstream_run_id: baseline?.run_id ?? null,
+    scheduler_label: SCHEDULER_LABEL,
+    schedule_changed: false,
+    scheduler_created: false,
+    stage_exit_code: result.status ?? null,
+    // 两份报告分开返回 —— 合并会让「证据刷新成功但 CA 下架失败」没法表达。
+    availability: readLatestReport(),
+    lifecycle: lifecycleReport,
+  });
+}
+
+/** 读 inventoryLifecycleRun 落下的那份报告，让面板直接显示这次的判定结果。 */
+function readLifecycleReport(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(fs.readFileSync(LIFECYCLE_REPORT, 'utf8')) as Record<string, unknown>;
+  } catch { return null; }
+}
+
+/**
+ * 按 SKU / supplier_product_id / 标题搜索商品，给「手动下架」选人用。
+ *
+ * 只读。返回当前发布状态与下架原因，人能一眼看出「这件已经被自动下架过了」，
+ * 不会重复操作。
+ */
+async function searchProducts(
+  client: SupabaseClient,
+  query: string,
+  limit: number,
+): Promise<Record<string, unknown>> {
+  const q = query.trim();
+  const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const { data, error } = await client
+    .from('standardized_products')
+    .select('supplier_product_id,sku_custom,product_title,primary_image,published,delist_reason')
+    .or(`supplier_product_id.ilike.${like},sku_custom.ilike.${like},product_title.ilike.${like}`)
+    .limit(limit);
+  if (error) return failure('SEARCH_FAILED', '商品搜索失败');
+  return success('search-products', {
+    query: q,
+    products: (data ?? []).map((r) => ({
+      supplier_product_id: r.supplier_product_id,
+      sku: r.sku_custom ?? null,
+      title: r.product_title ?? null,
+      image: r.primary_image ?? null,
+      published: r.published === true,
+      delist_reason: r.delist_reason ?? null,
+    })),
+  });
+}
+
+/**
+ * 人工指定 SKU 下架。
+ *
+ * 它**不自己调执行器**。写 published 的执行器在这个桥接里有且只有一处 ——
+ * approve-publication 那个跑完七道门再执行、执行后回读校验的入口。这里逐个 SKU
+ * 委派给它，所以人工下架拿不到任何审批入口拿不到的权限，安全门也不可能被绕开。
+ *
+ * source_run_id 由后端自己从 product_availability_current 读，不采信前端传值。
+ *
+ * 收藏清理不在这里：那是供应商收藏链路的职责，有自己的执行器与开关。
+ */
+async function manualDelist(
+  client: SupabaseClient,
+  skus: string[],
+  approvedBy: string,
+): Promise<Record<string, unknown>> {
+  const runId = `manual-delist-${randomUUID()}`;
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const sku of skus) {
+    const before = await client
+      .from('standardized_products')
+      .select('published')
+      .eq('supplier_product_id', sku)
+      .maybeSingle();
+    if (before.error) {
+      results.push({ sku, publication: `read_error:${before.error.message.slice(0, 80)}` });
+      continue;
+    }
+    if (before.data === null) {
+      results.push({ sku, publication: 'not_found' });
+      continue;
+    }
+    if ((before.data as { published?: boolean | null }).published !== true) {
+      results.push({ sku, publication: 'skipped_already_unpublished' });
+      continue;
+    }
+
+    const availability = await client
+      .from('product_availability_current')
+      .select('last_run_id')
+      .eq('supplier_product_id', sku)
+      .maybeSingle();
+    const sourceRunId = ((availability.data ?? null) as { last_run_id?: string | null } | null)?.last_run_id ?? '';
+
+    const outcome = await executeInventoryLifecycleBridge({
+      schema_version: '1.0',
+      operation: 'approve-publication',
+      sku,
+      action: 'delist',
+      approved_by: approvedBy,
+      source_run_id: sourceRunId,
+    }, client);
+
+    const status = String((outcome as { status?: unknown }).status ?? '');
+    results.push({
+      sku,
+      publication: status === 'verified_completed' ? 'delisted' : `blocked_or_failed:${status || 'unknown'}`,
+      approval_status: status,
+      blocks: (outcome as { blocks?: unknown }).blocks ?? [],
+      safety_blocks: (outcome as { safety_blocks?: unknown }).safety_blocks ?? [],
+      published_after: (outcome as { published_after?: unknown }).published_after ?? null,
+    });
+  }
+
+  const count = (value: string) => results.filter((r) => r.publication === value).length;
+  return success('manual-delist', {
+    production_write_attempted: true,
+    run_id: runId,
+    approved_by: approvedBy,
+    requested: skus.length,
+    delisted: count('delisted'),
+    already_unpublished: count('skipped_already_unpublished'),
+    failed: results.filter((r) => {
+      const publication = String(r.publication);
+      return publication.startsWith('blocked_or_failed:')
+        || publication.startsWith('read_error:')
+        || publication === 'not_found';
+    }).length,
+    favorites_pending: 0,
+    results,
+  });
+}
+
 export async function executeInventoryLifecycleBridge(
   request: InventoryLifecycleBridgeRequest,
   client: SupabaseClient,
@@ -2042,6 +2249,8 @@ export async function executeInventoryLifecycleBridge(
     });
   }
 
+  if (request.operation === 'search-products') return searchProducts(client, request.query, request.limit ?? 50);
+  if (request.operation === 'manual-delist') return manualDelist(client, request.skus, request.approved_by);
   if (request.operation === 'recheck-item') return runTargetedRecheck(request, client);
   return triggerRunNow();
 }
@@ -2055,6 +2264,8 @@ async function main(): Promise<void> {
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY ?? '';
     if (request.operation === 'run-now') {
       response = triggerRunNow();
+    } else if (request.operation === 'scan-inventory-now') {
+      response = triggerInventoryScanNow();
     } else if (!url || !key) {
       response = failure('NOT_CONFIGURED', '库存生命周期读取器尚未配置');
     } else {

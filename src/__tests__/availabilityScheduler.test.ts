@@ -84,6 +84,21 @@ function main(): void {
   it('3. the scanner uses ONLY the Open API endpoint', () => {
     const src = codeOnly(read(SCANNER));
     assert.match(src, /gigaApiClient/);
+
+    // GIGA 的失败信封用数字 0 当 code。真值判断会被 `0 &&` 短路掉，
+    // 于是 HTTP 200 + {code:0,error:"…"} 被当成正常数据返回，真实错误原文丢失。
+    const client = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'services', 'gigaApiClient.ts'),
+      'utf8',
+    );
+    assert.ok(
+      client.includes("data?.code !== undefined && String(data.code) !== '200'"),
+      'the business-error guard must compare against undefined, not truthiness',
+    );
+    assert.ok(
+      !/data\?\.code && String\(data\.code\)/.test(client),
+      'the falsy-zero guard must not come back',
+    );
     assert.match(src, /buyer\/product\/price\/v1/);
     assert.ok(!/gigab2b\.com\/index\.php/.test(src), 'storefront XHR must not appear');
   });

@@ -613,6 +613,82 @@ assert.equal(
   'the existence-only coverage count must not come back',
 );
 
+// ── XOne 侧协议：这三个 operation 曾经因为分支切换从 bridge 里消失，
+// 导致「立即检查库存」被判 INVALID_REQUEST。白名单与路由都要钉住。
+const scanNow = parseInventoryLifecycleBridgeRequest(JSON.stringify({
+  schema_version: '1.0',
+  operation: 'scan-inventory-now',
+}));
+assert.equal(scanNow.operation, 'scan-inventory-now');
+
+const search = parseInventoryLifecycleBridgeRequest(JSON.stringify({
+  schema_version: '1.0',
+  operation: 'search-products',
+  query: 'XH-CB',
+  limit: 20,
+}));
+assert.equal(search.operation, 'search-products');
+
+const manualDelistRequest = parseInventoryLifecycleBridgeRequest(JSON.stringify({
+  schema_version: '1.0',
+  operation: 'manual-delist',
+  skus: ['XH-CB-HM-000001'],
+  approved_by: '何柳',
+}));
+assert.equal(manualDelistRequest.operation, 'manual-delist');
+
+// 字段仍然逐个校验 —— 恢复 operation 不等于放开校验。
+for (const bad of [
+  { schema_version: '1.0', operation: 'search-products' },
+  { schema_version: '1.0', operation: 'search-products', query: '   ' },
+  { schema_version: '1.0', operation: 'search-products', query: 'x', limit: 0 },
+  { schema_version: '1.0', operation: 'search-products', query: 'x', limit: 201 },
+  { schema_version: '1.0', operation: 'manual-delist', skus: [], approved_by: '何柳' },
+  { schema_version: '1.0', operation: 'manual-delist', skus: ['bad sku'], approved_by: '何柳' },
+  { schema_version: '1.0', operation: 'manual-delist', skus: ['XH-A-1'], approved_by: '' },
+  { schema_version: '1.0', operation: 'scan-inventory-now', extra: 1 },
+]) {
+  assert.throws(
+    () => parseInventoryLifecycleBridgeRequest(JSON.stringify(bad)),
+    `must reject ${JSON.stringify(bad)}`,
+  );
+}
+
+// 路由：三个 operation 必须真的接到实现上，不能只加白名单。
+assert.equal(bridgeSource.includes("request.operation === 'scan-inventory-now'"), true);
+assert.equal(bridgeSource.includes("request.operation === 'search-products'"), true);
+assert.equal(bridgeSource.includes("request.operation === 'manual-delist'"), true);
+// 人工下架逐个 SKU 委派给 approve-publication，不自己调执行器 ——
+// 「写 published 的执行器只有一处」这条不变量由 inventoryScanNeverPublishes 守着。
+assert.equal(
+  bridgeSource.includes("operation: 'approve-publication',"),
+  true,
+  'manual-delist must delegate to the gated approval entry point',
+);
+assert.equal(bridgeSource.includes('set_publication_manual'), false, 'must not open a second publication write path');
+assert.equal(bridgeSource.includes('lifecycleFavorites'), false, 'favorites cleanup belongs to its own chain');
+
+// ── 根因回归：不得把供应商凭据带进 runner 子进程 ─────────────────────────────
+//
+// 这个桥接启动时 loadEnv('.env.local') + loadEnv('.env')，两者都带**主账号**的
+// SUPPLIER_CLIENT_ID/SECRET。runner 选账号靠的是 `npx dotenv -e .env.giga-alt.local`
+// 加上 dotenv「绝不覆盖已存在的变量」——父进程一旦把这些变量传下去，alt 账号
+// 永远赢不了，扫描拿主账号去调只有 alt 有权限的价格接口，370 个 SKU 全判 api_failed，
+// 失败率 100% 触发中止门，脚本 exit 2，UI 上就是 TRIGGER_FAILED。
+for (const name of ['SUPPLIER_CLIENT_ID', 'SUPPLIER_CLIENT_SECRET', 'SUPPLIER_API_BASE_URL']) {
+  assert.ok(
+    bridgeSource.includes(`delete childEnv.${name}`),
+    `${name} must be stripped from the scan child environment`,
+  );
+}
+const spawnStart = bridgeSource.indexOf('TOTAL_RUNNER_SCRIPT], {');
+assert.ok(spawnStart > 0, 'the scan spawn must exist');
+const spawnBlock = bridgeSource.slice(spawnStart, spawnStart + 400);
+assert.ok(
+  spawnBlock.includes('...childEnv') && !spawnBlock.includes('...process.env'),
+  'the scan must spawn with the stripped env, not the raw process env',
+);
+
 console.log('xoneInventoryLifecycleBridge tests passed');
 }
 

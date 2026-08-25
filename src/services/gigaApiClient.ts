@@ -70,7 +70,13 @@ export async function gigaRequest(path: string, bizBody: Record<string, unknown>
     throw new Error(`[GIGA HTTP ERROR] ${JSON.stringify(data)}`);
   }
 
-  if (data?.success === false || (data?.code && String(data.code) !== '200')) {
+  // `data.code` 必须和 undefined 比，不能靠真值判断：GIGA 的失败信封用的是**数字 0**，
+  // 而 `0 && ...` 短路成假，整条守卫直接被跳过。后果是 HTTP 200 + {code:0,error:"…"}
+  // 被当成正常数据返回给调用方，真实错误原文只留在上面那行 [GIGA] 日志里 ——
+  // 而定时 runner 恰好用 `grep -v '^\[GIGA\]'` 把它过滤掉了。
+  // 下游 isApiErrorEnvelope 仍会兜住这种信封（fail-closed 没被破坏），
+  // 但报出来的原因永远是笼统的 "api error envelope (code=0)"，等于错误不可诊断。
+  if (data?.success === false || (data?.code !== undefined && String(data.code) !== '200')) {
     throw new Error(`[GIGA BUSINESS ERROR] ${JSON.stringify(data)}`);
   }
 
