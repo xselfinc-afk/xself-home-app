@@ -73,6 +73,10 @@ export interface PlacedOrder {
   payment_status?: 'paid' | 'pending' | 'failed';
   /** Stripe PaymentIntent ID for support/reconciliation */
   stripe_payment_intent_id?: string;
+  /** Server-authoritative pickup lifecycle stage (pickup orders only) — e.g.
+   *  AWAITING_SUPPLIER_ORDER / BOL_READY / BOL_RELEASED / CONFIRMED / CAPTURED.
+   *  Written exclusively by the shared backend (pickup-bol-release / pickup-confirm / …). */
+  pickupStage?: string;
 }
 
 interface OrdersCtx {
@@ -113,13 +117,27 @@ const OrdersContext = createContext<OrdersCtx>({
 });
 
 // ── Supabase row → PlacedOrder ────────────────────────────────────────────────
+// Pickup lifecycle is driven by the server's pickup_stage (pickup-bol-release /
+// pickup-confirm write it; the legacy status column is NOT updated by those flows).
+// Derive the customer-facing status from the stage on the READ PATH ONLY — no DB
+// writes — so "Ready for pickup" appears exactly when the Original BOL is released.
+function displayStatus(row: Record<string, unknown>): PlacedOrder['status'] {
+  const status = row.status as PlacedOrder['status'];
+  if (row.fulfillment_method !== 'pickup') return status;
+  const stage = row.pickup_stage as string | null;
+  if (stage === 'CONFIRMED' || stage === 'CAPTURED') return 'picked_up';
+  if (stage === 'BOL_RELEASED') return 'ready_for_pickup';
+  return status;
+}
+
 function rowToOrder(row: Record<string, unknown>): PlacedOrder {
   return {
     orderId: row.order_id as string,
     orderNumber: row.order_number as string,
     date: (row.date as string) ?? new Date(row.created_at as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
     total: Number(row.total),
-    status: row.status as PlacedOrder['status'],
+    status: displayStatus(row),
+    pickupStage: (row.pickup_stage as string | null) ?? undefined,
     payment_status: row.payment_status as PlacedOrder['payment_status'],
     stripe_payment_intent_id: (row.stripe_payment_intent_id as string | null) ?? undefined,
     items: (row.items_json as PlacedOrderItem[]) ?? [],

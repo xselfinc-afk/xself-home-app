@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity,
-  StyleSheet, Modal, TextInput, Share, Alert, ScrollView,
+  StyleSheet, Modal, TextInput, Share, Alert, ScrollView, Linking,
 } from 'react-native';
+import { supabase } from '../lib/supabase';
 import { Image } from 'expo-image';
 import { variantUrl } from '../utils/imageVariant';
 import { Ionicons } from '@expo/vector-icons';
@@ -94,6 +95,38 @@ export default function OrdersScreen({ navigation }: any) {
   const [reviewText, setReviewText] = useState('');
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
   const [reviewImages, setReviewImages] = useState<string[]>([]);
+  // Order whose BOL download is in flight (disables the button while fetching)
+  const [bolLoadingOrderId, setBolLoadingOrderId] = useState<string | null>(null);
+
+  // Fetch a short-lived signed URL for this order's RELEASED Original BOL and open it
+  // in the system PDF viewer. Authorization: the customer's own Supabase session JWT —
+  // supabase.functions.invoke attaches it automatically, and pickup-bol-download verifies
+  // the JWT's user owns the order and the BOL is released. No admin token, no service
+  // role, no bucket path in the app; the URL expires server-side (~5 min).
+  const openPickupBol = async (orderId: string) => {
+    if (bolLoadingOrderId) return;
+    setBolLoadingOrderId(orderId);
+    try {
+      const { data, error } = await supabase.functions.invoke('pickup-bol-download', {
+        body: { orderId, documentType: 'ORIGINAL_BOL' },
+      });
+      if (error || !data?.url) {
+        const code = (data as { error?: string } | null)?.error;
+        Alert.alert(
+          'BOL unavailable',
+          code === 'bol_not_released'
+            ? 'Your pickup document is not ready yet. Please check back soon.'
+            : 'Could not load your pickup document. Please try again.',
+        );
+        return;
+      }
+      await Linking.openURL(data.url as string);
+    } catch {
+      Alert.alert('BOL unavailable', 'Could not load your pickup document. Please try again.');
+    } finally {
+      setBolLoadingOrderId(null);
+    }
+  };
 
   const pickImage = () => {
     Alert.alert('Add Photo', '', [
@@ -241,14 +274,25 @@ export default function OrdersScreen({ navigation }: any) {
           </View>
         )}
 
-        {isPickupFulfillment && order.status === 'pending_pickup' && (
+        {/* Pickup BOL — appears ONLY once the shared backend has released the Original BOL
+            (pickup_stage from pickup-bol-release; still available after confirm/capture).
+            Readiness is server-driven now — the old customer-tappable "Mark as Ready"
+            shortcut is gone; pickup-bol-download re-verifies ownership + release. */}
+        {isPickupFulfillment &&
+          (order.pickupStage === 'BOL_RELEASED' || order.pickupStage === 'CONFIRMED' || order.pickupStage === 'CAPTURED') && (
           <View style={styles.orderActionRow}>
             <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={() => updateOrderStatus(order.orderId, 'ready_for_pickup').catch(() => {})}
+              style={[styles.bolBtn, bolLoadingOrderId === order.orderId && { opacity: 0.6 }]}
+              disabled={bolLoadingOrderId === order.orderId}
+              onPress={() => openPickupBol(order.orderId)}
+              activeOpacity={0.8}
             >
-              <Text style={styles.actionText}>Mark as Ready</Text>
+              <Ionicons name="document-text-outline" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.bolBtnText}>
+                {bolLoadingOrderId === order.orderId ? 'Loading…' : 'View Pickup BOL'}
+              </Text>
             </TouchableOpacity>
+            <Text style={styles.bolHint}>Show this document at the warehouse to pick up your order</Text>
           </View>
         )}
         {!isPickupFulfillment && order.status === 'processing' && (
@@ -453,6 +497,10 @@ const styles = StyleSheet.create({
   actionBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: '#E5E7EB' },
   actionBtnReviewed: { borderColor: '#D1FAE5', backgroundColor: '#F0FDF4' },
   actionText: { fontSize: 11, color: '#1C1917', fontWeight: '500' },
+  // Pickup BOL entry — the one prominent action on a released pickup order.
+  bolBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#CA8A04', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16 },
+  bolBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+  bolHint: { fontSize: 11, color: '#9CA3AF', marginTop: 6, textAlign: 'center' },
   actionTextReviewed: { color: '#16A34A' },
 
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
