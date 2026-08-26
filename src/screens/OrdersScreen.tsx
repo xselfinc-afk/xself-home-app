@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity,
-  StyleSheet, Modal, TextInput, Share, Alert, ScrollView, Linking,
+  StyleSheet, Modal, TextInput, Share, Alert, ScrollView, ActivityIndicator,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { supabase } from '../lib/supabase';
 import { Image } from 'expo-image';
 import { variantUrl } from '../utils/imageVariant';
@@ -97,12 +98,16 @@ export default function OrdersScreen({ navigation }: any) {
   const [reviewImages, setReviewImages] = useState<string[]>([]);
   // Order whose BOL download is in flight (disables the button while fetching)
   const [bolLoadingOrderId, setBolLoadingOrderId] = useState<string | null>(null);
+  // When set, the full-screen in-app BOL viewer is open on this signed URL.
+  const [bolViewer, setBolViewer] = useState<{ url: string; fileName?: string } | null>(null);
 
-  // Fetch a short-lived signed URL for this order's RELEASED Original BOL and open it
-  // in the system PDF viewer. Authorization: the customer's own Supabase session JWT —
-  // supabase.functions.invoke attaches it automatically, and pickup-bol-download verifies
-  // the JWT's user owns the order and the BOL is released. No admin token, no service
-  // role, no bucket path in the app; the URL expires server-side (~5 min).
+  // Fetch a short-lived signed URL for this order's RELEASED Original BOL and show it
+  // in the in-app full-screen viewer (WKWebView renders the PDF natively — zoom/scroll).
+  // Authorization: the customer's own Supabase session JWT — supabase.functions.invoke
+  // attaches it automatically, and pickup-bol-download verifies the JWT's user owns the
+  // order and the BOL is released. No admin token, no service role, no bucket path in
+  // the app; the URL expires server-side (~5 min) and every tap mints a fresh one, so
+  // the viewer can be closed and reopened at any time.
   const openPickupBol = async (orderId: string) => {
     if (bolLoadingOrderId) return;
     setBolLoadingOrderId(orderId);
@@ -121,20 +126,7 @@ export default function OrdersScreen({ navigation }: any) {
         );
         return;
       }
-      // Open in the system browser (PDF viewer). Some launch contexts deny
-      // UIApplication openURL (observed: "Unable to open URL" even for plain https);
-      // fall back to the in-process system Share sheet, which always presents and
-      // lets the customer open the BOL in Safari/Chrome/Files or save/print it.
-      try {
-        await Linking.openURL(data.url as string);
-      } catch {
-        try {
-          await Share.share({ url: data.url as string, message: data.fileName as string | undefined } as { url: string });
-        } catch (shareErr) {
-          console.log('[BOL] open+share failed:', (shareErr as Error)?.message);
-          Alert.alert('BOL unavailable', 'Could not open the document viewer. Please try again.');
-        }
-      }
+      setBolViewer({ url: data.url as string, fileName: (data.fileName as string | undefined) ?? undefined });
     } catch (err) {
       console.log('[BOL] invoke threw:', (err as Error)?.message);
       Alert.alert('BOL unavailable', 'Could not load your pickup document. Please try again.');
@@ -457,6 +449,38 @@ export default function OrdersScreen({ navigation }: any) {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Full-screen in-app Pickup BOL viewer. WKWebView renders the PDF natively
+          (pinch-zoom / scroll). Close returns to My Orders; tapping View Pickup BOL
+          again reopens with a freshly signed URL. */}
+      <Modal visible={!!bolViewer} animationType="slide" onRequestClose={() => setBolViewer(null)}>
+        <View style={[styles.bolViewerContainer, { paddingTop: insets.top }]}>
+          <View style={styles.bolViewerHeader}>
+            <Text style={styles.bolViewerTitle} numberOfLines={1}>Pickup BOL</Text>
+            <TouchableOpacity style={styles.bolViewerClose} onPress={() => setBolViewer(null)} activeOpacity={0.7}>
+              <Ionicons name="close" size={18} color="#1C1917" />
+              <Text style={styles.bolViewerCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+          {bolViewer && (
+            <WebView
+              source={{ uri: bolViewer.url }}
+              style={{ flex: 1, backgroundColor: '#F3F1EB' }}
+              originWhitelist={['https://*']}
+              startInLoadingState
+              renderLoading={() => (
+                <View style={styles.bolViewerLoading}>
+                  <ActivityIndicator size="large" color="#CA8A04" />
+                </View>
+              )}
+              onError={() => {
+                setBolViewer(null);
+                Alert.alert('BOL unavailable', 'Could not display the document. Please try again.');
+              }}
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -517,6 +541,13 @@ const styles = StyleSheet.create({
   bolBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#CA8A04', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16 },
   bolBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
   bolHint: { fontSize: 11, color: '#9CA3AF', marginTop: 6, textAlign: 'center' },
+  // Full-screen in-app BOL viewer
+  bolViewerContainer: { flex: 1, backgroundColor: '#F3F1EB' },
+  bolViewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#E5E3DC', backgroundColor: '#F3F1EB' },
+  bolViewerTitle: { fontSize: 15, fontWeight: '600', color: '#1C1917', flex: 1, marginRight: 12 },
+  bolViewerClose: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E5E3DC', backgroundColor: '#FFFFFF' },
+  bolViewerCloseText: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginLeft: 4 },
+  bolViewerLoading: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F1EB' },
   actionTextReviewed: { color: '#16A34A' },
 
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
