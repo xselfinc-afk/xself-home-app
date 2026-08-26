@@ -40,6 +40,11 @@ export type FulfillmentPlan = {
   taxCents?: number | null;
   /** True when the server returned a usable Delivery fee. When false, Delivery checkout is blocked. */
   deliveryAvailable: boolean;
+  /** Server-authoritative: whether Warehouse Pickup is OFFERED for this order (within the
+   *  per-state radius + supports_pickup), INDEPENDENT of whether the current plan is currently
+   *  using pickup (usePickup). Drives the Pickup selector's visibility, so choosing Delivery
+   *  never hides an available Pickup option. Mirrors plan-fulfillment's `pickupAvailable`. */
+  pickupAvailable: boolean;
   /** Diagnostic reason when Delivery is unavailable (credentials_missing / api_error / sku_unavailable / no_fee / …). */
   deliveryUnavailableReason?: string | null;
   isSingleWarehouse: boolean;

@@ -170,16 +170,24 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // 'pickup' | 'delivery' | null — null means user hasn't chosen yet (req 9)
   const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
 
-  // When plan changes: auto-select 'delivery' when no pickup is available;
-  // Default to delivery; user can switch to pickup if available.
+  // When a plan first resolves, default to Delivery — but only if the user hasn't chosen
+  // yet. Choosing a method re-fetches the plan (to keep tax server-accurate), which re-runs
+  // this effect; using `prev ?? 'delivery'` preserves the user's pick instead of snapping
+  // back to Delivery every time. (The plan is never nulled mid-refetch, so `prev` survives;
+  // a real reset to null — address error/invalid plan — falls back to Delivery next time.)
   useEffect(() => {
     if (!fulfillmentPlan) { setFulfillmentChoice(null); return; }
-    setFulfillmentChoice('delivery');
+    setFulfillmentChoice(prev => prev ?? 'delivery');
   }, [fulfillmentPlan]);
 
 
   // Whether the raw plan includes a pickup-capable warehouse
-  const planHasPickup = fulfillmentPlan?.groups.some(g => g.isPickup) ?? false;
+  // Selector visibility is driven by the server's authoritative "is Pickup offered?"
+  // (pickupAvailable) — NOT by whether the current plan happens to be using pickup
+  // (groups[].isPickup === usePickup, which flips to false as soon as Delivery is chosen).
+  // This keeps the Pickup option visible while Delivery is selected, whenever pickup is
+  // eligible. Eligibility itself is unchanged (server-side radius + supports_pickup).
+  const planHasPickup = fulfillmentPlan?.pickupAvailable ?? false;
 
   // Active plan: reflects the user's chosen fulfillment method.
   // When user picks delivery on a pickup plan, all pickup groups become shipping groups.
@@ -421,6 +429,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
           deliveryFeeCents,
           taxCents: typeof data.taxCents === 'number' ? data.taxCents : null,
           deliveryAvailable,
+          // Whether Pickup is OFFERED (server-authoritative), independent of the current
+          // preferredMethod. This must NOT be `data.usePickup` — usePickup goes false the
+          // moment Delivery is chosen, which would wrongly hide an available Pickup option.
+          pickupAvailable: data.pickupAvailable === true,
           deliveryUnavailableReason,
           isSingleWarehouse: true,
           // Surface the existing "Live inventory unavailable" banner whenever
@@ -549,11 +561,15 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
   // If totals fall below Affirm's $50 minimum (e.g. after a coupon/credit was
   // applied), drop the user back to card so the picker state stays valid.
+  // Pay-After-Pickup is Card-only (SetupIntent / save-card) — force card and never
+  // leave Apple Pay or Affirm selected once pickup is chosen.
   useEffect(() => {
-    if (paymentMethod === 'affirm' && total < AFFIRM_MIN_TOTAL) {
+    if (isPickup && paymentMethod !== 'card') {
+      setPaymentMethod('card');
+    } else if (paymentMethod === 'affirm' && total < AFFIRM_MIN_TOTAL) {
       setPaymentMethod('card');
     }
-  }, [paymentMethod, total]);
+  }, [paymentMethod, total, isPickup]);
   const [reviewExpanded, setReviewExpanded] = useState(false);
   // Tracks inline CardField completeness — null until user interacts
   const [cardDetails, setCardDetails] = useState<{ complete: boolean } | null>(null);
@@ -877,6 +893,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
     // (no address, no fulfillment choice, incomplete card) fall through so
     // the price stays visible and the inline form guides the customer.
     if (selectedAddress && !fulfillmentPlan) return 'Currently Unavailable';
+    // Pay-After-Pickup: nothing is charged today. The button names the action only;
+    // the "no charge today" reassurance lives in the sub-line beneath it, not in the
+    // button text (and never the order total, which would read as a charge now).
+    if (isPickup) return 'Place Pickup Order';
     return `Place Order · $${formatAmount(total)}`;
   })();
 
@@ -964,11 +984,14 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.fulfillOptionLabel}>Pickup — Free</Text>
-                  {fulfillmentPlan.groups.filter(g => g.isPickup).map(g => (
+                  {/* Filter on the pickup WINDOW, not isPickup: the window is present whenever
+                      Pickup is offered (server sets it on pickup-eligibility), so the date shows
+                      even while Delivery is the currently-selected method. */}
+                  {fulfillmentPlan.groups.filter(g => g.pickupWindow).map(g => (
                     <View key={g.warehouse.code}>
-                      <Text style={styles.fulfillOptionSub}>
-                        {g.warehouse.label} · {g.distanceMiles.toFixed(1)} mi
-                      </Text>
+                      {/* Warehouse name and distance intentionally omitted — the buyer only
+                          needs the pickup date range to decide; the specific warehouse is an
+                          ops detail surfaced later (order confirmation / My Orders). */}
                       {g.pickupWindow && (
                         <Text style={styles.fulfillOptionSub}>
                           {formatPickupDate(g.pickupWindow.earliest)} – {formatPickupDate(g.pickupWindow.latest)}
@@ -976,6 +999,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
                       )}
                     </View>
                   ))}
+                  {/* Pay-After-Pickup reads as part of choosing Pickup — merged into this
+                      card rather than a separate Payment note. Shown once pickup is chosen. */}
+                  {fulfillmentChoice === 'pickup' && (
+                    <Text style={styles.pickupPayInlineText}>
+                      Pay after pickup · <Text style={styles.pickupPayInlineAmount}>$0 due today</Text>
+                    </Text>
+                  )}
                 </View>
               </TouchableOpacity>
 
@@ -1050,51 +1080,78 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
         {/* Payment */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Payment</Text>
-          <View style={styles.card}>
-            {(() => {
-              const affirmEligible = total >= AFFIRM_MIN_TOTAL;
-              const methods: { id: PaymentMethod; icon: any; label: string; sub: string | null; disabled?: boolean }[] = [
-                { id: 'apple_pay', icon: 'logo-apple',    label: 'Apple Pay',           sub: 'Recommended' },
-                { id: 'card',      icon: 'card-outline',  label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
-                {
-                  id: 'affirm',
-                  icon: 'cash-outline',
-                  label: 'Affirm',
-                  // Do not display a per-month estimate: the actual figure
-                  // depends on Affirm underwriting (term, APR, down payment)
-                  // and is not known until the buyer is approved in Affirm's
-                  // flow. Showing total/12 here would be misleading.
-                  sub: affirmEligible
-                    ? 'Pay over time with Affirm'
-                    : `Available on orders over $${AFFIRM_MIN_TOTAL}`,
-                  disabled: !affirmEligible,
-                },
-              ];
-              return methods.map((pm, idx, arr) => (
-                <TouchableOpacity
-                  key={pm.id}
-                  style={[styles.pmRow, idx < arr.length - 1 && styles.pmRowBorder, pm.disabled && { opacity: 0.45 }]}
-                  onPress={() => { if (!pm.disabled) setPaymentMethod(pm.id); }}
-                  disabled={pm.disabled}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.pmRadio, paymentMethod === pm.id && styles.pmRadioSelected]}>
-                    {paymentMethod === pm.id && <View style={styles.pmRadioDot} />}
-                  </View>
-                  <Ionicons name={pm.icon} size={18} color={paymentMethod === pm.id ? '#CA8A04' : '#6B7280'} style={{ marginRight: 10 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.pmLabel, paymentMethod === pm.id && styles.pmLabelSelected]}>{pm.label}</Text>
-                    {pm.sub && <Text style={styles.pmSub}>{pm.sub}</Text>}
-                  </View>
-                </TouchableOpacity>
-              ));
-            })()}
-          </View>
+          {/* Pickup keeps the section header-free — the "Credit / Debit Card" label is
+              enough. Delivery keeps its "Payment" title. */}
+          {!isPickup && <Text style={styles.sectionTitle}>Payment</Text>}
+          {isPickup ? (
+            // Pay-After-Pickup: card-only (Apple Pay / Affirm hidden). The "pay after
+            // pickup · $0 due today" reassurance now lives on the Pickup fulfillment card
+            // (merged), so this section is just the card entry — no duplicate note here.
+            <>
+              <Text style={styles.pickupCardLabel}>Credit / Debit Card</Text>
+              <CardField
+                postalCodeEnabled={true}
+                style={{ height: 52, width: '100%', marginTop: 8 }}
+                cardStyle={{
+                  backgroundColor: '#FFFFFF',
+                  textColor: '#1C1917',
+                  placeholderColor: '#9CA3AF',
+                  borderColor: '#E5E3DC',
+                  borderWidth: 1,
+                  borderRadius: 12,
+                }}
+                onCardChange={details => setCardDetails(details)}
+              />
+              {__DEV__ && (
+                <Text style={styles.devHint}>Test mode: use card 4242 4242 4242 4242</Text>
+              )}
+            </>
+          ) : (
+            <View style={styles.card}>
+              {(() => {
+                const affirmEligible = total >= AFFIRM_MIN_TOTAL;
+                const methods: { id: PaymentMethod; icon: any; label: string; sub: string | null; disabled?: boolean }[] = [
+                  { id: 'apple_pay', icon: 'logo-apple',    label: 'Apple Pay',           sub: 'Recommended' },
+                  { id: 'card',      icon: 'card-outline',  label: 'Credit / Debit Card', sub: '•••• •••• •••• ––––' },
+                  {
+                    id: 'affirm',
+                    icon: 'cash-outline',
+                    label: 'Affirm',
+                    // Do not display a per-month estimate: the actual figure
+                    // depends on Affirm underwriting (term, APR, down payment)
+                    // and is not known until the buyer is approved in Affirm's
+                    // flow. Showing total/12 here would be misleading.
+                    sub: affirmEligible
+                      ? 'Pay over time with Affirm'
+                      : `Available on orders over $${AFFIRM_MIN_TOTAL}`,
+                    disabled: !affirmEligible,
+                  },
+                ];
+                return methods.map((pm, idx, arr) => (
+                  <TouchableOpacity
+                    key={pm.id}
+                    style={[styles.pmRow, idx < arr.length - 1 && styles.pmRowBorder, pm.disabled && { opacity: 0.45 }]}
+                    onPress={() => { if (!pm.disabled) setPaymentMethod(pm.id); }}
+                    disabled={pm.disabled}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.pmRadio, paymentMethod === pm.id && styles.pmRadioSelected]}>
+                      {paymentMethod === pm.id && <View style={styles.pmRadioDot} />}
+                    </View>
+                    <Ionicons name={pm.icon} size={18} color={paymentMethod === pm.id ? '#CA8A04' : '#6B7280'} style={{ marginRight: 10 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.pmLabel, paymentMethod === pm.id && styles.pmLabelSelected]}>{pm.label}</Text>
+                      {pm.sub && <Text style={styles.pmSub}>{pm.sub}</Text>}
+                    </View>
+                  </TouchableOpacity>
+                ));
+              })()}
+            </View>
+          )}
         </View>
 
-        {/* Inline card entry — rendered below the selector when card is selected */}
-        {paymentMethod === 'card' && (
+        {/* Inline card entry (Delivery only — Pickup renders its CardField inline above) */}
+        {!isPickup && paymentMethod === 'card' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Card Details</Text>
             <CardField
@@ -1152,12 +1209,16 @@ export default function CheckoutScreen({ route, navigation }: any) {
 
         {/* Order Summary */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Review</Text>
-            <TouchableOpacity onPress={() => navigation.goBack()}>
-              <Text style={styles.editLink}>Edit</Text>
-            </TouchableOpacity>
-          </View>
+          {/* Pickup drops the "Review" header + "Edit" link for a cleaner summary; the
+              item card and totals speak for themselves. Delivery keeps both. */}
+          {!isPickup && (
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Review</Text>
+              <TouchableOpacity onPress={() => navigation.goBack()}>
+                <Text style={styles.editLink}>Edit</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <TouchableOpacity
             style={styles.card}
             onPress={() => setReviewExpanded(v => !v)}
@@ -1211,20 +1272,22 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatAmount(savedTotal)}</Text>
               </View>
             )}
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>
-                {deliveryLoading ? 'Delivery' : isPickup ? 'Pickup' : shippingGroupCount > 1 ? `Delivery (${shippingGroupCount} warehouses)` : 'Delivery'}
-              </Text>
-              {deliveryLoading
-                ? <Text style={styles.summaryCalculating}>Calculating…</Text>
-                : !fulfillmentPlan
-                  ? <Text style={styles.summaryCalculating}>–</Text>
-                  : isPickup
-                    ? <Text style={[styles.summaryFree, { color: '#CA8A04' }]}>Free</Text>
+            {/* Pickup is always free ($0) and already stated on the Pickup card, so the
+                redundant "Pickup — Free" summary line is omitted. Delivery keeps its fee row. */}
+            {!isPickup && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>
+                  {deliveryLoading ? 'Delivery' : shippingGroupCount > 1 ? `Delivery (${shippingGroupCount} warehouses)` : 'Delivery'}
+                </Text>
+                {deliveryLoading
+                  ? <Text style={styles.summaryCalculating}>Calculating…</Text>
+                  : !fulfillmentPlan
+                    ? <Text style={styles.summaryCalculating}>–</Text>
                     : deliveryUnavailable
                       ? <Text style={[styles.summaryCalculating, { color: '#B45309' }]}>Unavailable</Text>
                       : <Text style={styles.summaryValue}>${formatAmount(shipping)}</Text>}
-            </View>
+              </View>
+            )}
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Tax</Text>
               <Text style={styles.summaryValue}>${formatAmount(tax)}</Text>
@@ -1248,17 +1311,24 @@ export default function CheckoutScreen({ route, navigation }: any) {
             )}
           </View>
           <View style={styles.summaryTotalBlock}>
-            {/* Hairline between the line items and the figure they add up to. Everything above is
-                detail; everything below is what gets charged. */}
+            {/* Hairline between the line items and the figure they add up to. */}
             <View style={styles.summaryDivider} />
             <View style={styles.summaryTotalRow}>
-              <Text style={styles.summaryTotalLabel}>Total</Text>
+              <Text style={styles.summaryTotalLabel}>{isPickup ? 'Order total' : 'Total'}</Text>
               <View style={styles.summaryTotalAmountWrap}>
                 <Text style={styles.summaryTotalValue}>${formatAmount(total)}</Text>
                 <Text style={styles.summaryTotalCurrency}>USD</Text>
               </View>
             </View>
-            {isPickup && <Text style={styles.summaryTotalSub}>Pickup — no shipping fee</Text>}
+            {/* Pickup: separate "what the order is worth" (Order total) from "what you pay
+                now" (Due today). Due today is the emphasized figure so $385.65 never reads
+                as an immediate charge. */}
+            {isPickup && (
+              <View style={styles.dueTodayRow}>
+                <Text style={styles.dueTodayLabel}>Due today</Text>
+                <Text style={styles.dueTodayValue}>$0.00</Text>
+              </View>
+            )}
             {reserveTimeLeft ? (
               <Text style={styles.reserveText}>🔒 Your price is reserved for {reserveTimeLeft}</Text>
             ) : null}
@@ -1464,6 +1534,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           >
             <Text style={styles.placeOrderText}>{ctaLabel}</Text>
           </TouchableOpacity>
+          {isPickup && (
+            <Text style={styles.placeOrderPickupHint}>No charge today · Pay after pickup</Text>
+          )}
           <Text style={styles.placeOrderTrust}>Secured by Stripe · Your payment info is encrypted</Text>
           </>)}
         </View>
@@ -1729,6 +1802,17 @@ const styles = StyleSheet.create({
   pmLabelSelected: { color: '#92400E' },
   pmSub: { fontSize: 11, color: '#9CA3AF', marginTop: 1 },
 
+  // Pay-After-Pickup payment presentation (pickup mode only).
+  // "Pay after pickup · $0 due today" merged INTO the Pickup fulfillment card.
+  pickupPayInlineText: { fontSize: 13, color: '#92400E', fontWeight: '600', marginTop: 8 },
+  pickupPayInlineAmount: { fontWeight: '800', color: '#CA8A04' },
+  pickupCardLabel: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginBottom: 2 },
+  devHint: { fontSize: 11, color: '#9CA3AF', marginTop: 6 },
+  dueTodayRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F0EEE6' },
+  dueTodayLabel: { fontSize: 15, fontWeight: '700', color: '#1C1917' },
+  dueTodayValue: { fontSize: 18, fontWeight: '700', color: '#CA8A04' },
+  placeOrderPickupHint: { fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 8 },
+
   paymentRow: { flexDirection: 'row', alignItems: 'center' },
   cardIcon: { fontSize: 18, marginRight: 8 },
   cardText: { fontSize: 14, color: '#1C1917', fontWeight: '500' },
@@ -1850,7 +1934,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'flex-start',
     borderWidth: 1.5, borderColor: '#E5E7EB',
   },
-  fulfillOptionSelected: { borderColor: '#EAB320', backgroundColor: '#FFFDF0' },
+  // Softer selected state — a muted warm accent so the fulfillment choice reads as
+  // "selected" without out-weighting the Payment / Due today focal points below.
+  fulfillOptionSelected: { borderColor: '#D8CBA0', backgroundColor: '#FBF9F1' },
   fulfillOptionLabel: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginBottom: 3 },
   fulfillOptionSub: { fontSize: 12, color: '#6B7280', lineHeight: 17, marginTop: 1 },
 
