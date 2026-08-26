@@ -110,6 +110,7 @@ export default function OrdersScreen({ navigation }: any) {
       const { data, error } = await supabase.functions.invoke('pickup-bol-download', {
         body: { orderId, documentType: 'ORIGINAL_BOL' },
       });
+      if (error) console.log('[BOL] download failed:', error.message);
       if (error || !data?.url) {
         const code = (data as { error?: string } | null)?.error;
         Alert.alert(
@@ -120,8 +121,22 @@ export default function OrdersScreen({ navigation }: any) {
         );
         return;
       }
-      await Linking.openURL(data.url as string);
-    } catch {
+      // Open in the system browser (PDF viewer). Some launch contexts deny
+      // UIApplication openURL (observed: "Unable to open URL" even for plain https);
+      // fall back to the in-process system Share sheet, which always presents and
+      // lets the customer open the BOL in Safari/Chrome/Files or save/print it.
+      try {
+        await Linking.openURL(data.url as string);
+      } catch {
+        try {
+          await Share.share({ url: data.url as string, message: data.fileName as string | undefined } as { url: string });
+        } catch (shareErr) {
+          console.log('[BOL] open+share failed:', (shareErr as Error)?.message);
+          Alert.alert('BOL unavailable', 'Could not open the document viewer. Please try again.');
+        }
+      }
+    } catch (err) {
+      console.log('[BOL] invoke threw:', (err as Error)?.message);
       Alert.alert('BOL unavailable', 'Could not load your pickup document. Please try again.');
     } finally {
       setBolLoadingOrderId(null);
@@ -276,10 +291,11 @@ export default function OrdersScreen({ navigation }: any) {
 
         {/* Pickup BOL — appears ONLY once the shared backend has released the Original BOL
             (pickup_stage from pickup-bol-release; still available after confirm/capture).
-            Readiness is server-driven now — the old customer-tappable "Mark as Ready"
-            shortcut is gone; pickup-bol-download re-verifies ownership + release. */}
-        {isPickupFulfillment &&
-          (order.pickupStage === 'BOL_RELEASED' || order.pickupStage === 'CONFIRMED' || order.pickupStage === 'CAPTURED') && (
+            Gate on pickupStage ALONE: it is written exclusively by the pickup backend on
+            pickup orders, while fulfillment_groups_json is [] on server-created
+            Pay-After-Pickup orders — so requiring isPickupFulfillment here would wrongly
+            hide the button. pickup-bol-download re-verifies ownership + release anyway. */}
+        {(order.pickupStage === 'BOL_RELEASED' || order.pickupStage === 'CONFIRMED' || order.pickupStage === 'CAPTURED') && (
           <View style={styles.orderActionRow}>
             <TouchableOpacity
               style={[styles.bolBtn, bolLoadingOrderId === order.orderId && { opacity: 0.6 }]}
