@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity,
+  View, Text, SectionList, TouchableOpacity,
   StyleSheet, Modal, TextInput, Share, Alert, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
@@ -18,14 +18,14 @@ import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateServ
 const STATUS_COLORS: Record<string, string> = {
   delivered:        '#16A34A',
   shipped:          '#374151',
-  processing:       '#CA8A04',
-  pending_pickup:   '#CA8A04',
-  ready_for_pickup: '#CA8A04',
+  processing:       '#EAB320',
+  pending_pickup:   '#EAB320',
+  ready_for_pickup: '#EAB320',
   picked_up:        '#16A34A',
   cancelled:        '#9CA3AF',
   failed:           '#9CA3AF',
   paid:             '#16A34A',
-  pending_payment:  '#CA8A04',
+  pending_payment:  '#EAB320',
   refunded:         '#9CA3AF',
   canceled:         '#9CA3AF',
   payment_cancelled:'#9CA3AF',
@@ -254,7 +254,7 @@ export default function OrdersScreen({ navigation }: any) {
                   <Ionicons
                     name={group.isPickup ? 'storefront-outline' : 'cube-outline'}
                     size={13}
-                    color="#CA8A04"
+                    color="#EAB320"
                   />
                   <Text style={styles.fulfillGroupWarehouse}>{group.warehouseLabel}</Text>
                 </View>
@@ -347,7 +347,26 @@ export default function OrdersScreen({ navigation }: any) {
     );
   };
 
-  if (orders.length === 0) {
+  // ── My Orders visibility windows + sections ────────────────────────────────
+  // In-progress orders disappear after 2 weeks (stale/abandoned); completed
+  // orders show for 1 month. The two groups render as separate sections —
+  // never interleaved. Orders without createdAt (legacy/guest-local) stay visible.
+  const TWO_WEEKS_MS = 14 * 24 * 3600 * 1000;
+  const ONE_MONTH_MS = 30 * 24 * 3600 * 1000;
+  const COMPLETED_STATUSES = new Set(['delivered', 'picked_up']);
+  const now = Date.now();
+  const ageMs = (o: PlacedOrder) => {
+    const t = o.createdAt ? new Date(o.createdAt).getTime() : NaN;
+    return Number.isFinite(t) ? now - t : 0;
+  };
+  const inProgressOrders = orders.filter(o => !COMPLETED_STATUSES.has(o.status) && ageMs(o) <= TWO_WEEKS_MS);
+  const completedOrders = orders.filter(o => COMPLETED_STATUSES.has(o.status) && ageMs(o) <= ONE_MONTH_MS);
+  const sections = [
+    ...(inProgressOrders.length ? [{ title: 'In Progress', data: inProgressOrders }] : []),
+    ...(completedOrders.length ? [{ title: 'Completed', data: completedOrders }] : []),
+  ];
+
+  if (sections.length === 0) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <Text style={styles.title}>My Orders</Text>
@@ -363,12 +382,16 @@ export default function OrdersScreen({ navigation }: any) {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <Text style={styles.title}>My Orders</Text>
-      <FlatList
-        data={orders}
+      <SectionList
+        sections={sections}
         renderItem={renderOrder}
+        renderSectionHeader={({ section }) => (
+          <Text style={styles.sectionHeader}>{section.title}</Text>
+        )}
         keyExtractor={item => item.orderId}
         contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 120 }]}
         showsVerticalScrollIndicator={false}
+        stickySectionHeadersEnabled={false}
       />
 
       {/* Write Review modal */}
@@ -458,8 +481,7 @@ export default function OrdersScreen({ navigation }: any) {
           <View style={styles.bolViewerHeader}>
             <Text style={styles.bolViewerTitle} numberOfLines={1}>Pickup BOL</Text>
             <TouchableOpacity style={styles.bolViewerClose} onPress={() => setBolViewer(null)} activeOpacity={0.7}>
-              <Ionicons name="close" size={18} color="#1C1917" />
-              <Text style={styles.bolViewerCloseText}>Close</Text>
+              <Ionicons name="close" size={20} color="#1C1917" />
             </TouchableOpacity>
           </View>
           {bolViewer && (
@@ -470,7 +492,7 @@ export default function OrdersScreen({ navigation }: any) {
               startInLoadingState
               renderLoading={() => (
                 <View style={styles.bolViewerLoading}>
-                  <ActivityIndicator size="large" color="#CA8A04" />
+                  <ActivityIndicator size="large" color="#EAB320" />
                 </View>
               )}
               onError={() => {
@@ -488,6 +510,8 @@ export default function OrdersScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F1EB' },
   title: { fontSize: 22, fontWeight: '600', color: '#1C1917', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
+  // "In Progress" / "Completed" group headers — the two areas never interleave.
+  sectionHeader: { fontSize: 13, fontWeight: '700', color: '#6B7280', textTransform: 'uppercase', letterSpacing: 0.6, paddingHorizontal: 4, paddingTop: 14, paddingBottom: 8 },
   list: { padding: 16, paddingTop: 8, paddingBottom: 0 },
 
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: 80, gap: 12 },
@@ -505,7 +529,7 @@ const styles = StyleSheet.create({
   tracker: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
   stepWrap: { alignItems: 'center' },
   stepDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(0,0,0,0.07)', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
-  stepDotActive: { backgroundColor: '#CA8A04' },
+  stepDotActive: { backgroundColor: '#EAB320' },
   stepLabel: { fontSize: 10, color: '#C4C4C4' },
   stepLabelActive: { color: '#6B7280', fontWeight: '500' },
   stepLine: { flex: 1, height: 1.5, backgroundColor: 'rgba(0,0,0,0.07)', marginBottom: 14, marginHorizontal: 2 },
@@ -523,7 +547,7 @@ const styles = StyleSheet.create({
   fulfillGroupItems: { fontSize: 11, color: '#374151', marginLeft: 20, lineHeight: 16 },
   pickupWindowRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 20, marginTop: 3, marginBottom: 2 },
   pickupWindowText: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
-  pickupWindowTime: { fontSize: 11, color: '#CA8A04', fontWeight: '500' },
+  pickupWindowTime: { fontSize: 11, color: '#EAB320', fontWeight: '500' },
 
   item: { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' },
   itemImg: { width: 68, height: 68, borderRadius: 8, backgroundColor: '#F3F4F6' },
@@ -538,15 +562,15 @@ const styles = StyleSheet.create({
   actionBtnReviewed: { borderColor: '#D1FAE5', backgroundColor: '#F0FDF4' },
   actionText: { fontSize: 11, color: '#1C1917', fontWeight: '500' },
   // Pickup BOL entry — the one prominent action on a released pickup order.
-  bolBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#CA8A04', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16 },
+  bolBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#EAB320', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16 },
   bolBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
   bolHint: { fontSize: 11, color: '#9CA3AF', marginTop: 6, textAlign: 'center' },
   // Full-screen in-app BOL viewer
   bolViewerContainer: { flex: 1, backgroundColor: '#F3F1EB' },
   bolViewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#E5E3DC', backgroundColor: '#F3F1EB' },
   bolViewerTitle: { fontSize: 15, fontWeight: '600', color: '#1C1917', flex: 1, marginRight: 12 },
-  bolViewerClose: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E5E3DC', backgroundColor: '#FFFFFF' },
-  bolViewerCloseText: { fontSize: 13, fontWeight: '600', color: '#1C1917', marginLeft: 4 },
+  // Icon-only circular close — matches the app's soft white-on-canvas control style.
+  bolViewerClose: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E5E3DC', backgroundColor: '#FFFFFF' },
   bolViewerLoading: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F1EB' },
   actionTextReviewed: { color: '#16A34A' },
 

@@ -298,7 +298,7 @@ serve(async (req: Request) => {
     const uniqueProductIds = [...new Set(items.map((i) => i.productId))];
     const { data: catalogRows, error: catalogErr } = await supabase
       .from('standardized_products')
-      .select('supplier_product_id, selling_price, price')
+      .select('supplier_product_id, sku_custom, selling_price, price, primary_image')
       .in('supplier_product_id', uniqueProductIds);
     if (catalogErr) {
       // Fail closed: never fall back to trusting client prices.
@@ -306,11 +306,18 @@ serve(async (req: Request) => {
       return jsonResponse({ error: 'catalog_price_lookup_failed' }, 500);
     }
     const catalogCentsByProductId = new Map<string, number>();
+    // Image SNAPSHOT for items_json: resolved server-side (service role, RLS-free) so
+    // My Orders thumbnails survive the product later going out of stock / stale-sync,
+    // when the public read policy hides the standardized_products row from the app.
+    const imgByProductId = new Map<string, string>();
     for (const row of catalogRows ?? []) {
       const dollars = (typeof row.selling_price === 'number' && row.selling_price > 0)
         ? row.selling_price
         : (typeof row.price === 'number' && row.price > 0 ? row.price : null);
       if (dollars != null) catalogCentsByProductId.set(row.supplier_product_id, Math.round(dollars * 100));
+      if (typeof row.primary_image === 'string' && row.primary_image) {
+        imgByProductId.set(row.supplier_product_id, row.primary_image);
+      }
     }
 
     const priceChanges: Array<{
@@ -580,7 +587,7 @@ serve(async (req: Request) => {
         tax:                0,
         date:               puOrderDate,
         address_json:       address,
-        items_json:         items.map(i => ({ sku: i.sku, name: i.title, img: '', price: i.unitPriceCents / 100, qty: i.qty })),
+        items_json:         items.map(i => ({ sku: i.sku, name: i.title, img: imgByProductId.get(i.productId) ?? '', price: i.unitPriceCents / 100, qty: i.qty })),
         fulfillment_groups_json: [],
         created_at:         puNow,
         updated_at:         puNow,
@@ -777,7 +784,7 @@ serve(async (req: Request) => {
         items_json:            items.map(i => ({
           sku:   i.sku,
           name:  i.title,
-          img:   '',
+          img:   imgByProductId.get(i.productId) ?? '',
           price: i.unitPriceCents / 100,
           qty:   i.qty,
         })),

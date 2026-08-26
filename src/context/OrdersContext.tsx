@@ -77,6 +77,8 @@ export interface PlacedOrder {
    *  AWAITING_SUPPLIER_ORDER / BOL_READY / BOL_RELEASED / CONFIRMED / CAPTURED.
    *  Written exclusively by the shared backend (pickup-bol-release / pickup-confirm / …). */
   pickupStage?: string;
+  /** ISO timestamp the order row was created — drives the My Orders age windows. */
+  createdAt?: string;
 }
 
 interface OrdersCtx {
@@ -138,6 +140,7 @@ function rowToOrder(row: Record<string, unknown>): PlacedOrder {
     total: Number(row.total),
     status: displayStatus(row),
     pickupStage: (row.pickup_stage as string | null) ?? undefined,
+    createdAt: (row.created_at as string | null) ?? undefined,
     payment_status: row.payment_status as PlacedOrder['payment_status'],
     stripe_payment_intent_id: (row.stripe_payment_intent_id as string | null) ?? undefined,
     items: (row.items_json as PlacedOrderItem[]) ?? [],
@@ -211,11 +214,28 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
       console.log('[Orders] refreshOrders failed:', error.message);
       return;
     }
-    setOrders(
-      (data ?? [])
-        .filter(row => isCustomerVisibleOrder(row as Record<string, unknown>))
-        .map(row => rowToOrder(row as Record<string, unknown>)),
-    );
+    const fetched = (data ?? [])
+      .filter(row => isCustomerVisibleOrder(row as Record<string, unknown>))
+      .map(row => rowToOrder(row as Record<string, unknown>));
+
+    // Server-created orders (e.g. Pay-After-Pickup) store items with img: "" —
+    // backfill product images from standardized_products by sku_custom in ONE
+    // batched read. Display-only; nothing is written back. Failures are silent
+    // (the list simply shows the placeholder, as before).
+    const missingSkus = [...new Set(
+      fetched.flatMap(o => o.items.filter(i => !i.img && i.sku).map(i => i.sku)),
+    )];
+    if (missingSkus.length > 0) {
+      const { data: imgRows } = await supabase
+        .from('standardized_products')
+        .select('sku_custom, primary_image')
+        .in('sku_custom', missingSkus);
+      const imgBySku = new Map((imgRows ?? []).map(r => [r.sku_custom as string, (r.primary_image as string | null) ?? '']));
+      for (const o of fetched) {
+        o.items = o.items.map(i => (!i.img && imgBySku.get(i.sku)) ? { ...i, img: imgBySku.get(i.sku)! } : i);
+      }
+    }
+    setOrders(fetched);
   };
 
   // ── Load orders on auth change ────────────────────────────────────────────
