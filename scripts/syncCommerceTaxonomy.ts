@@ -23,9 +23,22 @@
  * temporarily out of stock drops out of `sellable_products` and must not come back
  * unclassified.
  *
+ * This is the batch backstop, not the primary path. `scripts/normalizeProducts.ts`
+ * attaches the same classification in the same upsert that creates the row, so a
+ * normally-onboarded product is classified the moment it exists. This job exists
+ * to catch rows written by any other path (manual upload, direct edits) and to
+ * re-run the whole catalogue after a classifier change.
+ *
  * Run:
- *   npx tsx scripts/syncCommerceTaxonomy.ts            # write
+ *   npx tsx scripts/syncCommerceTaxonomy.ts            # incremental: unclassified rows only
+ *   FULL=1 npx tsx scripts/syncCommerceTaxonomy.ts     # every published row (after a classifier change)
  *   DRY_RUN=1 npx tsx scripts/syncCommerceTaxonomy.ts  # report only, no writes
+ *
+ * Incremental is the default because this runs on every availability-scan cycle.
+ * A full pass rewrites 385 rows one statement at a time; an incremental pass on a
+ * caught-up catalogue writes nothing and costs one select.
+ *
+ * Exit codes: 0 = ok (including "nothing to do"), 1 = read/write failure.
  *
  * Env:
  *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — required
@@ -39,6 +52,7 @@ import { resolveProductTitle } from '../src/services/productResolvers';
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 const DRY_RUN = process.env.DRY_RUN === '1';
+const FULL = process.env.FULL === '1';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('[syncCommerceTaxonomy] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.');
@@ -73,11 +87,15 @@ async function run(): Promise<void> {
 
   const rows: Row[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('standardized_products')
       .select('supplier_product_id, category_label, category_code, specifications_json, optimized_title, product_title_display, product_title, commerce_product_type')
-      .eq('published', true)
-      .range(from, from + PAGE - 1);
+      .eq('published', true);
+    // Incremental: only rows that have never been classified. A row whose title or
+    // category later changes is re-classified by normalizeProducts on its next pass,
+    // which rewrites the columns in the same upsert.
+    if (!FULL) q = q.is('commerce_classified_at', null);
+    const { data, error } = await q.range(from, from + PAGE - 1);
     if (error) {
       console.error(`[syncCommerceTaxonomy] read failed: ${error.message}`);
       process.exit(1);
@@ -87,7 +105,11 @@ async function run(): Promise<void> {
     if (data.length < PAGE) break;
   }
 
-  console.log(`[syncCommerceTaxonomy] published rows: ${rows.length}`);
+  console.log(`[syncCommerceTaxonomy] mode=${FULL ? 'full' : 'incremental'} rows: ${rows.length}`);
+  if (rows.length === 0) {
+    console.log('[syncCommerceTaxonomy] nothing to classify — catalogue is current.');
+    return;
+  }
 
   const classifiedAt = new Date().toISOString();
   let needsReview = 0;

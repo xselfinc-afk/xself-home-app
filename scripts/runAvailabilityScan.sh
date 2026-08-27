@@ -141,7 +141,18 @@ if [ "$code" -eq 0 ]; then
     fi
   done
 
-  # ── 3. Status + alerts ──────────────────────────────────────────────────────────────────────
+  # ── 3. Commerce taxonomy backstop ───────────────────────────────────────────────────────────
+  # normalizeProducts.ts classifies each product in the same upsert that writes it, so this
+  # normally finds nothing. It exists for rows written by another path (manual upload, direct
+  # edit): an unclassified row is invisible in website browse, and nothing else would notice.
+  # Incremental by default — a caught-up catalogue costs one select and writes nothing.
+  # After a classifier change, re-run the whole catalogue explicitly with FULL=1.
+  NODE_PATH="$REPO/node_modules" npx dotenv -e .env.local -- \
+    npx tsx scripts/syncCommerceTaxonomy.ts 2>&1 | grep -vE '^\[GIGA\]'
+  TAX_CODE=${PIPESTATUS[0]}
+  [ "$TAX_CODE" -eq 0 ] || echo "[$STAMP] WARN commerce taxonomy sync exited $TAX_CODE — new products may be missing from website browse"
+
+  # ── 4. Status + alerts ──────────────────────────────────────────────────────────────────────
   NODE_PATH="$REPO/node_modules" npx dotenv -e .env.local -- \
     npx tsx scripts/inventoryLifecycleStatus.ts 2>&1 | grep -vE '^\[GIGA\]'
 fi

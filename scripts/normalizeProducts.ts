@@ -19,6 +19,8 @@
 import { config as loadEnv } from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeProduct } from '../src/services/normalizationPipeline';
+import { classifyCommerce } from '../src/utils/commerceTaxonomy';
+import { resolveProductTitle } from '../src/services/productResolvers';
 
 // Load .env.local first (canonical home for SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 // for scripts) then .env as fallback — matches the safe GIGA scripts so the runner
@@ -116,7 +118,31 @@ async function run() {
     // Strip columns that may not exist in older DB deployments.
     // Run: ALTER TABLE standardized_products ADD COLUMN IF NOT EXISTS new_arrival_added_at timestamptz;
     // to enable this field, then remove this strip.
-    const upsertRows = normalized.map(({ new_arrival_added_at: _dropped, ...rest }) => rest);
+    //
+    // The commerce classification is attached in the same upsert as the row it
+    // describes, so a standardized product cannot exist unclassified. That
+    // matters because the website browses on these columns: a product written
+    // here without them is invisible on the web until a sweep catches up.
+    //
+    // Inputs mirror `adaptStandardizedRow` exactly — see scripts/syncCommerceTaxonomy.ts,
+    // which is the batch equivalent of this and the backstop for rows written by
+    // any other path.
+    const classifiedAt = new Date().toISOString();
+    const upsertRows = normalized.map(({ new_arrival_added_at: _dropped, ...rest }) => {
+      const commerce = classifyCommerce({
+        name: resolveProductTitle(rest),
+        category: rest.specifications_json?.['Category'] || rest.category_code || undefined,
+        categoryLabel: rest.category_label || undefined,
+      });
+      return {
+        ...rest,
+        commerce_department: commerce.department,
+        commerce_category: commerce.category,
+        commerce_product_type: commerce.productType,
+        commerce_rooms: commerce.rooms,
+        commerce_classified_at: classifiedAt,
+      };
+    });
 
     // DRY_RUN: collect a preview, never write.
     if (DRY_RUN) {
