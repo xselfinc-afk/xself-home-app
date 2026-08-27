@@ -859,6 +859,9 @@ function ProductDetailScreen({ route, navigation }) {
   const [added, setAdded] = useState(false);
   const [addedPermanent, setAddedPermanent] = useState(false);
   const [bundleAdded, setBundleAdded] = useState(false);
+  // After the bundle lands in the cart, the CTA flips to "View Cart" — same
+  // add → Added ✓ → View Cart pattern as the Add to Cart button above.
+  const [bundleAddedPermanent, setBundleAddedPermanent] = useState(false);
   // Live header rating/review-count — same product_reviews data ReviewSection uses. null = loading.
   const [reviewSummary, setReviewSummary] = useState<{ count: number; avg: number } | null>(null);
   // Advisory fulfillment (pickup/shipping) for the SELECTED child SKU — server-authoritative
@@ -1589,13 +1592,19 @@ function ProductDetailScreen({ route, navigation }) {
               <TouchableOpacity
                 style={styles.fbtCta}
                 onPress={() => {
+                  if (bundleAddedPermanent) {
+                    navigation.navigate('Main', { screen: 'Cart' });
+                    return;
+                  }
                   addItem(defaultCartItem(product), 1);
                   fbt.forEach(p => addItem(defaultCartItem(p), 1));
                   setBundleAdded(true);
-                  setTimeout(() => setBundleAdded(false), 1000);
+                  setTimeout(() => { setBundleAdded(false); setBundleAddedPermanent(true); }, 1000);
                 }}
               >
-                <Text style={styles.fbtCtaText}>{bundleAdded ? 'Added \u2713' : 'Add Bundle \u2192'}</Text>
+                <Text style={styles.fbtCtaText}>
+                  {bundleAdded ? 'Added \u2713' : bundleAddedPermanent ? 'View Cart \u2192' : 'Add Bundle \u2192'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
