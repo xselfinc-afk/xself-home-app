@@ -49,6 +49,7 @@ const SCHEDULER_SCRIPT = path.join(REPO, 'scripts', 'installAvailabilityScanSche
 // 手动「立即检查库存」跑的总 runner —— launchd 定时任务调用的是同一个脚本。
 const TOTAL_RUNNER_SCRIPT = path.join(REPO, 'scripts', 'runAvailabilityScan.sh');
 const LIFECYCLE_REPORT = path.join(REPO, 'reports', 'inventory-lifecycle', 'latest-lifecycle-run.json');
+const WAREHOUSE_REFRESH_REPORT = path.join(REPO, 'reports', 'warehouse-refresh', 'latest-warehouse-refresh.json');
 const SCHEDULER_LABEL = 'com.xselfhome.inventory-availability-scan';
 const SCHEDULER_PLIST = path.join(
   process.env.HOME ?? '',
@@ -1986,10 +1987,25 @@ function triggerInventoryScanNow(): Record<string, unknown> {
     schedule_changed: false,
     scheduler_created: false,
     stage_exit_code: result.status ?? null,
-    // 两份报告分开返回 —— 合并会让「证据刷新成功但 CA 下架失败」没法表达。
+    // 三份报告分开返回 —— 合并会让「证据刷新成功但 CA 下架失败」没法表达。
     availability: readLatestReport(),
     lifecycle: lifecycleReport,
+    warehouse: readWarehouseRefreshReport(),
   });
+}
+
+/**
+ * 读 refreshWarehouseInventory 落下的本轮报告。
+ *
+ * 面板要显示的是**这一轮自己**写了多少行、覆盖了多少 SKU、失败率多少 —— 不是
+ * inventory_cache 的全表最新时间。旧的每日 scraper 就栽在后者上：它每轮被 CAPTCHA
+ * 挡住、写 0 行，却因为几小时前有顾客结账触发过按需自愈，全表最新时间是新的，
+ * 于是健康检查报 PASS。健康必须由运行自己证明，不能捡别人的证据。
+ */
+function readWarehouseRefreshReport(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(fs.readFileSync(WAREHOUSE_REFRESH_REPORT, 'utf8')) as Record<string, unknown>;
+  } catch { return null; }
 }
 
 /** 读 inventoryLifecycleRun 落下的那份报告，让面板直接显示这次的判定结果。 */
