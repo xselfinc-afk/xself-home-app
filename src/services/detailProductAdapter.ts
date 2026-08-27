@@ -5,7 +5,7 @@ import { cleanTitle, toShortTitle, buildDescription, buildBulletPoints, removeSp
 import { collectImages } from './imageSelector';
 export { collectImages };
 import { inferCategoryPath, inferProductTags } from '../utils/productClassification';
-import { classifyCommerce } from '../utils/commerceTaxonomy';
+import { classifyCommerce, NEEDS_REVIEW } from '../utils/commerceTaxonomy';
 import { COMMERCE_TAXONOMY_ENABLED } from '../config/commerceTaxonomy';
 import { sourceUrl } from '../utils/imageSource';
 import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
@@ -185,7 +185,8 @@ export const LIST_SELECT =
   'category_code, color, material, ' +
   'primary_image, primary_image_blurhash, primary_image_w, primary_image_h, primary_image_aspect, primary_image_mirror_path, ' +
   'product_family_key, price, selling_price, original_price, normalization_status, created_at, ' +
-  'category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty';
+  'category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty, ' +
+  'commerce_department, commerce_category, commerce_product_type, commerce_rooms';
 
 
 /**
@@ -218,6 +219,10 @@ export type StandardizedRow = {
   selling_price?: number | null;
   sku_search?: string | null;
   category_label?: string | null;
+  commerce_department?: string | null;
+  commerce_category?: string | null;
+  commerce_product_type?: string | null;
+  commerce_rooms?: string[] | null;
   category_priority?: number | null;
   is_new_arrival?: boolean;
   new_arrival_source?: string | null;
@@ -372,7 +377,34 @@ export function adaptStandardizedRow(r: StandardizedRow): Product {
   // Product Type → Room classification. When the flag is off this is undefined
   // and the returned object is identical to pre-Phase-1 — legacy categoryPath is
   // untouched in both states, and nothing in the UI consumes `commerce` yet.
-  const commerce = COMMERCE_TAXONOMY_ENABLED ? classifyCommerce(base) : undefined;
+  // The classification is persisted by scripts/syncCommerceTaxonomy.ts and read
+  // here, so the App and the Website group products by the same stored fact
+  // rather than each deriving its own. classifyCommerce remains the reference
+  // implementation and the fallback for a row the sync has not reached yet.
+  //
+  // In dev the two are compared: a mismatch means the sync is stale (or the
+  // classifier changed without a re-run), which is worth seeing immediately
+  // rather than discovering as a silent Web/App disagreement.
+  const commerce = COMMERCE_TAXONOMY_ENABLED
+    ? (r.commerce_product_type
+        ? {
+            department:  r.commerce_department  ?? NEEDS_REVIEW,
+            category:    r.commerce_category    ?? NEEDS_REVIEW,
+            productType: r.commerce_product_type,
+            rooms:       r.commerce_rooms       ?? [],
+          }
+        : classifyCommerce(base))
+    : undefined;
+
+  if (__DEV__ && COMMERCE_TAXONOMY_ENABLED && r.commerce_product_type) {
+    const computed = classifyCommerce(base);
+    if (computed.productType !== r.commerce_product_type) {
+      console.warn(
+        `[ProductAdapter] commerce taxonomy drift for ${base.id}: ` +
+        `stored=${r.commerce_product_type} computed=${computed.productType} — re-run syncCommerceTaxonomy.ts`,
+      );
+    }
+  }
 
   return { ...base, categoryPath, tags, ...(commerce ? { commerce } : {}) };
 }
