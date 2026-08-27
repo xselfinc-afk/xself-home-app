@@ -114,18 +114,52 @@ console.log('\n脚本的硬约定（源码断言）');
 const SRC = fs.readFileSync(path.join(__dirname, '../../scripts/refreshWarehouseInventory.ts'), 'utf8');
 const code = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-it('绝不调用 refresh_product_inventory_status —— 它会按 24h 规则把 published 写成 false', () => {
-  assert.ok(!code.includes('refresh_product_inventory_status'),
-    '48h 的刷新节奏碰上 24h 的发布规则，等于每隔一天下架整个目录');
-  assert.ok(!code.includes('refresh_all_inventory_status'));
-  assert.ok(!code.includes('/rpc/'), '这个脚本不该调任何 RPC');
+it('状态刷新只对本轮问到的 SKU，且必须排在写入之后', () => {
+  // 对没问到的 SKU 调用，只会把「我们没查到」按 24h 规则变成「下架」。
+  assert.ok(/for \(const sku of answered\)[\s\S]{0,160}refreshStatus\(sku\)/.test(code),
+    '调用范围必须严格等于 answered');
+  assert.ok(!/for \(const sku of targets\)[\s\S]{0,160}refreshStatus/.test(code),
+    '绝不能对全部 targets 调用');
+  // 写入之前调用没有意义：那时行龄还是旧的，24h 规则会把陈旧数据判成 stale 并下架。
+  const write = code.indexOf('summary.rows_written += chunk.length');
+  const call = code.indexOf('refreshStatus(sku)');
+  assert.ok(write > 0 && call > write, '状态刷新必须排在写入之后');
+  assert.ok(/if \(summary\.rows_written > 0\)/.test(code), '一行都没写就不该刷新状态');
 });
 
-it('不写 published / inventory_status —— 发布决策归可用性证据那条路', () => {
-  for (const forbidden of ['published', 'set_publication_from_availability', 'standardized_products?', 'delist']) {
-    assert.ok(!code.includes(`${forbidden}:`), `不应写 ${forbidden}`);
+it('不整库刷新，也不自己写发布状态 —— 判定留在数据库函数里', () => {
+  assert.ok(!code.includes('refresh_all_inventory_status'),
+    '整库刷新会连本轮没问到的 SKU 一起按 24h 规则下架');
+  // 唯一允许碰 standardized_products 的方式是只读查询。发布状态由
+  // refresh_product_inventory_status 自己算，这个脚本不替它下结论。
+  const writes = code.match(/standardized_products[^\n]*/g) ?? [];
+  for (const line of writes) {
+    assert.ok(/select=/.test(line), `standardized_products 只能只读访问，实际: ${line.trim()}`);
   }
-  assert.ok(!/from\('standardized_products'\)\s*\.update/.test(code));
+  for (const verb of ["method: 'PATCH'", "method: 'PUT'", "method: 'DELETE'"]) {
+    assert.ok(!code.includes(verb), `这个脚本不该出现 ${verb}`);
+  }
+});
+
+it('下架比例异常时整轮中止，连缓存都不写', () => {
+  assert.ok(code.includes('MAX_DELIST_PERCENT'));
+  // 闸门必须排在写入之前，否则缓存已经落库，下一轮会把这个结果当成既定事实。
+  const gate = code.indexOf('delistPercent > MAX_DELIST_PERCENT');
+  const write = code.indexOf('summary.rows_written += chunk.length');
+  assert.ok(gate > 0 && gate < write, '下架闸门必须在写入之前');
+});
+
+it('「没问到」和「问到了是 0」必须分开 —— 只有后者才是缺货', () => {
+  assert.ok(code.includes('out.records === null'), '用 null 表示没拿到答案');
+  assert.ok(/willDelist = zeroOnly\.filter/.test(code),
+    '下架范围只从 answered 里筛，missing 不在其中');
+});
+
+it('不碰可用性证据那条发布路径', () => {
+  // 两条路各管各的：这里按仓库数量算库存状态，那里按 Open API 可用性证据算发布资格。
+  // 一个脚本同时走两条，就没人说得清某次下架到底是哪条判的。
+  assert.ok(!code.includes('set_publication_from_availability'));
+  assert.ok(!code.includes('publication_audit_log'));
 });
 
 it('默认 dry-run，写入必须显式 --apply', () => {
@@ -144,8 +178,15 @@ it('批量大小与生产既有路径一致', () => {
   assert.ok(code.includes('ROW_BATCH = 500'));
 });
 
-it('失败率超限时中止且不写任何行', () => {
-  assert.ok(/failurePercent > MAX_FAILURE_PERCENT[\s\S]{0,160}不写任何东西/.test(SRC));
+it('两道闸门都排在写入之前，任一触发就一行不写', () => {
+  const write = code.indexOf('summary.rows_written += chunk.length');
+  for (const gate of ['failurePercent > MAX_FAILURE_PERCENT', 'delistPercent > MAX_DELIST_PERCENT']) {
+    const at = code.indexOf(gate);
+    assert.ok(at > 0, `缺少闸门 ${gate}`);
+    assert.ok(at < write, `${gate} 必须在写入之前`);
+  }
+  // 触发时要说清是哪一道，否则日志里只看到「什么都没写」，排查无从下手。
+  assert.ok(code.includes('delist_blocked_reason'));
 });
 
 console.log(`\n${passed} passed`);

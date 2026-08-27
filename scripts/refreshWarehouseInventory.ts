@@ -11,12 +11,17 @@
  *
  * ── 三条与既有脚本不同的硬约定 ──────────────────────────────────────────────
  *
- * 1. **绝不调用 refresh_product_inventory_status()。**
+ * 1. **只对本轮真正刷新过的 SKU 调用 refresh_product_inventory_status()，且必须紧接写入。**
  *    那个函数用它自己的 24 小时规则判 stale，并且直接写 `published`
- *    （supabase/inventory_source_of_truth.sql:148）。本任务每 48 小时跑一轮，
- *    所以每个周期的后半程，所有行都会超过它的 24 小时线 —— 调它就等于每隔一天
- *    把整个目录下架一次。发布决策归 set_publication_from_availability()，
- *    由可用性证据驱动，不归这里。这条有测试守着。
+ *    （supabase/inventory_source_of_truth.sql:134-148）。这是它危险也是它有用的地方：
+ *
+ *      - 对刚写完的 SKU 调用，行龄是 0 秒，它读到的就是供应商此刻的真实数量，
+ *        0 件 → out_of_stock → published=false → 退出 sellable_products。
+ *        这正是「CA 库存为 0 自动下架」缺失的那一环。
+ *      - 对**没刷新到**的 SKU 调用，它只会按 24 小时线把陈旧数据判成 stale 并下架，
+ *        那是拿「我们没查到」当「供应商说没有」。所以绝不对它们调用。
+ *
+ *    换句话说：调用范围严格等于本轮 answered 的集合，一个不多。有测试守着。
  *
  * 2. **0 库存照写。** 见 gigaQuantityToCacheRows 的说明：不写 0 会让缺货商品
  *    同时保持「有货」和「新鲜」。
@@ -65,6 +70,14 @@ const ROW_BATCH = 500;
 /** 与既有 inventory_automation 配置同名同值，避免两套阈值各说各话。 */
 const MIN_COVERAGE_PERCENT = Number(process.env.INVENTORY_MIN_COVERAGE_PERCENT ?? 95);
 const MAX_FAILURE_PERCENT = Number(process.env.INVENTORY_MAX_FAILURE_PERCENT ?? 20);
+/**
+ * 一轮最多允许多少比例的在架商品被判成缺货。
+ *
+ * 供应商接口如果某次抽风、给整批返回 0，上面的失败率闸门是拦不住的 —— 那些响应
+ * 在协议上完全成功。这道闸门看的是**后果**：要下架的比例异常高就整轮中止，
+ * 宁可让库存旧一天，也不要一次性清空店面。默认 10%，按当前 385 件约 38 件。
+ */
+const MAX_DELIST_PERCENT = Number(process.env.WAREHOUSE_MAX_DELIST_PERCENT ?? 10);
 
 if (!GIGA_BASE || !GIGA_CID || !GIGA_SEC) {
   console.error('[warehouse-refresh] FATAL 缺少 GIGA 凭据（需要 .env.giga-alt.local）');
@@ -93,10 +106,15 @@ function sign(apiPath: string, ts: string, nc: string): string {
   return Buffer.from(crypto.createHmac('sha256', key).update(msg).digest('hex'), 'utf8').toString('base64');
 }
 
-/** 一批 SKU 的 quantity/v2 调用。失败只影响这一批，不放弃整轮。 */
-async function fetchQuantities(skus: string[]): Promise<
-  { ok: true; records: GigaQuantityRecord[] } | { ok: false; reason: string }
-> {
+/**
+ * 一批 SKU 的 quantity/v2 调用。失败只影响这一批，不放弃整轮。
+ *
+ * `records` 为 null 表示这一批没拿到答案 —— 与「拿到了、里面是 0」是两回事，
+ * 后者才是缺货。这个区分是整个脚本最不能含糊的地方，所以用 null 而不是空数组。
+ */
+async function fetchQuantities(
+  skus: string[],
+): Promise<{ records: GigaQuantityRecord[] | null; reason: string | null }> {
   const ts = Date.now().toString();
   const nc = nonce();
   try {
@@ -112,10 +130,12 @@ async function fetchQuantities(skus: string[]): Promise<
       body: JSON.stringify({ skus }),
     });
     const json = (await res.json().catch(() => null)) as { success?: boolean; data?: GigaQuantityRecord[] } | null;
-    if (res.status !== 200 || json?.success !== true) return { ok: false, reason: `giga_http_${res.status}` };
-    return { ok: true, records: Array.isArray(json.data) ? json.data : [] };
+    if (res.status !== 200 || json?.success !== true) {
+      return { records: null, reason: `giga_http_${res.status}` };
+    }
+    return { records: Array.isArray(json.data) ? json.data : [], reason: null };
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : 'network_error' };
+    return { records: null, reason: e instanceof Error ? e.message : 'network_error' };
   }
 }
 
@@ -146,6 +166,22 @@ async function upsertRows(rows: InventoryCacheRow[]): Promise<{ ok: boolean; det
   return { ok: res.status < 300, detail: `${res.status} ${(await res.text()).slice(0, 200)}` };
 }
 
+/**
+ * 让数据库按刚写入的数量重算这个商品的库存状态与发布状态。
+ *
+ * 判定全在 refresh_product_inventory_status() 里：它按 website_scrape 行求和，
+ * 0 件 → out_of_stock → published=false，商品随即退出 sellable_products。
+ * 这里不复制那套规则，只负责在正确的时机、对正确的 SKU 调用它。
+ */
+async function refreshStatus(sku: string): Promise<boolean> {
+  const res = await fetch(`${SUPA_URL}/rest/v1/rpc/refresh_product_inventory_status`, {
+    method: 'POST',
+    headers: SB,
+    body: JSON.stringify({ p_supplier_product_id: sku }),
+  });
+  return res.status < 300;
+}
+
 async function main(): Promise<void> {
   const started = new Date();
   console.log(`WAREHOUSE_REFRESH run=${RUN_ID} mode=${APPLY ? 'APPLY' : 'DRY-RUN'}`);
@@ -155,6 +191,7 @@ async function main(): Promise<void> {
     'standardized_products?select=supplier_product_id&published=is.true',
   );
   let targets = published.map((r) => r.supplier_product_id).filter(Boolean);
+  const publishedSet = new Set(targets);
   if (LIMIT > 0) targets = targets.slice(0, LIMIT);
   console.log(`  目标 SKU: ${targets.length}${LIMIT ? ` (--limit=${LIMIT})` : ''}`);
   if (targets.length === 0) {
@@ -171,7 +208,7 @@ async function main(): Promise<void> {
     const batch = targets.slice(i, i + SKU_BATCH);
     batches++;
     const out = await fetchQuantities(batch);
-    if (!out.ok) {
+    if (out.records === null) {
       failedBatches++;
       failedSkus.push(...batch);
       console.warn(`  batch ${batch.length} → 失败 ${out.reason}`);
@@ -201,6 +238,10 @@ async function main(): Promise<void> {
   const inStock = new Set(fresh.filter((r) => r.quantity > 0).map((r) => r.product_id));
   const zeroOnly = [...answered].filter((s) => !inStock.has(s));
 
+  // 会被判成缺货的商品：本轮问到了、且所有仓库合计为 0。这就是下架的预期范围。
+  const willDelist = zeroOnly.filter((sku) => publishedSet.has(sku));
+  const delistPercent = targets.length ? (willDelist.length / targets.length) * 100 : 0;
+
   const summary = {
     run_id: RUN_ID,
     started_at: started.toISOString(),
@@ -220,13 +261,30 @@ async function main(): Promise<void> {
     coverage_percent: Number(coverage.toFixed(2)),
     failure_percent: Number(failurePercent.toFixed(2)),
     rows_written: 0,
+    /** 本轮因为真实为 0 而应当下架的在架商品。 */
+    will_delist: willDelist.length,
+    delist_percent: Number(delistPercent.toFixed(2)),
+    delist_skus: willDelist,
+    /** 实际调用状态刷新成功的 SKU 数；下架由数据库自己判定，这里只记调用结果。 */
+    status_refreshed: 0,
+    status_refresh_failed: 0,
+    delist_blocked_reason: null as string | null,
   };
 
   // ── 写入 ───────────────────────────────────────────────────────────────────
   if (!APPLY) {
-    console.log('  DRY-RUN — 不写任何东西');
+    console.log(`  DRY-RUN — 不写任何东西（本轮将有 ${willDelist.length} 件因为真实为 0 而下架）`);
   } else if (failurePercent > MAX_FAILURE_PERCENT) {
+    summary.delist_blocked_reason = `failure_percent_${failurePercent.toFixed(1)}`;
     console.error(`  失败率 ${failurePercent.toFixed(1)}% > ${MAX_FAILURE_PERCENT}% —— 中止，不写任何东西`);
+  } else if (delistPercent > MAX_DELIST_PERCENT) {
+    // 协议上全部成功、但结果是要下架一大片 —— 更像供应商抽风，不像店里真的空了。
+    // 宁可让库存旧一天。这一步连缓存都不写：写了就等于让下一轮接受这个结果。
+    summary.delist_blocked_reason = `delist_percent_${delistPercent.toFixed(1)}`;
+    console.error(
+      `  本轮将下架 ${willDelist.length} 件（${delistPercent.toFixed(1)}% > ${MAX_DELIST_PERCENT}%）—— 中止，不写任何东西。`
+      + ' 若确认属实，用 WAREHOUSE_MAX_DELIST_PERCENT 显式放宽后重跑。',
+    );
   } else {
     for (let i = 0; i < rows.length; i += ROW_BATCH) {
       const chunk = rows.slice(i, i + ROW_BATCH);
@@ -238,6 +296,23 @@ async function main(): Promise<void> {
       summary.rows_written += chunk.length;
     }
     console.log(`  已写入 ${summary.rows_written} 行`);
+
+    // ── 状态刷新：只对本轮问到的 SKU，且必须在写入之后 ────────────────────────
+    //
+    // 此刻这些 SKU 的行龄是 0 秒，所以 refresh_product_inventory_status 的 24 小时
+    // 规则不会误判；它读到的就是供应商刚给的数量。没问到的 SKU 一个都不碰 ——
+    // 对它们调用只会把「我们没查到」变成「下架」。
+    if (summary.rows_written > 0) {
+      for (const sku of answered) {
+        if (await refreshStatus(sku)) summary.status_refreshed++;
+        else summary.status_refresh_failed++;
+      }
+      console.log(
+        `  状态刷新 ${summary.status_refreshed} 件`
+        + (summary.status_refresh_failed ? `，失败 ${summary.status_refresh_failed} 件` : '')
+        + `；其中 ${willDelist.length} 件应转为缺货并退出 sellable_products`,
+      );
+    }
   }
 
   // 本轮报告落盘，供 runner 与 XOne 读取；文件名带 run_id，不覆盖历史。
