@@ -55,6 +55,22 @@ export type StandardizedProductInsert = {
   is_new_arrival: boolean;
   new_arrival_source: string;
   new_arrival_added_at: string | null;
+  // ── Supplier content preserved whole ───────────────────────────────────────
+  // The fields above are derived summaries: short_description keeps 1–2
+  // sentences, key_features_json keeps bullets under 180 characters. Those are
+  // the right shape for a product card, and the wrong shape for a detail page —
+  // 65% of the supplier's own bullets are longer than that cap and were simply
+  // dropped. These carry the source content intact so the PDP can show what the
+  // supplier actually wrote, without changing what the summaries mean.
+  description_full: string | null;
+  features_full: string[] | null;
+  attributes_json: Record<string, string> | null;
+  assembled_dimensions: Record<string, string> | null;
+  media_json: { images: string[]; video: string | null; videos: string[] } | null;
+  mpn: string | null;
+  upc: string | null;
+  origin: string | null;
+  certifications_json: unknown[] | null;
 };
 
 // ── Category label assignment ────────────────────────────────────────────────
@@ -154,6 +170,48 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
   // row.images is the supplier's fileUrls column and may contain PDFs — never use it.
   const rankedImages = collectImages([], raw);
   const [primaryImage = '', ...galleryImages] = rankedImages;
+
+  // Every usable image the supplier published, plus video. `rankedImages` above
+  // is capped at 8 for `gallery_images_json`, which is the curated set the grid
+  // renders; this re-runs the same ranking with a far higher ceiling so a
+  // detail-page lightbox can open the rest (suppliers ship a median of 18).
+  // The ranking and the non-product filter still apply — the cap is the only
+  // thing lifted, so PDFs and banner art stay out.
+  const allImages = collectImages([], raw, 60);
+  const allVideos = [
+    ...(typeof raw.productVideoUrl === 'string' && raw.productVideoUrl.trim() ? [raw.productVideoUrl.trim()] : []),
+    ...(Array.isArray(raw.videoUrls)
+      ? (raw.videoUrls as unknown[]).filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      : []),
+  ];
+  const uniqueVideos = [...new Set(allVideos)];
+  const mediaJson =
+    allImages.length > 0 || uniqueVideos.length > 0
+      ? { images: allImages, video: uniqueVideos[0] ?? null, videos: uniqueVideos }
+      : null;
+
+  // Assembled size as separate numbers. `dimensions` stays the human-readable
+  // string; this is the form schema.org width/height/depth can actually use.
+  const assembledDimensions = (() => {
+    const pick = (k: string): string | null => {
+      const v = raw[k];
+      const str = typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim();
+      return str && str !== '0' && str !== '0.00' ? str : null;
+    };
+    const out: Record<string, string> = {};
+    const map: Array<[string, string]> = [
+      ['length', 'assembledLength'], ['width', 'assembledWidth'],
+      ['height', 'assembledHeight'], ['weight', 'assembledWeight'],
+      ['lengthUnit', 'lengthUnit'], ['weightUnit', 'weightUnit'],
+    ];
+    for (const [outKey, rawKey] of map) {
+      const v = pick(rawKey);
+      if (v) out[outKey] = v;
+    }
+    // Units alone describe nothing — require at least one measurement.
+    const hasMeasurement = ['length', 'width', 'height', 'weight'].some(k => out[k]);
+    return hasMeasurement ? out : null;
+  })();
 
   // ── Title ────────────────────────────────────────────────────────────────────
   // Strip supplier / manufacturer / vendor prefixes (e.g. "K&K") BEFORE
@@ -292,5 +350,37 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
     new_arrival_added_at: raw.addedTime
       ? String(raw.addedTime).replace(' ', 'T') + (String(raw.addedTime).includes('+') ? '' : 'Z')
       : null,
+    // Preserved as the supplier sent it. `rawDesc` is the clean prose column
+    // (measured: 0% HTML, median 1,017 chars) — deliberately not
+    // raw_payload.description, which is a marketing layout blob of divs and
+    // tables on 100% of rows and is not body copy.
+    description_full: rawDesc.trim() || null,
+    features_full: characteristics.length > 0 ? characteristics : null,
+    attributes_json: plainStringMap(raw.attributes),
+    assembled_dimensions: assembledDimensions,
+    media_json: mediaJson,
+    mpn: nonEmpty(raw.mpn),
+    upc: nonEmpty(raw.upc),
+    origin: nonEmpty(raw.placeOfOrigin),
+    certifications_json: Array.isArray(raw.certificationList) && raw.certificationList.length > 0
+      ? (raw.certificationList as unknown[])
+      : null,
   };
+}
+
+/** Trimmed string, or null — so an absent supplier fact reads as absent, not ''. */
+function nonEmpty(v: unknown): string | null {
+  const s = typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim();
+  return s.length > 0 ? s : null;
+}
+
+/** A flat {string: string} map, ignoring nested or empty supplier values. */
+function plainStringMap(v: unknown): Record<string, string> | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    const s = nonEmpty(val);
+    if (s) out[k] = s;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
