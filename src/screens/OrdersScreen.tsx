@@ -100,12 +100,6 @@ export default function OrdersScreen({ navigation }: any) {
   const [bolLoadingOrderId, setBolLoadingOrderId] = useState<string | null>(null);
   // When set, the full-screen in-app BOL viewer is open on this signed URL.
   const [bolViewer, setBolViewer] = useState<{ url: string; fileName?: string } | null>(null);
-  // Supplier-logo privacy mask: the BOL's top-left supplier branding is covered by a
-  // paper-white overlay; tapping that area 3+ times reveals it. Resets on every open.
-  const [bolMaskTaps, setBolMaskTaps] = useState(0);
-  // Measured width of the viewer area — the mask is positioned as fractions of it
-  // (the PDF renders fit-to-width, so page coordinates scale with viewer width).
-  const [bolViewerW, setBolViewerW] = useState(0);
 
   // Fetch a short-lived signed URL for this order's RELEASED Original BOL and show it
   // in the in-app full-screen viewer (WKWebView renders the PDF natively — zoom/scroll).
@@ -132,7 +126,6 @@ export default function OrdersScreen({ navigation }: any) {
         );
         return;
       }
-      setBolMaskTaps(0); // re-hide the supplier logo every time the viewer opens
       setBolViewer({ url: data.url as string, fileName: (data.fileName as string | undefined) ?? undefined });
     } catch (err) {
       console.log('[BOL] invoke threw:', (err as Error)?.message);
@@ -492,43 +485,21 @@ export default function OrdersScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
           {bolViewer && (
-            <View style={{ flex: 1 }} onLayout={e => setBolViewerW(e.nativeEvent.layout.width)}>
-              <WebView
-                source={{ uri: bolViewer.url }}
-                style={{ flex: 1, backgroundColor: '#F3F1EB' }}
-                originWhitelist={['https://*']}
-                startInLoadingState
-                // The BOL is a single page rendered fit-to-width and fits the screen.
-                // Locking scroll/zoom keeps the logo mask below aligned with the page.
-                scrollEnabled={false}
-                renderLoading={() => (
-                  <View style={styles.bolViewerLoading}>
-                    <ActivityIndicator size="large" color="#EAB320" />
-                  </View>
-                )}
-                onError={() => {
-                  setBolViewer(null);
-                  Alert.alert('BOL unavailable', 'Could not display the document. Please try again.');
-                }}
-              />
-              {/* Paper-white mask over the supplier logo (top-left of the page).
-                  Positioned as fractions of the viewer width — the PDF is fit-to-width,
-                  so page coordinates scale linearly with it. Tapping 3+ times reveals. */}
-              {bolViewerW > 0 && bolMaskTaps < 3 && (
-                <TouchableOpacity
-                  activeOpacity={1}
-                  onPress={() => setBolMaskTaps(t => t + 1)}
-                  style={{
-                    position: 'absolute',
-                    left: bolViewerW * 0.03,
-                    top: bolViewerW * 0.04,
-                    width: bolViewerW * 0.31,
-                    height: bolViewerW * 0.12,
-                    backgroundColor: '#FFFFFF',
-                  }}
-                />
+            <WebView
+              source={{ uri: bolViewer.url }}
+              style={{ flex: 1, backgroundColor: '#F3F1EB' }}
+              originWhitelist={['https://*']}
+              startInLoadingState
+              renderLoading={() => (
+                <View style={styles.bolViewerLoading}>
+                  <ActivityIndicator size="large" color="#EAB320" />
+                </View>
               )}
-            </View>
+              onError={() => {
+                setBolViewer(null);
+                Alert.alert('BOL unavailable', 'Could not display the document. Please try again.');
+              }}
+            />
           )}
         </View>
       </Modal>
