@@ -627,6 +627,15 @@ async function runCheckNewSaved(
 interface PreviewRow {
   supplier_product_id: string;
   ready: boolean;
+  /**
+   * 这件商品处在哪个生命周期阶段。
+   *
+   * `candidate` 才是「本次待上架」的商品，只有它的 ready=false 才意味着被规则拦下。
+   * 已经导入 standardized_products / 已经在售的商品 planner 根本不评估（它只对未导入的
+   * 行出候选），原来一律落到「上架计划未评估这件商品」这句兜底话上，在界面上显示成
+   * 「⚠ 无法上架」—— 它们既没有被任何规则拦住，也不该出现在上架阻塞列表里。
+   */
+  lifecycle: 'candidate' | 'already_imported' | 'already_published';
   bucket: string;
   blocked_reason: string | null;
   title: string;
@@ -669,6 +678,9 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   no_live_sibling_standalone: '同系列暂无在售商品，可单独上架',
   // 2026-08-09 起：未收藏的同系列兄弟不再是上架前提，这条只是说明它以独立商品身份放行。
   unresolved_axis_standalone: '同系列暂无在售商品，按独立商品上架',
+  // 2026-08-29：供应商不提供成品尺寸（assembled* 全是 "Not Applicable"），
+  // 规格改由 Seats + comboInfo 件数确定。这条挂在已放行的商品上，不是拦截原因。
+  spec_from_attributes_standalone: '供应商无成品尺寸，规格按座位数与件数确定',
   no_current_stock: '当前无库存',
   no_image: '缺少主图',
   no_price: '缺少成本价',
@@ -676,6 +688,9 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   missing_price: '缺少成本价',
   low_price: '成本价过低，需要人工确认',
   duplicate_color: '同系列出现重复颜色，需要人工确认',
+  // 与 duplicate_color 分开：原来「颜色为空」和「颜色撞车」共用一个判定，
+  // 缺颜色的商品被说成「重复颜色」，运营按重复去查永远查不到。
+  missing_color: '缺少颜色信息，需要人工确认',
   config_mismatch: '同系列规格不一致，需要人工确认',
   // 2026-08-09 批准：同系列各颜色成本可以不同，不再扣留。代号保留成本差异这个事实，
   // 但它现在挂在已放行的商品上，说法要跟着改 —— 不能再让用户以为它被拦下了。
@@ -720,6 +735,10 @@ const BUCKET_LABELS: Record<string, string> = {
 };
 
 function describeHold(bucket: string, reasons: string[], title = ''): string {
+  // SAFE_* 桶 + 不 ready，只有一个含义：planner 判定它可以上架，但本批次的容量已经用完
+  // （planGigaAutoPublish 的 MAX_FAMILIES / MAX_SKUS 节流）。它没有被任何规则拦下，
+  // 更不是「未评估」—— 那句兜底话会让运营去查一个根本不存在的问题。
+  if (isReadyBucket(bucket)) return '本批次容量已满，下一批自动上架';
   const unplaceable = new Set(['junk_category', 'needs_review_taxonomy']);
   const detail = reasons
     .map((r) => (unplaceable.has(r) && title
@@ -743,6 +762,10 @@ export function buildPreviewRows(input: {
   supplierRows: Array<Record<string, any>>;
   normalize: (row: Record<string, any>) => Record<string, any>;
   reviewCount: (product: Record<string, any>) => { count: number; avg: number };
+  /** 已导入 standardized_products 的 SKU。planner 不为它们出候选，不能当成被拦。 */
+  standardizedIds?: ReadonlySet<string>;
+  /** 已在售的 SKU（sellable ⊂ standardized）。 */
+  sellableIds?: ReadonlySet<string>;
 }): PreviewRow[] {
   const proposed = new Set<string>(((input.plan?.proposed_batch?.skus ?? []) as unknown[]).map((s) => String(s)));
   const byId = new Map<string, Record<string, any>>();
@@ -761,6 +784,13 @@ export function buildPreviewRows(input: {
     const candidate = byId.get(id) ?? null;
     const bucket = String(candidate?.bucket ?? (proposed.has(id) ? 'SAFE_SINGLETON' : 'UNKNOWN'));
     const ready = proposed.has(id);
+    // planner 只对「未导入」的行出候选。没有候选行又已经导入，说明它早就走完了上架这一步，
+    // 现在处在别的阶段（待定价 / 在售 / 已下架），不是被上架规则拦住。
+    const lifecycle: PreviewRow['lifecycle'] = candidate || proposed.has(id)
+      ? 'candidate'
+      : input.sellableIds?.has(id) ? 'already_published'
+        : input.standardizedIds?.has(id) ? 'already_imported'
+          : 'candidate';
     const reasons = Array.isArray(candidate?.reasons) ? candidate!.reasons.map(String) : [];
     const gallery = Array.isArray(normalized.gallery_images_json) ? normalized.gallery_images_json : [];
     const primary = typeof normalized.primary_image === 'string' && normalized.primary_image ? normalized.primary_image : null;
@@ -783,8 +813,12 @@ export function buildPreviewRows(input: {
     rows.push({
       supplier_product_id: id,
       ready,
+      lifecycle,
       bucket,
-      blocked_reason: ready ? null : describeHold(bucket, reasons, String(supplierRow.title ?? '')),
+      blocked_reason: ready ? null
+        : lifecycle === 'already_published' ? '已在售，不需要再次上架'
+          : lifecycle === 'already_imported' ? '已导入，等待定价或已下架'
+            : describeHold(bucket, reasons, String(supplierRow.title ?? '')),
       title: String(normalized.product_title_display ?? normalized.product_title ?? supplierRow.title ?? '未命名商品'),
       sku_custom: String(normalized.sku_custom ?? ''),
       category: String(normalized.category_label ?? normalized.category_code ?? ''),
@@ -818,6 +852,32 @@ async function readSupplierRows(client: SupabaseClient, skus: string[]): Promise
     out.push(...((data ?? []) as Array<Record<string, any>>));
   }
   return out;
+}
+
+/**
+ * 这批 SKU 里哪些已经导入 / 已经在售。只读两张表的主键列，不带任何写入。
+ *
+ * planner 的候选集合 = supplier_products 里尚未 standardized 的行，所以「planner 没出候选」
+ * 与「被规则拦下」是两件完全不同的事。没有这两个集合就区分不了，界面只能把前者也说成
+ * 「无法上架」。
+ */
+async function readLifecycleSets(client: SupabaseClient, skus: string[]): Promise<{
+  standardizedIds: Set<string>; sellableIds: Set<string>;
+}> {
+  const standardizedIds = new Set<string>();
+  const sellableIds = new Set<string>();
+  if (!skus.length) return { standardizedIds, sellableIds };
+  for (let i = 0; i < skus.length; i += 200) {
+    const slice = skus.slice(i, i + 200);
+    const [std, sell] = await Promise.all([
+      client.from('standardized_products').select('supplier_product_id').in('supplier_product_id', slice),
+      client.from('sellable_products').select('supplier_product_id').in('supplier_product_id', slice),
+    ]);
+    // 读不到就当作未知，保持原有的「候选」判定 —— 绝不因为一次查询失败就把商品说成已在售。
+    for (const r of (std.data ?? []) as Array<Record<string, any>>) standardizedIds.add(String(r.supplier_product_id));
+    for (const r of (sell.data ?? []) as Array<Record<string, any>>) sellableIds.add(String(r.supplier_product_id));
+  }
+  return { standardizedIds, sellableIds };
 }
 
 /** 库存事实取自既有 inventory_cache，不另做探测。 */
@@ -940,9 +1000,12 @@ async function runOnboardingPreview(
   // 5. 合成预览。
   progress('preview', '正在生成上架预览');
   const supplierRows = await readSupplierRows(client, candidateSkus);
+  const lifecycleSets = await readLifecycleSets(client, candidateSkus);
   const rows = buildPreviewRows({
     plan: planJson,
     supplierRows,
+    standardizedIds: lifecycleSets.standardizedIds,
+    sellableIds: lifecycleSets.sellableIds,
     normalize: (row) => normalizeProduct(row as never) as unknown as Record<string, any>,
     reviewCount: (product) => {
       const set = generateReviewSet(product as never);
@@ -963,6 +1026,9 @@ async function runOnboardingPreview(
   }
 
   const readyRows = rows.filter((r) => r.ready);
+  // 「需处理」只数真正的上架候选。已导入/在售的走自己的分组，不再混进阻塞列表。
+  const blockedRows = rows.filter((r) => !r.ready && r.lifecycle === 'candidate');
+  const otherLifecycleRows = rows.filter((r) => !r.ready && r.lifecycle !== 'candidate');
   const payload = envelope('onboarding-preview', {
     // 草稿导入是唯一会写库的一步，且只写 supplier_products（published=false）。
     production_write_attempted: importedDrafts,
@@ -972,7 +1038,8 @@ async function runOnboardingPreview(
     generated_at_ms: null,
     discovered: rows.length,
     ready_count: readyRows.length,
-    blocked_count: rows.length - readyRows.length,
+    blocked_count: blockedRows.length,
+    other_lifecycle_count: otherLifecycleRows.length,
     ready_skus: readyRows.map((r) => r.supplier_product_id),
     rows,
     protection_applied: protectionApplied,

@@ -128,6 +128,8 @@ type Cand = {
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
   isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
+  /** 成品尺寸缺失时的备用规格轴（Seats + 件数）；取不到就是 null，此时不猜。 */
+  fallbackSpec: string | null;
 };
 
 /**
@@ -154,6 +156,55 @@ export function baseBucketOf(c: { img: boolean; normCost: number; title: string;
 }
 
 /**
+ * 成品尺寸缺失时的备用规格轴：`attributes.Seats` + comboInfo 总件数。
+ *
+ * 为什么需要它：实测这 20 件沙发的 assembledLength/Width/Height 全是字符串
+ * `"Not Applicable"`，裸 length/width/height 全为 null —— 现场调 GIGA detailInfo/v1
+ * 复核过，供应商**确实不提供成品尺寸**，不是我们没读到。于是 deriveWidth 必然返回 null，
+ * 族键落上 `wmissing`，整批被当成「规格不明」扣留。
+ *
+ * 但同一份 payload 里另有两个结构化字段，20/20 件齐全，且合起来能唯一确定商品：
+ *   attributes.Seats        "2 Seat" / "3 Seat" / "4 Seat"
+ *   comboInfo[].qty 之和    2 / 3 / 4 / 5 / 6 件装
+ * 实测 18 件 Chenille 按这两项正好还原成 9 个真实商品 × 2 个颜色，颜色零重复，
+ * 与完全独立的成本分组结果逐件一致。
+ *
+ * 【边界】这里用的是**件数**，不是箱子的长宽高。包装箱尺寸绝不能当成品尺寸使用：
+ * 这 18 件的最大箱长全部是 31.1 英寸，拿它当宽度会得到清一色的 `w31`，毫无区分度，
+ * 还会把箱规当成商品尺寸写进族键。件数是「这件商品由几个包裹构成」这一结构事实，
+ * 与商品形态直接相关（2 座 2 件 = Loveseat，4 座 6 件 = U 形），且不冒充任何尺寸。
+ *
+ * 返回 null 表示这条备用轴对该商品不可用 —— 此时绝不猜，维持人工确认。
+ */
+export function deriveFallbackSpec(raw: Record<string, unknown> | null | undefined): string | null {
+  const attrs = (raw?.attributes ?? null) as Record<string, unknown> | null;
+  const seats = typeof attrs?.Seats === 'string' ? attrs.Seats.trim().toLowerCase() : '';
+  const combo = Array.isArray(raw?.comboInfo) ? (raw!.comboInfo as Array<Record<string, unknown>>) : null;
+  if (!seats || !combo || combo.length === 0) return null;
+  let pieces = 0;
+  for (const c of combo) {
+    const q = Number(c?.qty);
+    if (!Number.isFinite(q) || q <= 0) return null;   // 件数不完整就不是可靠的轴
+    pieces += q;
+  }
+  return `${seats}|p${pieces}`;
+}
+
+/**
+ * 按备用规格轴给一族分组。任何一个成员取不到轴就返回 null —— 半份证据不足以分族。
+ */
+export function fallbackSpecGroups<T extends { fallbackSpec: string | null }>(members: T[]): T[][] | null {
+  if (members.some(m => !m.fallbackSpec)) return null;
+  const by = new Map<string, T[]>();
+  for (const m of members) {
+    const k = m.fallbackSpec!;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k)!.push(m);
+  }
+  return [...by.keys()].sort().map(k => by.get(k)!);
+}
+
+/**
  * Verdict for a FRAGMENTED `-vg-` cluster member — the lone co-present clean member of a supplier
  * variation group. Pure; exported for tests. See the call site for the full rationale.
  *
@@ -165,8 +216,17 @@ export function baseBucketOf(c: { img: boolean; normCost: number; title: string;
  */
 export function fragmentedVerdict(c: {
   hasLiveSibling: boolean; widthMissing: boolean; cfgMissing: boolean; noConfigAxis: boolean;
+  /**
+   * 成品尺寸缺失，但备用规格轴（Seats + 件数）已经确定了这件商品的规格。
+   * 缺省 false —— 不传就是改动前的行为，wmissing 照旧扣留。
+   */
+  specResolved?: boolean;
 }): { bucket: string; reason: string } {
+  // 在售兄弟的合并保护永远优先，任何 fallback 都不能绕过它。
   if (c.hasLiveSibling) return { bucket: 'HOLD_PHASE2', reason: 'fragmented_cluster' };
+  if (c.widthMissing && c.specResolved) {
+    return { bucket: 'SAFE_SINGLETON', reason: 'spec_from_attributes_standalone' };
+  }
   if (c.widthMissing) return { bucket: 'HOLD_PHASE2', reason: 'wmissing_fragmented' };
   if (c.cfgMissing) {
     // 「这个品类本来就没有配置轴」与「本该有轴但没解析出来」是两件事，原因码分开记，便于日后
@@ -174,6 +234,87 @@ export function fragmentedVerdict(c: {
     return { bucket: 'SAFE_SINGLETON', reason: c.noConfigAxis ? 'no_config_axis_standalone' : 'unresolved_axis_standalone' };
   }
   return { bucket: 'SAFE_SINGLETON', reason: 'no_live_sibling_standalone' };
+}
+
+/**
+ * 尺寸容差。制造与量测误差按 0.5 英寸与 1% 取大者。
+ *
+ * 实测依据：同款 4 抽屉文件柜的黑白两色量出 14.65 与 14.76 英寸（差 0.11），原来的精确
+ * 相等比较把它判成 config_mismatch；而真正被误合并的酒柜是 19.59 对 15.95（差 3.64），
+ * 必须继续判为不同。0.5 英寸稳稳落在这两者之间。
+ */
+const DIM_TOL_ABS = 0.5;
+const DIM_TOL_PCT = 0.01;
+
+/**
+ * `LxWxH` 字符串 → 三个正数。任何一维不是有限正数就返回 null。
+ *
+ * 关键：供应商给 ''、'-'、'N/A' 时这个串是 `NaNxNaNxNaN`。它是 truthy，所以原来的
+ * `new Set(dims).filter(Boolean).size <= 1` 会因为「三件商品都解析失败、字符串恰好相同」
+ * 而认定它们尺寸一致 —— 尺寸完全未知反而成了「规格相同」的证据。这里把它归为未知。
+ */
+export function parseDim(dim: string): number[] | null {
+  const parts = String(dim ?? '').split('x');
+  if (parts.length !== 3) return null;
+  const nums = parts.map(Number);
+  return nums.every(n => Number.isFinite(n) && n > 0) ? nums : null;
+}
+
+/**
+ * 一族成员的尺寸能否视为同一规格。两两比较，任一对超出容差即不兼容。
+ * 尺寸未知的成员不参与比较 —— 未知不是冲突（与仓库既有的「unknown 不算负面事实」一致）。
+ */
+export function dimsCompatible(dims: string[]): boolean {
+  const parsed = dims.map(parseDim).filter((d): d is number[] => d !== null);
+  return parsed.every((a, i) => parsed.slice(i + 1).every(b =>
+    a.every((v, k) => Math.abs(v - b[k]) <= Math.max(DIM_TOL_ABS, Math.max(v, b[k]) * DIM_TOL_PCT))));
+}
+
+/**
+ * 退化族键下的子分组 —— 按采购成本聚类。
+ *
+ * 正常族键里 config 轴与宽度已经把不同商品分开了，共享族键即同款。带 `cfgmissing` /
+ * `wmissing` 的键没有这个保证：实测 13 件 Chenille Cloud 沙发（Loveseat / 3-Seater /
+ * 4-Seater / L-Shaped / U-Shaped，成本 $212.5–$515.1）因为规格与尺寸都没解析出来而共享
+ * 同一个键，被当成「同款 13 色」，颜色必然重复，整族被 duplicate_color 扣下。
+ *
+ * 为什么用成本而不用标题：同族标题的结构并不稳定 —— 实测同一款沙发的 7 个颜色里，
+ * Coffee 与 Camel 两件根本没有「<颜色> breathable fabric」那一段，按标题分会把真色族拆散。
+ * 而同款换色的采购成本一致（该族 7 件全部 $259），不同形态/尺寸的成本必然不同
+ * （上面那 13 件有 9 个不同成本，正好对应 9 个真实商品）。
+ *
+ * 这不违背 2026-08-09「同族各颜色成本可以不同」那条规则：那条规则针对的是**键本身有区分度**
+ * 的族（2drawer / 4door），此处只在键已经失去区分度时，把成本当作**唯一还可用的**区分依据。
+ * 容差沿用既有的 COST_TOL_ABS / COST_TOL_PCT，避免取整噪声拆散真族。
+ */
+export function costSubgroups<T extends { normCost: number }>(members: T[]): T[][] {
+  const sorted = [...members].sort((a, b) => a.normCost - b.normCost);
+  const groups: T[][] = [];
+  for (const m of sorted) {
+    const prev = groups.at(-1)?.at(-1);
+    const tol = prev ? Math.max(COST_TOL_ABS, Math.max(m.normCost, prev.normCost) * COST_TOL_PCT) : 0;
+    if (prev && Math.abs(m.normCost - prev.normCost) <= tol) groups.at(-1)!.push(m);
+    else groups.push([m]);
+  }
+  return groups;
+}
+
+/**
+ * 一组同款成员里，**哪几件**颜色真的撞了。
+ *
+ * 原来的判定是整族一刀切：`members.forEach(... 'duplicate_color')`，两件撞色会把同族另外
+ * 五个颜色唯一的商品一起扣下。这里只返回真正冲突的 id，其余照常评估。
+ */
+export function duplicateColorIds<T extends { id: string; color: string }>(members: T[]): Set<string> {
+  const seen = new Map<string, number>();
+  for (const m of members) {
+    const c = m.color.trim().toLowerCase();
+    if (c) seen.set(c, (seen.get(c) ?? 0) + 1);
+  }
+  return new Set(members.filter(m => {
+    const c = m.color.trim().toLowerCase();
+    return c !== '' && (seen.get(c) ?? 0) > 1;
+  }).map(m => m.id));
 }
 
 export async function main() {
@@ -237,7 +378,7 @@ export async function main() {
       // cfg/width sentinels: resolveVariantSplit emits `cfgmissing` / `wmissing` tokens into the
       // key when config or width could not be derived (familyKeyGenerator.ts). Such keys are
       // unstable for future merges, so they must not seed a standalone Fast-Lane card.
-      isVg: key.includes('-vg-'), hasLiveSibling,
+      isVg: key.includes('-vg-'), hasLiveSibling, fallbackSpec: deriveFallbackSpec(raw),
       cfgMissing: key.includes('-cfgmissing-'), widthMissing: key.endsWith('-wmissing'),
       commerceCanonical: commerce.productType !== NEEDS_REVIEW,
       bucket: '', reasons: [],
@@ -300,27 +441,105 @@ export async function main() {
           widthMissing: m.widthMissing,
           cfgMissing: m.cfgMissing,
           noConfigAxis: NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase()),
+          // 成品尺寸缺失时，备用规格轴（Seats + 件数）一旦读得出，这件商品的规格就是确定的。
+          specResolved: m.fallbackSpec != null,
         });
         m.bucket = v.bucket;
         m.reasons.push(v.reason);
       });
       continue;
     }
-    const cats = new Set(members.map(m => m.cat));
-    const dims = new Set(members.map(m => m.dim).filter(Boolean));
-    const draw = new Set(members.map(m => m.drawers).filter(v => v != null));
-    const door = new Set(members.map(m => m.doors).filter(v => v != null));
-    const colors = members.map(m => m.color.toLowerCase()).filter(Boolean);
-    const costs = new Set(members.map(m => m.normCost));
-    const dupColor = colors.length !== new Set(colors).size || colors.length !== members.length;
-    const sameConfig = cats.size === 1 && dims.size <= 1 && draw.size <= 1 && door.size <= 1;
+    // ── 退化族键的子分组 ────────────────────────────────────────────────────
+    // `cfgmissing` / `wmissing` 表示规格轴或宽度没能解析出来。这样的键对「是不是同一件
+    // 商品」没有任何区分力，却被下面的族规则当成同款不同色。实测 18 件不同形态的沙发
+    // （Loveseat / 3-Seater / 4-Seater / L-Shaped / U-Shaped）因此被并成两族，颜色必然
+    // 重复，整族被 duplicate_color 扣下 —— 拦截的是分族错误，不是商品问题。
+    const degenerateKey = key.includes('cfgmissing') || key.includes('wmissing');
 
-    const minCost = Math.min(...costs), maxCost = Math.max(...costs);
-    const costWithinTol = (maxCost - minCost) <= COST_TOL_ABS || (minCost > 0 && (maxCost - minCost) / minCost <= COST_TOL_PCT);
+    // 宽度未知时不评估族关系：不知道商品多大，就不能断言两件是同款换色。逐件按单件路径
+    // 处理，与 fragmentedVerdict 对「孤身一件 wmissing」的既有裁决完全一致（仍然扣留，
+    // 且 hasLiveSibling 的合并保护优先级不变）。
+    //
+    // 备用规格轴（2026-08-29 批准）：成品尺寸缺失不再直接扣留。先试 Seats + 件数。
+    // 现场调 GIGA detailInfo/v1 复核过，这批商品的 assembledLength/Width/Height 就是
+    // 字符串 "Not Applicable"、裸 length/width/height 全为 null —— 供应商确实不提供成品
+    // 尺寸，不是我们没读到。但同一份 payload 里 Seats 与 comboInfo 件数齐全，且足以区分。
+    let widthMissingUnresolved = false;
+    let fallbackGroups: Cand[][] | null = null;
+    if (key.includes('wmissing')) {
+      fallbackGroups = fallbackSpecGroups(members);
+      if (!fallbackGroups) {
+        // 备用轴读不出来 —— 不猜，维持人工确认，与改动前完全一致。
+        members.forEach(m => {
+          const v = fragmentedVerdict({
+            hasLiveSibling: m.hasLiveSibling,
+            widthMissing: m.widthMissing,
+            cfgMissing: m.cfgMissing,
+            noConfigAxis: NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase()),
+          });
+          m.bucket = v.bucket;
+          m.reasons.push(v.reason);
+        });
+        continue;
+      }
+      widthMissingUnresolved = true;   // 逐组再判：这一组是否真被备用轴分清楚了
+    }
 
-    if (dupColor || !sameConfig) {
-      members.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push(dupColor ? 'duplicate_color' : 'config_mismatch'); });
-    } else {
+    const groups = fallbackGroups ?? (degenerateKey ? costSubgroups(members) : [members]);
+    for (const group of groups) {
+      // 同一个父键分出多个族时，族键必须各自唯一 —— apply runner 用 key 去重卡片
+      // （runGigaAutoPublish.ts 的 passCards），两族共用一个键会被算成同一张卡。
+      const groupKey = groups.length > 1 ? `${key}#${group[0].id}` : key;
+
+      const single = (m: Cand) => {
+        const v = fragmentedVerdict({
+          hasLiveSibling: m.hasLiveSibling,
+          widthMissing: m.widthMissing,
+          cfgMissing: m.cfgMissing,
+          noConfigAxis: NO_CONFIG_AXIS_CATS.has(m.cat.toLowerCase()),
+          // 成品尺寸缺失时，备用规格轴（Seats + 件数）一旦读得出，这件商品的规格就是确定的。
+          specResolved: m.fallbackSpec != null,
+        });
+        m.bucket = v.bucket;
+        m.reasons.push(v.reason);
+      };
+
+      if (group.length < 2) { single(group[0]); continue; }
+
+      // 备用轴分出的组内若还有重复颜色，说明这条轴对这一组不够细。成品尺寸本来就未知，
+      // 无法区分「同一件商品出现两次」与「轴太粗把两件商品并在一起」—— 按规则不猜，
+      // 整组维持人工确认，且原因仍如实记为尺寸缺失，不冒充 duplicate_color。
+      if (widthMissingUnresolved && duplicateColorIds(group).size > 0) {
+        group.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('wmissing_fragmented'); });
+        continue;
+      }
+
+      // ── 只拦真正冲突的 SKU，不再整族连坐 ──────────────────────────────────
+      const dupIds = duplicateColorIds(group);
+      const noColor = group.filter(m => !m.color.trim());
+      noColor.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('missing_color'); });
+      group.filter(m => dupIds.has(m.id))
+        .forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('duplicate_color'); });
+
+      const rest = group.filter(m => !dupIds.has(m.id) && m.color.trim());
+      if (rest.length === 0) continue;
+      if (rest.length === 1) { single(rest[0]); continue; }
+
+      const cats = new Set(rest.map(m => m.cat));
+      const draw = new Set(rest.map(m => m.drawers).filter(v => v != null));
+      const door = new Set(rest.map(m => m.doors).filter(v => v != null));
+      const costs = new Set(rest.map(m => m.normCost));
+      // 尺寸改为带容差比较：0.11 英寸的量测差不再算规格不一致，3.64 英寸的真实差仍然算。
+      const sameConfig = cats.size === 1 && dimsCompatible(rest.map(m => m.dim)) && draw.size <= 1 && door.size <= 1;
+
+      const minCost = Math.min(...costs), maxCost = Math.max(...costs);
+      const costWithinTol = (maxCost - minCost) <= COST_TOL_ABS || (minCost > 0 && (maxCost - minCost) / minCost <= COST_TOL_PCT);
+
+      if (!sameConfig) {
+        rest.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('config_mismatch'); });
+        continue;
+      }
+
       // BUSINESS RULE (approved 2026-08-09): members of one family MAY carry different supplier
       // cost / selling price / inventory / delivery fee. Cost equality was never a safety property —
       // it was a presentation worry about a single "from $X" card. Every member is still priced
@@ -333,16 +552,13 @@ export async function main() {
       // effect stays visible in the report: `cost_within_tolerance` (rounding noise) vs
       // `per_color_cost_differs` (a real per-color price difference, now released).
       //
-      // Read-only full-catalogue comparison measured the effect at exactly 2 families / 6 SKUs
-      // (cb-vg-n710p318989b-2drawer-w24 ×4, cb-vg-w409p327399-4door-w59 ×2) moving out of HOLD_PRICE.
-      //
       // `cost: maxCost` below stays REPORT-ONLY — the apply runner reads only { key, skus } from
       // families (runGigaAutoPublish.ts), so per-SKU pricing is untouched by this field.
-      members.forEach(m => {
+      rest.forEach(m => {
         m.bucket = 'SAFE_CLEAN_COLOR_VARIANT';
         if (costs.size > 1) m.reasons.push(costWithinTol ? 'cost_within_tolerance' : 'per_color_cost_differs');
       });
-      safeVariantFamilies.push({ key, skus: members.map(m => m.id).sort(), colors: members.map(m => m.color), cost: maxCost });
+      safeVariantFamilies.push({ key: groupKey, skus: rest.map(m => m.id).sort(), colors: rest.map(m => m.color), cost: maxCost });
     }
   }
 

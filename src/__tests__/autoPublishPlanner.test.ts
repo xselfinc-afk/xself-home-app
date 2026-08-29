@@ -124,9 +124,17 @@ it('per-color 成本不一致不再扣留：HOLD_PRICE 不再被赋给任何商�
 
 it('其余家族安全门一条都没松：重复颜色 / 配置 / 尺寸仍然扣留', () => {
   const src = readFileSync('scripts/planGigaAutoPublish.ts', 'utf8');
-  assert.ok(/dupColor \? 'duplicate_color' : 'config_mismatch'/.test(src), '重复颜色与配置不符必须仍然扣留');
+  // 2026-08-29：这两条门槛都还在，但实现从「整族一刀切」改成「按件」。
+  // 原来是 `dupColor ? 'duplicate_color' : 'config_mismatch'` —— 一族里两件撞色，
+  // 会把另外五个颜色唯一的商品一起扣下。现在 duplicateColorIds 只返回真正冲突的 id，
+  // 其余成员照常评估。扣留本身没有放松：撞色的那几件仍然进 HOLD_PHASE2。
+  assert.ok(/reasons\.push\('duplicate_color'\)/.test(src), '撞色的 SKU 必须仍然扣留');
+  assert.ok(/reasons\.push\('config_mismatch'\)/.test(src), '配置不符必须仍然扣留');
+  assert.ok(/duplicateColorIds\(group\)/.test(src), '撞色判定必须逐件，不得整族连坐');
   // sameConfig 同时管类目、尺寸、抽屉、门数 —— 尺寸不一致照样进 HOLD_PHASE2。
-  assert.ok(/const sameConfig = cats\.size === 1 && dims\.size <= 1 && draw\.size <= 1 && door\.size <= 1/.test(src));
+  // 尺寸比较改为带容差（dimsCompatible）：0.11 英寸的量测差不再算不一致，
+  // 但真实规格差（实测 3.64 英寸）仍然扣留。见 variantFamilyMisgrouping.test.ts。
+  assert.ok(/const sameConfig = cats\.size === 1 && dimsCompatible\(rest\.map\(m => m\.dim\)\) && draw\.size <= 1 && door\.size <= 1/.test(src));
 });
 
 it('每个 SKU 自己的成本仍然是硬门槛：缺失或 <= 0 直接 REJECT', () => {
