@@ -808,7 +808,17 @@ check('SKU identity & family scope lock', () => {
   // 5. Family scope: sellerCode-authoritative, S-format never prefix-judged.
   failures.push(...fileMust('src/services/familyKeyGenerator.ts', 'sellerScopeOf', 'isSequenceFormat', /computeFamilyKey\([^)]*sellerScope/));
   failures.push(...fileMust('scripts/planGigaAutoPublish.ts', 'sellerScopeOf', 'isSequenceFormat', 'confirmSiblingRelation'));
-  failures.push(...fileMust('scripts/syncGigaVariants.ts', 'sellerScopeOf', 'isSequenceFormat'));
+  // syncGigaVariants: lock the actual candidate-filter BEHAVIOR, not just imports —
+  // the keep decision must be scope-gated with the S-format prefix bypass, and the
+  // old prefix-only rule must not reappear anywhere in the file.
+  failures.push(...fileMust('scripts/syncGigaVariants.ts',
+    /const scope = sellerScopeOf\(raw, row\.supplier_product_id\)/,
+    /keep:\s*inScope && \(sFormat \? true : shared\.length >= PREFIX_MIN_MATCH\)/,
+  ));
+  const sync = read('scripts/syncGigaVariants.ts') ?? '';
+  if (/keep:\s*shared\.length\s*>=\s*PREFIX_MIN_MATCH/.test(sync)) {
+    failures.push('scripts/syncGigaVariants.ts: prefix-only sibling rule reintroduced (keep must be scope-gated)');
+  }
 
   // 6. DB uniqueness is committed as a migration (constraint name pinned).
   failures.push(...fileMust('supabase/migrations/20260829_sku_custom_identity_migration.sql', 'standardized_products_sku_custom_key'));

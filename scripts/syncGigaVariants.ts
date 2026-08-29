@@ -465,13 +465,21 @@ async function run() {
     const associates = Array.isArray(raw.associateProductList)
       ? (raw.associateProductList as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
+    // Sibling candidacy mirrors familyKeyGenerator.resolveVariantSplit exactly:
+    // hard sellerCode scope gate (sellerScopeOf — never SKU-tail lookalikes);
+    // S-format ids skip the char-prefix rule entirely (their sequence segment
+    // carries no relatedness); P/legacy ids keep >=PREFIX_MIN_MATCH as a WEAK
+    // filter. Prefix length is never a sufficient condition by itself.
+    const scope = sellerScopeOf(raw, row.supplier_product_id);
+    const sFormat = isSequenceFormat(row.supplier_product_id, scope);
     for (const assoc of associates) {
       if (assoc === row.supplier_product_id) continue;
       const shared = longestCommonPrefix(row.supplier_product_id, assoc);
+      const inScope = scope != null && assoc.toUpperCase().startsWith(scope);
       candidates.push({
         sourceSku: row.supplier_product_id,
         candidateSku: assoc,
-        keep: shared.length >= PREFIX_MIN_MATCH,
+        keep: inScope && (sFormat ? true : shared.length >= PREFIX_MIN_MATCH),
         sharedPrefix: shared,
       });
     }
