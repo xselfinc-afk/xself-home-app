@@ -88,7 +88,10 @@ export type OnboardingOperation =
   | 'onboarding-batch-publish'
   | 'onboarding-candidates'
   | 'prepare-onboarding-candidate'
-  | 'approve-first-publish';
+  | 'approve-first-publish'
+  | 'manual-merge-preview'
+  | 'manual-merge-apply'
+  | 'manual-override';
 
 export interface OnboardingRequest {
   schema_version: '1.0';
@@ -109,6 +112,12 @@ export interface OnboardingRequest {
   skus?: string[];
   /** supplier-login 用：pickup | dropship。 */
   account?: string;
+  /** manual-merge-* 用：合并目标（已在售兄弟）的完整 supplier_product_id。 */
+  live_sku?: string;
+  /** manual-override 用：standalone（独立上架）| dup_keep（保留此件）| skip（跳过此件）。 */
+  action?: string;
+  /** manual-override 用：人工备注，与批准人一起进 override 登记。 */
+  note?: string;
 }
 
 export function parseOnboardingRequest(raw: string): OnboardingRequest {
@@ -120,9 +129,11 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     'check-new-saved', 'supplier-login', 'onboarding-recovery-list', 'onboarding-recovery-resume',
     'onboarding-preview', 'onboarding-preview-cached', 'onboarding-batch-publish',
     'onboarding-candidates', 'prepare-onboarding-candidate', 'approve-first-publish',
+    'manual-merge-preview', 'manual-merge-apply', 'manual-override',
   ];
   if (!r.operation || !ops.includes(r.operation)) throw new Error('INVALID_REQUEST');
-  const needsSku = r.operation === 'prepare-onboarding-candidate' || r.operation === 'approve-first-publish';
+  const needsSku = r.operation === 'prepare-onboarding-candidate' || r.operation === 'approve-first-publish'
+    || r.operation === 'manual-merge-preview' || r.operation === 'manual-merge-apply' || r.operation === 'manual-override';
   if (needsSku && !String(r.sku ?? '').trim()) throw new Error('INVALID_SKU');
   const clamp = (v: unknown, fallback: number, max: number): number => {
     const n = Math.floor(Number(v));
@@ -143,6 +154,9 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     refresh_saved: r.refresh_saved === true,
     expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
     account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
+    live_sku: String(r.live_sku ?? '').trim().slice(0, 64) || undefined,
+    action: r.action === 'standalone' || r.action === 'dup_keep' || r.action === 'skip' ? r.action : undefined,
+    note: String(r.note ?? '').trim().slice(0, 200) || undefined,
     skus: Array.isArray(r.skus)
       ? r.skus.map((x) => String(x).trim()).filter((x) => x.length > 0 && x.length <= 64).slice(0, PAGE_MAX)
       : undefined,
@@ -652,6 +666,14 @@ interface PreviewRow {
   stock_qty: number | null;
   /** 冷启动评价是系统生成的，不是顾客写的。UI 必须照这个字段如实措辞。 */
   review_kind: 'generated' | 'customer';
+  /** 「需要处理」人工闭环用的事实：命中的在售兄弟 / 撞色组 / 已应用的 override。 */
+  manual_facts?: {
+    live_sibling_ids: string[];
+    uncertain_sibling_ids: string[];
+    dup_group_ids: string[];
+    override_applied: string | null;
+    live_siblings: Array<{ id: string; title: string; sku_custom: string; primary_image: string | null }>;
+  } | null;
   review_count: number;
   review_avg: number;
 }
@@ -675,6 +697,8 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   wmissing_fragmented: '同系列商品尺寸不完整，需要人工确认',
   fragmented_cluster: '同系列已有商品在售，需要合并后再上架',
   sibling_uncertain_manual: '疑似同系列在售商品，事实无法自动证实，需人工确认',
+  manual_skip: '已由人工跳过，不再进入上架流程',
+  manual_standalone_override: '人工判定为不同商品，按独立商品放行（其余门禁不变）',
   no_config_axis_standalone: '无法确定规格轴，需要人工确认',
   no_live_sibling_standalone: '同系列暂无在售商品，可单独上架',
   // 2026-08-09 起：未收藏的同系列兄弟不再是上架前提，这条只是说明它以独立商品身份放行。
@@ -834,6 +858,13 @@ export function buildPreviewRows(input: {
       stock_available: null,
       stock_qty: null,
       review_kind: 'generated',
+      manual_facts: candidate ? {
+        live_sibling_ids: Array.isArray(candidate.liveSiblingIds) ? candidate.liveSiblingIds.map(String) : [],
+        uncertain_sibling_ids: Array.isArray(candidate.uncertainSiblingIds) ? candidate.uncertainSiblingIds.map(String) : [],
+        dup_group_ids: Array.isArray(candidate.dupGroupIds) ? candidate.dupGroupIds.map(String) : [],
+        override_applied: candidate.overrideApplied ? String(candidate.overrideApplied) : null,
+        live_siblings: [],
+      } : null,
       review_count: review.count,
       review_avg: review.avg,
     });
@@ -1018,6 +1049,29 @@ async function runOnboardingPreview(
   for (const row of rows) {
     const qty = stock.get(row.supplier_product_id);
     if (qty !== undefined) { row.stock_qty = qty; row.stock_available = qty > 0; }
+  }
+
+  // 人工闭环事实增强：把命中的在售兄弟补上标题/对外 SKU/主图，UI 才能给人看。
+  const siblingIds = [...new Set(rows.flatMap((r) => [
+    ...(r.manual_facts?.live_sibling_ids ?? []),
+    ...(r.manual_facts?.uncertain_sibling_ids ?? []),
+  ]))];
+  if (siblingIds.length) {
+    const { data: sibRows } = await client
+      .from('standardized_products')
+      .select('supplier_product_id, product_title, sku_custom, primary_image')
+      .in('supplier_product_id', siblingIds);
+    const sibMap = new Map((sibRows ?? []).map((s) => [String(s.supplier_product_id), s]));
+    for (const row of rows) {
+      if (!row.manual_facts) continue;
+      row.manual_facts.live_siblings = [
+        ...row.manual_facts.live_sibling_ids,
+        ...row.manual_facts.uncertain_sibling_ids,
+      ].map((id) => {
+        const s = sibMap.get(id);
+        return { id, title: String(s?.product_title ?? ''), sku_custom: String(s?.sku_custom ?? ''), primary_image: (s?.primary_image as string | null) ?? null };
+      });
+    }
   }
 
   // 候选期收藏保护：正式成立即自动生效，不作为用户步骤暴露。
@@ -1832,6 +1886,9 @@ export async function executeOnboardingBridge(
   request: OnboardingRequest,
   client: SupabaseClient,
 ): Promise<Record<string, unknown>> {
+  if (request.operation === 'manual-merge-preview') return runManualMerge(request, client, false);
+  if (request.operation === 'manual-merge-apply') return runManualMerge(request, client, true);
+  if (request.operation === 'manual-override') return runManualOverride(request);
   if (request.operation === 'check-new-saved') return runCheckNewSaved(request, client);
   if (request.operation === 'supplier-login') return runSupplierLogin(request, client);
   if (request.operation === 'onboarding-recovery-list') return runRecoveryList(client);
@@ -2005,6 +2062,105 @@ async function main(): Promise<void> {
     console.error(`[xone-product-onboarding] ${raw}`);
   }
   process.stdout.write(`${JSON.stringify(response)}\n`);
+}
+
+
+// ── Manual-handling loop (XOne 「需要处理」人工闭环) ──────────────────────────
+// Three operations, all approver-gated in the Rust layer and re-validated here:
+//   manual-merge-preview  → mergeGigaVariantFamily DRY-RUN only (zero writes)
+//   manual-merge-apply    → re-runs the dry-run first; only a PASS gate may apply
+//   manual-override       → writes the LOCAL override ledger (standalone/dup_keep/
+//                           skip) that planGigaAutoPublish consumes next plan; it
+//                           never touches production tables itself.
+// Every success invalidates the cached preview so the panel must re-plan.
+
+const MANUAL_OVERRIDES_FILE = path.join(REPORT_DIR, 'manual-overrides.json');
+const MANUAL_ACTIONS_LOG = path.join(REPORT_DIR, 'manual-actions.jsonl');
+
+function invalidatePreviewCache(): void {
+  try { fs.unlinkSync(XONE_PREVIEW_FILE); } catch { /* absent is fine */ }
+}
+
+function appendManualAction(entry: Record<string, unknown>): void {
+  try { fs.appendFileSync(MANUAL_ACTIONS_LOG, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`); } catch { /* audit best-effort */ }
+}
+
+/** The pair being merged must come from the CURRENT plan's sibling facts — the UI
+ *  cannot ask to merge arbitrary SKUs. */
+function planAllowsMergePair(sku: string, liveSku: string): boolean {
+  try {
+    const plan = JSON.parse(fs.readFileSync(XONE_PLAN_SNAPSHOT, 'utf8')) as Record<string, any>;
+    const cand = (plan.candidates as Array<Record<string, any>> | undefined)?.find((c) => String(c.id) === sku);
+    if (!cand) return false;
+    const pool = [
+      ...(Array.isArray(cand.liveSiblingIds) ? cand.liveSiblingIds : []),
+      ...(Array.isArray(cand.uncertainSiblingIds) ? cand.uncertainSiblingIds : []),
+    ].map(String);
+    return pool.includes(liveSku);
+  } catch { return false; }
+}
+
+async function runManualMerge(request: OnboardingRequest, client: SupabaseClient, apply: boolean): Promise<Record<string, unknown>> {
+  const sku = String(request.sku ?? '');
+  const liveSku = String(request.live_sku ?? '');
+  if (!liveSku) return failure('INVALID_REQUEST', '缺少合并目标（live_sku）');
+  if (!planAllowsMergePair(sku, liveSku)) {
+    return failure('MERGE_PAIR_NOT_IN_PLAN', '该合并组合不在当前上架计划的同系列事实里，请先刷新预览');
+  }
+  const { data: liveRows, error: liveErr } = await client
+    .from('standardized_products')
+    .select('supplier_product_id, product_family_key, product_title, sku_custom')
+    .eq('supplier_product_id', liveSku)
+    .limit(1);
+  if (liveErr || !liveRows?.length) return failure('LIVE_SIBLING_NOT_FOUND', '在售兄弟商品读取失败');
+  const targetKey = String(liveRows[0].product_family_key ?? '');
+  if (!targetKey) return failure('LIVE_SIBLING_NO_FAMILY', '在售兄弟商品没有 family key，无法作为合并目标');
+
+  const mergeArgs = [`--new-sku=${sku}`, `--live-sku=${liveSku}`, `--target-family-key=${targetKey}`];
+  // ALWAYS dry-run first. The merge script itself is fail-closed (coherence gate FAIL
+  // → exit 3, refuses apply), and we additionally require the PASS marker in stdout.
+  const dry = runScript('scripts/mergeGigaVariantFamily.ts', mergeArgs, 300_000);
+  const dryOut = `${dry.stdout ?? ''}`;
+  const gatePass = dry.status === 0 && /coherence_gate=pass/.test(dryOut);
+  const summary = dryOut.split('\n').filter((l) => /^(GIGA_W63_|coherence_gate=|new_sku=|live_sku=|target_family_key=|would_|writes=)/.test(l)).slice(0, 20);
+  appendManualAction({ kind: apply ? 'merge-apply-dry-phase' : 'merge-preview', sku, live_sku: liveSku, target_family_key: targetKey, gate: gatePass ? 'pass' : 'fail', approved_by: request.approved_by ?? null });
+  if (!apply) {
+    return envelope('manual-merge-preview', {
+      production_write_attempted: false,
+      sku, live_sku: liveSku, target_family_key: targetKey,
+      gate: gatePass ? 'pass' : 'fail',
+      dry_run_summary: summary,
+      can_apply: gatePass,
+    });
+  }
+  if (!gatePass) return failure('MERGE_GATE_FAILED', '合并一致性门禁未通过（dry-run FAIL），已拒绝执行');
+  const run = runScript('scripts/mergeGigaVariantFamily.ts', [...mergeArgs, '--apply'], 600_000);
+  const ok = run.status === 0;
+  appendManualAction({ kind: 'merge-apply', sku, live_sku: liveSku, target_family_key: targetKey, exit: run.status, approved_by: request.approved_by ?? null });
+  if (ok) invalidatePreviewCache();
+  const applyOut = `${run.stdout ?? ''}`.split('\n').filter(Boolean).slice(-15);
+  return ok
+    ? envelope('manual-merge-apply', { production_write_attempted: true, sku, live_sku: liveSku, target_family_key: targetKey, apply_summary: applyOut, preview_invalidated: true })
+    : failure('MERGE_APPLY_FAILED', `合并执行未完成（退出码 ${run.status ?? 'null'}），请查看 reports 后重试`);
+}
+
+function runManualOverride(request: OnboardingRequest): Record<string, unknown> {
+  const sku = String(request.sku ?? '');
+  const action = request.action;
+  const approver = String(request.approved_by ?? '').trim();
+  if (!action) return failure('INVALID_REQUEST', 'override 动作必须是 standalone / dup_keep / skip');
+  if (!approver) return failure('INVALID_REQUEST', 'override 必须记录批准人');
+  let ledger: Record<string, unknown> = {};
+  try { ledger = JSON.parse(fs.readFileSync(MANUAL_OVERRIDES_FILE, 'utf8')); } catch { ledger = {}; }
+  ledger[sku] = { action, approved_by: approver, note: request.note ?? null, at: new Date().toISOString() };
+  try { fs.writeFileSync(MANUAL_OVERRIDES_FILE, JSON.stringify(ledger, null, 2)); }
+  catch (e) { return failure('OVERRIDE_WRITE_FAILED', `override 登记写入失败：${e instanceof Error ? e.message : e}`); }
+  appendManualAction({ kind: 'override', sku, action, note: request.note ?? null, approved_by: approver });
+  invalidatePreviewCache();
+  // NOTE: no production tables are written here. The ledger only changes how the
+  // NEXT planner run buckets this SKU; a 'standalone' release still goes through the
+  // normal prepare → approve-first-publish pipeline with every gate intact.
+  return envelope('manual-override', { production_write_attempted: false, sku, action, preview_invalidated: true });
 }
 
 if (process.argv[1]?.endsWith('xoneProductOnboardingBridge.ts')) void main();

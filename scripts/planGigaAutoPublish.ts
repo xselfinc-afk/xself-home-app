@@ -61,6 +61,13 @@ const ONLY_SKUS = onlyArg ? onlyArg.split('=')[1].split(',').map(s => s.trim()).
 
 const REPORT_DIR = path.join(process.cwd(), 'reports', 'giga-auto-publish');
 const REPORT_JSON = path.join(REPORT_DIR, 'latest-plan.json');
+// Manual overrides written by the manual-handling loop (onboarding bridge
+// 'manual-override'). Shape: { [supplier_product_id]: { action: 'standalone'|'dup_keep'|'skip',
+// approved_by, note, at } }. Consumed read-only here; unknown actions are ignored.
+const MANUAL_OVERRIDES: Record<string, { action?: string } & Record<string, unknown>> = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(REPORT_DIR, 'manual-overrides.json'), 'utf8')); }
+  catch { return {}; }
+})();
 const REPORT_MD = path.join(REPORT_DIR, 'latest-plan.md');
 
 // ── Quality heuristics ──────────────────────────────────────────────────────
@@ -177,7 +184,7 @@ type Cand = {
   id: string; title: string; normTitle: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
-  isVg: boolean; hasLiveSibling: boolean; liveSiblingUncertain: boolean; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
+  isVg: boolean; hasLiveSibling: boolean; liveSiblingUncertain: boolean; liveSiblingIds: string[]; uncertainSiblingIds: string[]; dupGroupIds?: string[]; overrideApplied?: string; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
   /** 成品尺寸缺失时的备用规格轴（Seats + 件数）；取不到就是 null，此时不猜。 */
   fallbackSpec: string | null;
 };
@@ -437,13 +444,22 @@ export async function main() {
       && myScope != null && s.toUpperCase().startsWith(myScope)
       && (sFormat ? true : sharedPrefixLen(id, s) >= PREFIX_MIN));
     let hasLiveSibling = false; let liveSiblingUncertain = false;
+    const liveSiblingIds: string[] = []; const uncertainSiblingIds: string[] = [];
     for (const s of liveCandidates) {
       const verdict = confirmSiblingRelation({
         myTitle: String(r.title ?? ''),
         sibTitle: stdMeta.get(s)?.title || titleById.get(s) || '',
       });
-      if (verdict === 'confirmed') { hasLiveSibling = true; break; }
-      if (verdict === 'uncertain') liveSiblingUncertain = true;
+      if (verdict === 'confirmed') { hasLiveSibling = true; liveSiblingIds.push(s); }
+      if (verdict === 'uncertain') { liveSiblingUncertain = true; uncertainSiblingIds.push(s); }
+    }
+    // Manual override (reports/giga-auto-publish/manual-overrides.json,     // by the manual-handling loop (bridge) with an approver on record): 'standalone'
+    // clears the SIBLING holds for this SKU — every other gate (junk/quality/image/
+    // price/stock/duplicate protections) still applies unchanged.
+    let overrideApplied: string | undefined;
+    const ov = MANUAL_OVERRIDES[id];
+    if (ov?.action === 'standalone' && (hasLiveSibling || liveSiblingUncertain)) {
+      hasLiveSibling = false; liveSiblingUncertain = false; overrideApplied = 'standalone';
     }
     // Commerce Taxonomy classification (same input mapping as the production adapter).
     const commerce = classifyCommerce({ name: String(n.product_title ?? r.title ?? ''), category: String((n.specifications_json ?? {})['Category'] ?? raw.category ?? ''), categoryLabel: String(n.category_label ?? '') });
@@ -455,7 +471,7 @@ export async function main() {
       // cfg/width sentinels: resolveVariantSplit emits `cfgmissing` / `wmissing` tokens into the
       // key when config or width could not be derived (familyKeyGenerator.ts). Such keys are
       // unstable for future merges, so they must not seed a standalone Fast-Lane card.
-      isVg: key.includes('-vg-'), hasLiveSibling, liveSiblingUncertain, fallbackSpec: deriveFallbackSpec(raw),
+      isVg: key.includes('-vg-'), hasLiveSibling, liveSiblingUncertain, liveSiblingIds, uncertainSiblingIds, overrideApplied, fallbackSpec: deriveFallbackSpec(raw),
       cfgMissing: key.includes('-cfgmissing-'), widthMissing: key.endsWith('-wmissing'),
       commerceCanonical: commerce.productType !== NEEDS_REVIEW,
       bucket: '', reasons: [],
@@ -596,7 +612,11 @@ export async function main() {
       const noColor = group.filter(m => !m.color.trim());
       noColor.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('missing_color'); });
       group.filter(m => dupIds.has(m.id))
-        .forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('duplicate_color'); });
+        .forEach(m => {
+          if (MANUAL_OVERRIDES[m.id]?.action === 'dup_keep') { m.overrideApplied = 'dup_keep'; return; }
+          m.bucket = 'HOLD_PHASE2'; m.reasons.push('duplicate_color');
+          m.dupGroupIds = group.filter(g => dupIds.has(g.id)).map(g => g.id);
+        });
 
       const rest = group.filter(m => !dupIds.has(m.id) && m.color.trim());
       if (rest.length === 0) continue;
@@ -636,6 +656,19 @@ export async function main() {
         if (costs.size > 1) m.reasons.push(costWithinTol ? 'cost_within_tolerance' : 'per_color_cost_differs');
       });
       safeVariantFamilies.push({ key: groupKey, skus: rest.map(m => m.id).sort(), colors: rest.map(m => m.color), cost: maxCost });
+    }
+  }
+
+  // ── Manual skip override (manual-handling loop) ────────────────────────
+  // A human decided this SKU should not be onboarded now. It leaves the needs-
+  // attention list and never enters proposed_batch; every safety gate above already
+  // ran, and un-skipping is just deleting the override entry.
+  for (const c of cands) {
+    if (MANUAL_OVERRIDES[c.id]?.action === 'skip') {
+      c.bucket = 'SKIPPED_MANUAL'; c.reasons = ['manual_skip']; c.overrideApplied = 'skip';
+    } else if (c.overrideApplied === 'standalone' && (c.bucket === 'SAFE_SINGLETON' || c.bucket === 'SAFE_CLEAN_COLOR_VARIANT')) {
+      // Leave an explicit trace in the plan output whenever the override actually mattered.
+      if (!c.reasons.includes('manual_standalone_override')) c.reasons.push('manual_standalone_override');
     }
   }
 
@@ -717,7 +750,7 @@ export async function main() {
     stock_probe: stockProbeNote || (gigaReady() ? 'probed' : 'skipped'),
     proposed_batch: { skus: batch, sku_count: batch.length, card_count: cards, families: proposedFamilies },
     safe_variant_families: safeVariantFamilies,
-    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title })),
+    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title, liveSiblingIds: c.liveSiblingIds, uncertainSiblingIds: c.uncertainSiblingIds, dupGroupIds: c.dupGroupIds ?? null, overrideApplied: c.overrideApplied ?? null })),
   };
   fs.writeFileSync(REPORT_JSON, JSON.stringify(fullJson, null, 2));
 
