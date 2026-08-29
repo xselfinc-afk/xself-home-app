@@ -21,6 +21,7 @@ import { createClient } from '@supabase/supabase-js';
 import { normalizeProduct } from '../src/services/normalizationPipeline';
 import { classifyCommerce } from '../src/utils/commerceTaxonomy';
 import { resolveProductTitle } from '../src/services/productResolvers';
+import { resolveUniqueSkuCustom } from '../src/services/specFormatter';
 
 // Load .env.local first (canonical home for SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 // for scripts) then .env as fallback — matches the safe GIGA scripts so the runner
@@ -98,6 +99,40 @@ async function run() {
   let previewed = 0;
   const samples: Array<{ sku: string; title: string; category: string; price: number; img: string }> = [];
 
+  // ── sku_custom identity resolution (SKU Identity Foundation) ────────────────
+  // 1. Rerun stability: a supplier_product_id that already has a stored sku_custom
+  //    KEEPS it verbatim — normalization reruns must never change a published code.
+  // 2. Uniqueness: new codes walk resolveUniqueSkuCustom's deterministic candidate
+  //    sequence against every code already taken; the DB UNIQUE constraint backstops.
+  const { data: skuRows, error: skuErr } = await supabase
+    .from('standardized_products')
+    .select('supplier_product_id, sku_custom');
+  if (skuErr) {
+    console.error('[normalizeProducts] sku_custom preload failed — aborting to avoid collisions:', skuErr.message);
+    process.exit(1);
+  }
+  const existingSkuById = new Map<string, string>();
+  const takenSku = new Map<string, string>(); // sku_custom -> owner supplier_product_id
+  for (const r of skuRows ?? []) {
+    if (r.sku_custom) {
+      existingSkuById.set(r.supplier_product_id, r.sku_custom);
+      takenSku.set(r.sku_custom, r.supplier_product_id);
+    }
+  }
+  const finalizeSkuIdentity = <T extends { supplier_product_id: string; sku_custom: string; sku_search: string }>(row: T): T => {
+    const id = row.supplier_product_id;
+    const kept = existingSkuById.get(id);
+    const finalSku = kept ?? resolveUniqueSkuCustom(
+      row.sku_custom.split('-').slice(0, 4).join('-'), // XH-CC-SC-LAST6 base
+      id,
+      takenSku,
+    );
+    takenSku.set(finalSku, id);
+    row.sku_custom = finalSku;
+    row.sku_search = finalSku.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return row;
+  };
+
   for (let i = 0; i < data.length; i += BATCH_SIZE) {
     const batch = data.slice(i, i + BATCH_SIZE);
 
@@ -134,14 +169,14 @@ async function run() {
         category: rest.specifications_json?.['Category'] || rest.category_code || undefined,
         categoryLabel: rest.category_label || undefined,
       });
-      return {
+      return finalizeSkuIdentity({
         ...rest,
         commerce_department: commerce.department,
         commerce_category: commerce.category,
         commerce_product_type: commerce.productType,
         commerce_rooms: commerce.rooms,
         commerce_classified_at: classifiedAt,
-      };
+      });
     });
 
     // DRY_RUN: collect a preview, never write.

@@ -1,0 +1,6 @@
+{"old_sku_custom":"XH-CB-HM-S00005","supplier_product_id":"T6026S00005","new_sku_custom":"XH-CB-HM-S00005-1E","reason":"collision; keeper W5107S00005 (published)","migrated_at":"2026-08-29"}
+{"old_sku_custom":"XH-DR-BD-S00002","supplier_product_id":"W3871S00002","new_sku_custom":"XH-DR-BD-S00002-1T","reason":"collision; keeper W1445S00002 (published)","migrated_at":"2026-08-29"}
+{"old_sku_custom":"XH-GH-HM-86617W","supplier_product_id":"N707P186617W","new_sku_custom":"XH-GH-HM-86617W-00","reason":"collision; keeper N707S186617W (published)","migrated_at":"2026-08-29"}
+{"old_sku_custom":"XH-SF-LR-S00003","supplier_product_id":"W3244S00003","new_sku_custom":"XH-SF-LR-S00003-10","reason":"collision; keeper W5872S00003 (published)","migrated_at":"2026-08-29"}
+{"old_sku_custom":"XH-SF-LR-S00004","supplier_product_id":"W1767S00004","new_sku_custom":"XH-SF-LR-S00004-1T","reason":"collision; keeper W3244S00004 (published)","migrated_at":"2026-08-29"}
+{"old_sku_custom":"XH-SF-LR-S00039","supplier_product_id":"W5656S00039","new_sku_custom":"XH-SF-LR-S00039-06","reason":"collision; both published, keeper W2339S00039 (earlier); both PDPs previously 404 ambiguous","migrated_at":"2026-08-29"}

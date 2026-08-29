@@ -20,7 +20,7 @@ import type { SupplierRow } from './detailProductAdapter';
 import { collectImages } from './imageSelector';
 import { cleanTitle, buildDisplayTitle } from './titleGenerator';
 import { buildDescription, buildBulletPoints, removeSpecDuplicates } from './featureGenerator';
-import { categoryCode, sceneCode, skuSuffix, fmtDimensions, fmtWeight } from './specFormatter';
+import { categoryCode, sceneCode, skuSuffix, skuIdentitySuffixCandidates, fmtDimensions, fmtWeight } from './specFormatter';
 import { resolveVariantGroupKey } from './familyKeyGenerator';
 import { sanitizeSupplierName } from '../utils/supplierNameSanitizer';
 
@@ -283,11 +283,17 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
     springSaleOriginal > 0 && springSaleOriginal > price ? springSaleOriginal :
     null;
 
-  // ── SKU: XH-[CATEGORY]-[SCENE]-[LAST6] ──────────────────────────────────────
+  // ── SKU: XH-[CATEGORY]-[SCENE]-[LAST6]-[IDENTITY] ───────────────────────────
+  // LAST6 alone is NOT unique across sellers (GIGA reuses S000xx sequence numbers),
+  // so new skus append a deterministic identity suffix derived from the FULL
+  // supplier_product_id. This is the first CANDIDATE only — the upsert sites
+  // (normalizeProducts / gigaManualProductUpload) keep any already-stored sku_custom
+  // (rerun stability) and walk longer candidates on collision; the DB UNIQUE
+  // constraint on sku_custom is the final arbiter.
   const cc = categoryCode(category, productTitle);
   const sc = sceneCode(category, productTitle);
   const suffix = skuSuffix(id, raw.sku ? String(raw.sku) : undefined);
-  const skuCustom = `XH-${cc}-${sc}-${suffix}`;
+  const skuCustom = `XH-${cc}-${sc}-${suffix}-${skuIdentitySuffixCandidates(id)[0]}`;
   // sku_search: uppercase with all non-alphanumeric chars stripped — enables partial SKU fragment matching.
   // e.g. XH-DR-BD-307539 → XHDRBD307539
   const skuSearch = skuCustom.toUpperCase().replace(/[^A-Z0-9]/g, '');

@@ -674,6 +674,7 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   cfgmissing_fragmented: '同系列商品配置不完整，需要人工确认',
   wmissing_fragmented: '同系列商品尺寸不完整，需要人工确认',
   fragmented_cluster: '同系列已有商品在售，需要合并后再上架',
+  sibling_uncertain_manual: '疑似同系列在售商品，事实无法自动证实，需人工确认',
   no_config_axis_standalone: '无法确定规格轴，需要人工确认',
   no_live_sibling_standalone: '同系列暂无在售商品，可单独上架',
   // 2026-08-09 起：未收藏的同系列兄弟不再是上架前提，这条只是说明它以独立商品身份放行。

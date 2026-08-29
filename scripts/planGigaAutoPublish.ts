@@ -46,6 +46,7 @@ import * as crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 // Commerce Taxonomy is the production classification authority (reused as-is; no parallel classifier).
 import { classifyCommerce, NEEDS_REVIEW } from '../src/utils/commerceTaxonomy';
+import { sellerScopeOf, isSequenceFormat } from '../src/services/familyKeyGenerator';
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -120,6 +121,55 @@ async function gigaQuantity(skus: string[]): Promise<Map<string, number>> {
 }
 
 const sharedPrefixLen = (a: string, b: string) => { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i++; return i; };
+
+// ── Three-value sibling confirmation (candidate → hard veto → confirm) ────────
+// GIGA's associateProductList mixes true variants with cross-sells, and for S-format
+// ids the SKU prefix carries no relatedness signal at all — so "looks related" is
+// only ever a CANDIDATE. Confirmation compares product facts three-valued:
+// compatible / incompatible / unknown, where ONLY incompatible vetoes (unknown is
+// never treated as false). Verdicts: none | uncertain (→ manual) | confirmed.
+type Fact = 'compatible' | 'incompatible' | 'unknown';
+const compareFact = (a: string | number | null, b: string | number | null): Fact =>
+  a == null || b == null || a === '' || b === '' ? 'unknown' : (a === b ? 'compatible' : 'incompatible');
+
+/** Dominant product-noun token from a title — the granularity classifyCommerce lacks
+ *  (bar cabinet vs pantry cabinet are both "cabinets" there but are different goods). */
+const PRODUCT_NOUNS: [RegExp, string][] = [
+  [/bar\s+cabinet/i, 'bar-cabinet'], [/wine\s+cabinet/i, 'wine-cabinet'],
+  [/pantry\s+cabinet|pantry\b/i, 'pantry-cabinet'], [/file\s+cabinet/i, 'file-cabinet'],
+  [/buffet|sideboard/i, 'buffet-sideboard'], [/kitchen\s+island/i, 'kitchen-island'],
+  [/bathroom\s+vanity|vanity\b/i, 'vanity'], [/fridge\s+cabinet|coffee\s+bar/i, 'coffee-bar-cabinet'],
+  [/tv\s+stand|media\s+console/i, 'tv-stand'], [/nightstand|bedside/i, 'nightstand'],
+  [/bookshelf|bookcase/i, 'bookshelf'], [/rocking\s+chair/i, 'rocking-chair'],
+  [/office\s+chair|gaming\s+chair|game\s+chair/i, 'office-chair'], [/dining\s+chair/i, 'dining-chair'],
+  [/accent\s+chair|armchair|lounge\s+chair/i, 'accent-chair'],
+  [/sofa\s+bed|sleeper/i, 'sofa-bed'], [/sectional/i, 'sectional'], [/loveseat/i, 'loveseat'],
+  [/sofa|couch/i, 'sofa'], [/bed\s+frame|platform\s+bed|headboard/i, 'bed'],
+  [/dresser|chest\s+of\s+drawers/i, 'dresser'], [/wardrobe|armoire/i, 'wardrobe'],
+  [/coffee\s+table/i, 'coffee-table'], [/console\s+table/i, 'console-table'],
+  [/dining\s+table/i, 'dining-table'], [/desk\b/i, 'desk'], [/cabinet/i, 'cabinet'],
+];
+const productNoun = (title: string): string | null => {
+  for (const [re, tok] of PRODUCT_NOUNS) if (re.test(title)) return tok;
+  return null;
+};
+
+/** Confirm one candidate pair using both sides' facts. Any incompatible → 'none'
+ *  (vetoed); ≥1 strong compatible and zero incompatible → 'confirmed'; otherwise
+ *  'uncertain' (a human decides — per the merge-protection rules). */
+function confirmSiblingRelation(input: {
+  myTitle: string; sibTitle: string;
+}): 'confirmed' | 'uncertain' | 'none' {
+  // Drawer/door counts, widths and colors are VARIANT AXES — differing there is what
+  // makes two rows variants of one family, so they must never veto this relation
+  // (the -vg- family key already splits presentation by config+width). The one hard
+  // veto at this level is the product noun: a bar cabinet is not a pantry cabinet,
+  // whatever GIGA's associate list says.
+  const nounFact = compareFact(productNoun(input.myTitle), productNoun(input.sibTitle));
+  if (nounFact === 'incompatible') return 'none';
+  // unknown ≠ false: an unextractable noun is not evidence either way → a human decides.
+  return nounFact === 'compatible' ? 'confirmed' : 'uncertain';
+}
 const drawers = (t: string) => { const m = String(t ?? '').match(/(\d+)\s*[- ]?drawers?/i); return m ? +m[1] : null; };
 const doors = (t: string) => { const m = String(t ?? '').match(/(\d+)\s*[- ]?doors?/i); return m ? +m[1] : null; };
 
@@ -127,7 +177,7 @@ type Cand = {
   id: string; title: string; normTitle: string; key: string; cat: string; color: string;
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
-  isVg: boolean; hasLiveSibling: boolean; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
+  isVg: boolean; hasLiveSibling: boolean; liveSiblingUncertain: boolean; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
   /** 成品尺寸缺失时的备用规格轴（Seats + 件数）；取不到就是 null，此时不猜。 */
   fallbackSpec: string | null;
 };
@@ -215,15 +265,17 @@ export function fallbackSpecGroups<T extends { fallbackSpec: string | null }>(me
  * this product itself).
  */
 export function fragmentedVerdict(c: {
-  hasLiveSibling: boolean; widthMissing: boolean; cfgMissing: boolean; noConfigAxis: boolean;
+  hasLiveSibling: boolean; liveSiblingUncertain?: boolean; widthMissing: boolean; cfgMissing: boolean; noConfigAxis: boolean;
   /**
    * 成品尺寸缺失，但备用规格轴（Seats + 件数）已经确定了这件商品的规格。
    * 缺省 false —— 不传就是改动前的行为，wmissing 照旧扣留。
    */
   specResolved?: boolean;
 }): { bucket: string; reason: string } {
-  // 在售兄弟的合并保护永远优先，任何 fallback 都不能绕过它。
+  // 在售兄弟的合并保护永远优先，任何 fallback 都不能绕过它。confirmed → 合并保护；
+  // uncertain（候选存在但商品事实无法证实同款）→ 人工裁决，绝不自动合并也不自动放行。
   if (c.hasLiveSibling) return { bucket: 'HOLD_PHASE2', reason: 'fragmented_cluster' };
+  if (c.liveSiblingUncertain) return { bucket: 'HOLD_PHASE2', reason: 'sibling_uncertain_manual' };
   if (c.widthMissing && c.specResolved) {
     return { bucket: 'SAFE_SINGLETON', reason: 'spec_from_attributes_standalone' };
   }
@@ -333,10 +385,17 @@ export async function main() {
     supplier.push(...(data ?? []));
     if (!data || data.length < 1000) break;
   }
-  const { data: stdRows } = await sb.from('standardized_products').select('supplier_product_id');
+  const { data: stdRows } = await sb.from('standardized_products').select('supplier_product_id, product_title, commerce_product_type');
   const { data: sellRows } = await sb.from('sellable_products').select('supplier_product_id');
   const stdSet = new Set((stdRows ?? []).map((r: any) => r.supplier_product_id));
   const sellSet = new Set((sellRows ?? []).map((r: any) => r.supplier_product_id));
+  // Live-side facts for sibling CONFIRMATION (three-value evaluation below).
+  const stdMeta = new Map<string, { title: string; productType: string | null }>(
+    (stdRows ?? []).map((r: any) => [r.supplier_product_id, { title: String(r.product_title ?? ''), productType: r.commerce_product_type ?? null }]),
+  );
+  // Raw payloads for BOTH sides (every live row also exists in supplier_products).
+  const rawById = new Map<string, any>(supplier.map(r => [r.supplier_product_id, (r.raw_payload ?? {}) as any]));
+  const titleById = new Map<string, string>(supplier.map(r => [r.supplier_product_id, String(r.title ?? '')]));
 
   const supplierTotal = supplier.length;
   const alreadyStandardized = supplier.filter(r => stdSet.has(r.supplier_product_id)).length;
@@ -367,7 +426,25 @@ export async function main() {
     const assoc = Array.isArray(raw.associateProductList)
       ? (raw.associateProductList as unknown[]).filter((s): s is string => typeof s === 'string').map(s => s.trim()).filter(Boolean)
       : [];
-    const hasLiveSibling = assoc.some(s => s !== id && sharedPrefixLen(id, s) >= PREFIX_MIN && (stdSet.has(s) || sellSet.has(s)));
+    // Candidate live siblings → hard supplier-scope gate (sellerCode, never SKU-tail
+    // lookalikes) → three-value confirmation on product facts. sharedPrefixLen is no
+    // longer a sufficient condition for ANY format; for S-format ids it is not
+    // consulted at all (the sequence segment carries no relatedness).
+    const myScope = sellerScopeOf(raw, id);
+    const sFormat = isSequenceFormat(id, myScope);
+    const liveCandidates = assoc.filter(s => s !== id
+      && (stdSet.has(s) || sellSet.has(s))
+      && myScope != null && s.toUpperCase().startsWith(myScope)
+      && (sFormat ? true : sharedPrefixLen(id, s) >= PREFIX_MIN));
+    let hasLiveSibling = false; let liveSiblingUncertain = false;
+    for (const s of liveCandidates) {
+      const verdict = confirmSiblingRelation({
+        myTitle: String(r.title ?? ''),
+        sibTitle: stdMeta.get(s)?.title || titleById.get(s) || '',
+      });
+      if (verdict === 'confirmed') { hasLiveSibling = true; break; }
+      if (verdict === 'uncertain') liveSiblingUncertain = true;
+    }
     // Commerce Taxonomy classification (same input mapping as the production adapter).
     const commerce = classifyCommerce({ name: String(n.product_title ?? r.title ?? ''), category: String((n.specifications_json ?? {})['Category'] ?? raw.category ?? ''), categoryLabel: String(n.category_label ?? '') });
     return {
@@ -378,7 +455,7 @@ export async function main() {
       // cfg/width sentinels: resolveVariantSplit emits `cfgmissing` / `wmissing` tokens into the
       // key when config or width could not be derived (familyKeyGenerator.ts). Such keys are
       // unstable for future merges, so they must not seed a standalone Fast-Lane card.
-      isVg: key.includes('-vg-'), hasLiveSibling, fallbackSpec: deriveFallbackSpec(raw),
+      isVg: key.includes('-vg-'), hasLiveSibling, liveSiblingUncertain, fallbackSpec: deriveFallbackSpec(raw),
       cfgMissing: key.includes('-cfgmissing-'), widthMissing: key.endsWith('-wmissing'),
       commerceCanonical: commerce.productType !== NEEDS_REVIEW,
       bucket: '', reasons: [],

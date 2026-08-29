@@ -16,7 +16,7 @@ const COLOR_VARIANT_WORDS =
  * color/finish. Built from: categoryCode + normalized title (color words stripped,
  * first 6 meaningful words).
  */
-export function computeFamilyKey(productTitle: string, cc: string): string {
+export function computeFamilyKey(productTitle: string, cc: string, sellerScope?: string | null): string {
   const normalized = productTitle
     .toLowerCase()
     .replace(COLOR_VARIANT_WORDS, '')
@@ -25,9 +25,36 @@ export function computeFamilyKey(productTitle: string, cc: string): string {
     .trim()
     .split(' ')
     .filter(Boolean)
-    .slice(0, 6)
+    .slice(0, sellerScope ? 5 : 6)
     .join('-');
-  return `${cc.toLowerCase()}-${normalized}`;
+  // Supplier-scoped title keys: two sellers with near-identical titles must never
+  // share a family. Scope comes from sellerInfo.sellerCode (authoritative), not from
+  // parsing the SKU string. Legacy callers without a scope keep the old shape.
+  return sellerScope
+    ? `${cc.toLowerCase()}-${sellerScope.toLowerCase()}-${normalized}`
+    : `${cc.toLowerCase()}-${normalized}`;
+}
+
+/**
+ * Authoritative supplier scope for family/variant decisions.
+ * Primary: raw_payload.sellerInfo.sellerCode (present on 844/850 rows; the SKU
+ * prefix disagrees with it on 47 rows and 61 legacy ids have no S/P separator, so
+ * the SKU string is only a fallback). Returns null when neither source yields a
+ * scope — callers must then treat the row as standalone (never guess a family).
+ */
+export function sellerScopeOf(raw: Record<string, unknown> | null | undefined, supplierProductId: string): string | null {
+  const code = (raw as { sellerInfo?: { sellerCode?: unknown } } | null | undefined)?.sellerInfo?.sellerCode;
+  if (typeof code === 'string' && code.trim()) return code.trim().toUpperCase();
+  const m = String(supplierProductId ?? '').toUpperCase().match(/^([A-Z]+\d+)[SP]\d/);
+  return m ? m[1] : null;
+}
+
+/** S-format ids (`{seller}S000xx`) carry a reused sequence number after the seller
+ *  segment — character-prefix length says NOTHING about product relatedness there. */
+export function isSequenceFormat(supplierProductId: string, sellerScope: string | null): boolean {
+  if (!sellerScope) return false;
+  const rest = String(supplierProductId ?? '').toUpperCase().slice(sellerScope.length);
+  return /^S\d+$/.test(rest);
 }
 
 // ── Supplier-derived variant grouping ─────────────────────────────────────────
@@ -123,9 +150,24 @@ export function resolveVariantSplit(
         .filter(Boolean)
     : [];
 
-  const siblings = associates.filter(
-    assoc => assoc !== self && sharedPrefixLength(self, assoc) >= VARIANT_PREFIX_MIN_MATCH,
-  );
+  // Sibling qualification (family CANDIDATES only — final confirmation happens where
+  // product facts are available, e.g. planGigaAutoPublish's three-value evaluator):
+  //   1. Hard supplier-scope gate: a sibling must belong to the SAME seller
+  //      (sellerInfo.sellerCode). Different sellers never cluster, no matter how
+  //      similar their SKU tails look (GIGA reuses S000xx across sellers).
+  //   2. S-format ids: the post-scope segment is a reused sequence number, so
+  //      character-prefix length is meaningless — the seller-declared associate
+  //      relation itself is the only candidate signal.
+  //   3. P/legacy ids: the >=8-char shared prefix stays as a WEAK candidate filter
+  //      (never a sufficient family proof on its own).
+  //   No resolvable scope → no siblings (standalone; never guess).
+  const scope = sellerScopeOf(raw, self);
+  const siblings = associates.filter(assoc => {
+    if (assoc === self || !scope) return false;
+    if (!assoc.toUpperCase().startsWith(scope)) return false;
+    if (isSequenceFormat(self, scope)) return true;
+    return sharedPrefixLength(self, assoc) >= VARIANT_PREFIX_MIN_MATCH;
+  });
 
   if (self && siblings.length > 0) {
     const cluster = Array.from(new Set([self, ...siblings]));
@@ -144,7 +186,7 @@ export function resolveVariantSplit(
   }
 
   return {
-    key: computeFamilyKey(productTitle, cc),
+    key: computeFamilyKey(productTitle, cc, sellerScopeOf(raw, self)),
     isVg: false, groupRoot: null, configToken: null, cfgMissing: false,
     width: null, widthToken: null, widthMissing: false,
   };

@@ -772,6 +772,50 @@ check('TypeScript', () => {
   return failures;
 });
 
+// ── Check 19: SKU identity & family scope lock ──────────────────────────────
+// Freezes the SKU Identity Foundation (2026-08-29): full supplier_product_id is the
+// only internal identity; sku_custom is display-only, deterministic, unique (DB
+// UNIQUE), rerun-stable; family/variant decisions are sellerCode-scoped and SKU
+// prefix length is never a sufficient family condition (S-format never consults it).
+
+check('SKU identity & family scope lock', () => {
+  const failures: string[] = [];
+
+  // 1. Identity chain never truncates: order/fulfillment servers key on the full
+  //    supplier id and must not import the display-suffix helpers.
+  for (const rel of ['supabase/functions/create-checkout-order/index.ts', 'supabase/functions/plan-fulfillment/index.ts']) {
+    const txt = read(rel) ?? '';
+    if (/skuSuffix|skuIdentitySuffixCandidates/.test(txt)) {
+      failures.push(`${rel}: must not use display-SKU suffix helpers for identity`);
+    }
+  }
+
+  // 2. Deterministic generator — no randomness/time in the SKU source of truth.
+  failures.push(...fileMust('src/services/specFormatter.ts', 'skuIdentitySuffixCandidates', 'resolveUniqueSkuCustom'));
+  const spec = read('src/services/specFormatter.ts') ?? '';
+  if (/Math\.random|Date\.now/.test(spec)) failures.push('src/services/specFormatter.ts: sku generator must be deterministic');
+
+  // 3. Single suffix implementation: skuGenerator re-exports, never re-implements.
+  const gen = read('src/utils/skuGenerator.ts') ?? '';
+  if (!/import \{ skuSuffix \} from '\.\.\/services\/specFormatter'/.test(gen)) {
+    failures.push('src/utils/skuGenerator.ts: must import skuSuffix from specFormatter (single source)');
+  }
+  if (/function skuSuffix/.test(gen)) failures.push('src/utils/skuGenerator.ts: duplicate skuSuffix implementation reintroduced');
+
+  // 4. Rerun stability: normalization keeps stored sku_custom verbatim.
+  failures.push(...fileMust('scripts/normalizeProducts.ts', 'existingSkuById', 'resolveUniqueSkuCustom'));
+
+  // 5. Family scope: sellerCode-authoritative, S-format never prefix-judged.
+  failures.push(...fileMust('src/services/familyKeyGenerator.ts', 'sellerScopeOf', 'isSequenceFormat', /computeFamilyKey\([^)]*sellerScope/));
+  failures.push(...fileMust('scripts/planGigaAutoPublish.ts', 'sellerScopeOf', 'isSequenceFormat', 'confirmSiblingRelation'));
+  failures.push(...fileMust('scripts/syncGigaVariants.ts', 'sellerScopeOf', 'isSequenceFormat'));
+
+  // 6. DB uniqueness is committed as a migration (constraint name pinned).
+  failures.push(...fileMust('supabase/migrations/20260829_sku_custom_identity_migration.sql', 'standardized_products_sku_custom_key'));
+
+  return failures;
+});
+
 // ── Check 18: Review coverage (sellable products must have >=1 active review) ──
 // DB-backed guard (SELECT-only, via scripts/checkReviewCoverage.ts). Maps the
 // checker's exit code: SOFT-SKIP (pass) when creds are missing or the DB is

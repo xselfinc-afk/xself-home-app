@@ -164,28 +164,57 @@ Applied by `isUsableBullet` (key features) and `isUsableSentence` (short descrip
 
 ---
 
-## SKU Format
+## SKU Format (SKU Identity Foundation, 2026-08-29)
 
 ```
-XH-{CATEGORY_CODE}-{SCENE_CODE}-{LAST6}
+XH-{CATEGORY_CODE}-{SCENE_CODE}-{LAST6}-{IDENTITY}
 ```
 
-Examples: `XH-DR-BD-A3F2B1`, `XH-TV-LR-C7D9E2`
+Examples: `XH-SF-LR-S00039-06`, `XH-DR-BD-A3F2B1-K7` (new rows); legacy rows keep
+their pre-2026-08-29 four-segment codes forever (published external IDs never change).
 
 **Category codes:** `DR` dresser, `CB` cabinet, `SB` sideboard, `NS` nightstand, `TV` TV stand, `BK` bookshelf, `CT` coffee table, `CO` console table, `SF` sofa, `DC` dining chair, `DK` desk, `WR` wardrobe, `BA` bathroom, `GH` general home
 
 **Scene codes:** `BD` bedroom, `LR` living room, `HM` general home
 
-**Suffix:** last 6 chars of original SKU (alphanumeric), or djb2 hash of row ID if no SKU
+**LAST6:** last 6 chars of original SKU (alphanumeric), or djb2 hash of row ID if no SKU.
+LAST6 is NOT unique — GIGA reuses `S000xx` sequence tails across sellers.
+
+**IDENTITY suffix:** deterministic base36 of djb2(full `supplier_product_id`), starting
+at 2 chars and expanding (3, 4, …) on collision via `resolveUniqueSkuCustom`
+(`specFormatter.ts`). Never random; the same id yields the same candidate sequence on
+any rerun. Rules enforced by guardrail Check 19 + `UNIQUE(standardized_products.sku_custom)`:
+
+1. `supplier_product_id` (FULL supplier SKU) is the only internal identity — orders,
+   inventory, fulfillment, pricing, family anchoring all key on it; never truncated.
+2. `sku_custom` is display/URL/Meta-retailer-id only.
+3. Rerun stability: a stored `sku_custom` is kept verbatim; normalization reruns never
+   re-mint it. Uniqueness is resolved at the upsert sites (`normalizeProducts.ts`,
+   `gigaManualProductUpload.ts`) and backstopped by the DB constraint.
 
 ---
 
 ## Product Family Key
 
-Groups same-style, different-color products. Built from:
+Groups same-style, different-color products. Title-derived keys are SELLER-SCOPED
+(2026-08-29): two suppliers with near-identical titles never share a family.
 ```
-{category_code_lowercase}-{title-words-minus-color-words-first-6}
+{category_code_lowercase}-{sellerCode_lowercase}-{title-words-minus-color-words-first-5}
 ```
+Supplier scope comes from `raw_payload.sellerInfo.sellerCode` (authoritative — the SKU
+prefix disagrees with it on 47 rows and 61 legacy ids have no S/P separator; parsing
+the SKU string is only a fallback, and no scope → standalone, never guessed).
+
+Variant (`-vg-`) clustering: candidates come from the seller's own
+`associateProductList`, hard-gated by sellerCode. For S-format ids (`{seller}S000xx`)
+the character prefix is NEVER consulted (the sequence segment carries no relatedness);
+P/legacy ids keep the ≥8-char shared prefix as a weak candidate filter only. Final
+same-family confirmation compares product facts three-valued
+(compatible / incompatible / unknown — only *incompatible* vetoes, see
+`confirmSiblingRelation` in `planGigaAutoPublish.ts`); SKU-prefix length is never a
+sufficient condition. Legacy pre-2026-08-29 keys on existing rows regroup naturally on
+their next re-normalization (memberships are unchanged — current catalog has zero
+cross-supplier families).
 
 Color variant words stripped: white, black, gray, brown, beige, oak, walnut, espresso, natural, dark, light, navy, blue, green, red, yellow, pink, purple, cream, ivory, gold, silver, charcoal, washed, rustic, vintage, antique, matte, glossy, frosted.
 

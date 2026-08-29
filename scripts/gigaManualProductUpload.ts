@@ -44,6 +44,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { normalizeProduct } from '../src/services/normalizationPipeline';
+import { resolveUniqueSkuCustom } from '../src/services/specFormatter';
 
 export const REPORT_DIR = path.join('reports', 'giga-manual-product');
 
@@ -492,6 +493,20 @@ async function main(): Promise<void> {
   if (supRes.error) die(`supplier_products write failed: ${supRes.error.message}`);
   console.log('  ✓ supplier_products upserted');
 
+  // sku_custom identity resolution: keep an already-stored code verbatim (rerun
+  // stability); otherwise walk the deterministic candidate sequence against every
+  // taken code. Same contract as normalizeProducts.ts; DB UNIQUE backstops.
+  {
+    const sid = (standardizedRow as { supplier_product_id: string }).supplier_product_id;
+    const { data: skuRows, error: skuErr } = await sb.from('standardized_products').select('supplier_product_id, sku_custom');
+    if (skuErr) die(`sku_custom preload failed: ${skuErr.message}`);
+    const mine = (skuRows ?? []).find(r => r.supplier_product_id === sid)?.sku_custom as string | undefined;
+    const taken = new Map<string, string>((skuRows ?? []).filter(r => r.sku_custom).map(r => [r.sku_custom as string, r.supplier_product_id as string]));
+    const row = standardizedRow as { sku_custom: string; sku_search: string };
+    const finalSku = mine ?? resolveUniqueSkuCustom(row.sku_custom.split('-').slice(0, 4).join('-'), sid, taken);
+    row.sku_custom = finalSku;
+    row.sku_search = finalSku.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
   const stdRes = await sb.from('standardized_products').upsert([standardizedRow], { onConflict: 'supplier_product_id' });
   if (stdRes.error) die(`standardized_products write failed: ${stdRes.error.message}`);
   console.log('  ✓ standardized_products upserted (selling_price set)');

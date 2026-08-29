@@ -44,6 +44,7 @@
  */
 
 import 'dotenv/config';
+import { sellerScopeOf, isSequenceFormat } from '../src/services/familyKeyGenerator';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';

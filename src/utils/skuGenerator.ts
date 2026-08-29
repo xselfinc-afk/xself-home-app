@@ -8,6 +8,8 @@
  *              or a 6-char hash of the product ID when no original SKU exists
  */
 
+import { skuSuffix } from '../services/specFormatter';
+
 export type SkuParams = {
   id: string;
   category?: string;
@@ -70,22 +72,6 @@ function materialCode(mat: string): string {
   return 'HM'; // Home Material (default)
 }
 
-// ── Suffix: last 6 alphanumeric from original SKU, or hash ───────────────────
-
-function skuSuffix(id: string, originalSku?: string): string {
-  if (originalSku && originalSku.trim().length > 0) {
-    const alphanumeric = originalSku.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-    if (alphanumeric.length >= 6) return alphanumeric.slice(-6);
-    // Pad with hash chars if original is short
-    return (alphanumeric + djb2Hash(id).toString(36).toUpperCase()).slice(-6);
-  }
-  return djb2Hash(id).toString(36).toUpperCase().padStart(6, '0').slice(0, 6);
-}
-
-function djb2Hash(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
+// ── Suffix ────────────────────────────────────────────────────────────────────
+// Single source of truth: specFormatter.skuSuffix (imported above). The previous
+// local copy drifted independently and was removed — do not reintroduce it.

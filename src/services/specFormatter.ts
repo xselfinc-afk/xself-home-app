@@ -59,6 +59,51 @@ export function skuSuffix(id: string, originalSku?: string): string {
   return djb2(id).toString(36).toUpperCase().padStart(6, '0').slice(0, 6);
 }
 
+// ── sku_custom identity suffix (SKU Identity Foundation) ─────────────────────
+// The LAST6 tail of a supplier SKU carries no cross-supplier uniqueness (GIGA reuses
+// S000xx sequence numbers across sellers), so every NEW sku_custom appends a short
+// identity suffix derived DETERMINISTICALLY from the FULL supplier_product_id.
+// The suffix alone is never treated as a uniqueness guarantee — resolveUniqueSkuCustom
+// walks an expandable candidate sequence against the taken set, and the DB UNIQUE
+// constraint on standardized_products.sku_custom is the final arbiter.
+// No randomness anywhere: the same id yields the same candidate sequence on any
+// machine, any rerun, forever.
+
+/** Deterministic, expandable identity-suffix candidates for one supplier id:
+ *  2 chars, then 3…7 from the primary hash, then 2…7 from a re-hash, etc. */
+export function skuIdentitySuffixCandidates(fullId: string, max = 24): string[] {
+  const out: string[] = [];
+  let round = 0;
+  while (out.length < max) {
+    const seed = round === 0 ? fullId : `${fullId}#${round}`;
+    const h = djb2(seed).toString(36).toUpperCase().padStart(7, '0');
+    for (let len = 2; len <= 7 && out.length < max; len++) out.push(h.slice(0, len));
+    round++;
+  }
+  return out;
+}
+
+/**
+ * Resolve the final unique sku_custom for a NEW product (pure — callers supply the
+ * taken map). `base` is `XH-{CC}-{SC}-{LAST6}`; `taken` maps existing sku_custom →
+ * owning supplier_product_id. A candidate already owned by the SAME id is reused
+ * (rerun stability); one owned by a different id forces the next, longer candidate.
+ */
+export function resolveUniqueSkuCustom(
+  base: string,
+  fullId: string,
+  taken: ReadonlyMap<string, string>,
+): string {
+  for (const suffix of skuIdentitySuffixCandidates(fullId)) {
+    const candidate = `${base}-${suffix}`;
+    const owner = taken.get(candidate);
+    if (owner === undefined || owner === fullId) return candidate;
+  }
+  // 24 deterministic candidates exhausted — practically unreachable; fail loudly
+  // rather than emit a duplicate (the DB UNIQUE constraint would reject it anyway).
+  throw new Error(`sku_custom candidate space exhausted for ${fullId} (base ${base})`);
+}
+
 // ── Dimension / weight formatters ─────────────────────────────────────────────
 
 /** Strips trailing decimal zeros: "134.00" → "134", "43.66" → "43.66" */
