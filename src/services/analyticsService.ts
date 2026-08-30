@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { AppEventsLogger } from 'react-native-fbsdk-next';
 
 type AnalyticsCounter = 'view_count' | 'click_count' | 'add_to_cart_count' | 'order_count';
 
@@ -8,6 +9,13 @@ type AnalyticsCounter = 'view_count' | 'click_count' | 'add_to_cart_count' | 'or
  * Fire-and-forget — never throws, never blocks the UI.
  * The database function (increment_product_counter) is SECURITY DEFINER
  * so anon users can call it safely.
+ *
+ * Meta App Events piggyback on the SAME trigger points (no second analytics
+ * lifecycle): view_count → ViewContent, add_to_cart_count → AddToCart. Each
+ * action mints ONE event_id used verbatim by BOTH the iOS SDK event and the
+ * server relay (meta-capi-relay), so Meta dedupes the pair into one event.
+ * Every Meta path is contained — failures can never affect the app or the
+ * existing Supabase counters.
  */
 export function incrementProductCounter(
   supplierProductId: string,
@@ -27,4 +35,59 @@ export function incrementProductCounter(
       );
     }
   }).catch(() => { /* swallow network errors — analytics must never crash the app */ });
+
+  if (counter === 'view_count') emitMetaProductEvent('ViewContent', supplierProductId);
+  else if (counter === 'add_to_cart_count') emitMetaProductEvent('AddToCart', supplierProductId);
+}
+
+// ── Meta App Events (A+B, deduped) ───────────────────────────────────────────
+
+/** One stable id per ACTION, shared by the SDK event and the server relay. */
+function mintEventId(prefix: string, sku: string): string {
+  return `${prefix}:${sku}:${Date.now()}`;
+}
+
+function emitMetaProductEvent(name: 'ViewContent' | 'AddToCart', sku: string): void {
+  const eventId = mintEventId(name === 'ViewContent' ? 'view' : 'atc', sku);
+  // B: iOS SDK event (SKAdNetwork/AEM attribution). `_eventId` is Meta's SDK-side dedup key.
+  try {
+    AppEventsLogger.logEvent(name === 'ViewContent'
+      ? AppEventsLogger.AppEvents.ViewedContent
+      : AppEventsLogger.AppEvents.AddedToCart,
+    { fb_content_type: 'product', fb_content_id: sku, _eventId: eventId });
+  } catch { /* SDK unavailable (e.g. old binary) — server path still fires */ }
+  // A: server relay (token stays server-side). Fire-and-forget.
+  Promise.resolve(
+    supabase.functions.invoke('meta-capi-relay', {
+      body: { events: [{ event_name: name, event_id: eventId, sku }] },
+    }),
+  ).catch(() => { /* contained */ });
+}
+
+/** Client-side InitiateCheckout — event_id ic:{checkoutSessionId}, matching the
+ *  server's create-checkout-order event exactly (Meta dedupes to one). */
+export function logMetaInitiateCheckout(checkoutSessionId: string, totalDollars: number, skus: string[]): void {
+  if (!checkoutSessionId) return;
+  try {
+    AppEventsLogger.logEvent(AppEventsLogger.AppEvents.InitiatedCheckout, totalDollars, {
+      fb_content_type: 'product',
+      fb_content_id: skus.join(','),
+      fb_currency: 'USD',
+      _eventId: `ic:${checkoutSessionId}`,
+    });
+  } catch { /* contained */ }
+}
+
+/** Client-side Purchase — fired ONLY at the existing success-confirmation points
+ *  (OrderSuccess navigation), never earlier. event_id purchase:{orderId} matches
+ *  the webhook's authoritative server event exactly. */
+export function logMetaPurchase(orderId: string, totalDollars: number, skus: string[]): void {
+  if (!orderId) return;
+  try {
+    AppEventsLogger.logPurchase(totalDollars, 'USD', {
+      fb_content_type: 'product',
+      fb_content_id: skus.join(','),
+      _eventId: `purchase:${orderId}`,
+    });
+  } catch { /* contained */ }
 }

@@ -16,6 +16,7 @@
  * Test with: curl commands in PHASE8_ORDER_SYSTEM_IMPLEMENTATION.md
  */
 
+import { sendMetaEvents, hashedUserData } from '../_shared/metaCapi.ts';
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
@@ -82,6 +83,30 @@ const CORS_HEADERS = {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+// ── Meta InitiateCheckout — fired at the REAL order-creation entry (both paths).
+// event_id = ic:{checkoutSessionId || orderId}; contained failure, never blocks.
+async function emitMetaInitiateCheckout(input: {
+  dedupKey: string; email?: string | null; phone?: string | null;
+  totalCents: number; items: Array<{ sku: string; qty: number; unitPriceCents: number }>;
+}): Promise<void> {
+  try {
+    await sendMetaEvents([{
+      event_name: 'InitiateCheckout',
+      event_id: `ic:${input.dedupKey}`,
+      user_data: await hashedUserData({ email: input.email, phone: input.phone }),
+      custom_data: {
+        currency: 'USD',
+        value: input.totalCents / 100,
+        num_items: input.items.reduce((s, i) => s + i.qty, 0),
+        content_type: 'product',
+        content_ids: input.items.map((i) => i.sku),
+      },
+    }], 'initiate-checkout');
+  } catch (e) {
+    console.error('[metaCapi] emitMetaInitiateCheckout contained failure:', e instanceof Error ? e.message : String(e));
+  }
+}
+
 interface CartItem {
   /** GIGA display SKU — used for display and as supplier_sku in order_items */
   sku: string;
@@ -136,6 +161,11 @@ interface RequestBody {
   userId?: string;
   /** Resume token from a previous guest checkout attempt */
   guestToken?: string;
+  /** Client checkout session id — used ONLY as the Meta InitiateCheckout dedup key
+   *  (event_id ic:{id}, shared with the iOS SDK). Optional/additive; absent → the
+   *  server falls back to the orderId (old clients send no client-side event, so
+   *  no double count either way). Never used for auth or business logic. */
+  checkoutSessionId?: string;
   /** 'card' | 'affirm' | '' (auto) */
   paymentMethodSelected?: string;
   /**
@@ -635,6 +665,12 @@ serve(async (req: Request) => {
 
       await supabase.from('orders').update({ setup_intent_id: siJson.id as string, updated_at: new Date().toISOString() }).eq('order_id', puOrderId);
 
+      await emitMetaInitiateCheckout({
+        dedupKey: String(body.checkoutSessionId ?? puOrderId),
+        email: customer.email, phone: customer.phone,
+        totalCents: puTotalCents,
+        items: items.map(i => ({ sku: i.sku, qty: i.qty, unitPriceCents: i.unitPriceCents })),
+      });
       // mode='setup' tells the client to confirm a SetupIntent (save card), NOT pay.
       return jsonResponse({
         mode:            'setup',
@@ -971,6 +1007,13 @@ serve(async (req: Request) => {
       // Non-fatal: webhook can still match via order_id in PI metadata
       console.error('[create-checkout-order] PI update on order failed (non-fatal):', piUpdateError.message);
     }
+
+    await emitMetaInitiateCheckout({
+      dedupKey: String(body.checkoutSessionId ?? orderId),
+      email: customer.email, phone: customer.phone,
+      totalCents,
+      items: items.map(i => ({ sku: i.sku, qty: i.qty, unitPriceCents: i.unitPriceCents })),
+    });
 
     console.log('[create-checkout-order] Done — order:', orderId, '| PI:', paymentIntentId, '| total:', totalCents, 'cents');
 

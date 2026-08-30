@@ -230,6 +230,10 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - ExpoAdapterFBSDKNext (13.4.3):
+    - ExpoModulesCore
+    - FBSDKCoreKit
+    - React-Core
   - ExpoAsset (12.0.12):
     - ExpoModulesCore
   - ExpoBlur (15.0.8):
@@ -282,6 +286,8 @@ PODS:
     - ExpoModulesCore
   - ExpoSplashScreen (31.0.13):
     - ExpoModulesCore
+  - ExpoTrackingTransparency (6.0.8):
+    - ExpoModulesCore
   - EXStructuredHeaders (5.0.0)
   - EXUpdates (29.0.18):
     - EASClient
@@ -313,7 +319,21 @@ PODS:
     - Yoga
   - EXUpdatesInterface (2.0.0):
     - ExpoModulesCore
+  - FBAEMKit (18.1.1):
+    - FBSDKCoreKit_Basics (= 18.1.1)
   - FBLazyVector (0.81.5)
+  - FBSDKCoreKit (18.1.1):
+    - FBAEMKit (= 18.1.1)
+    - FBSDKCoreKit_Basics (= 18.1.1)
+  - FBSDKCoreKit_Basics (18.1.1)
+  - FBSDKGamingServicesKit (18.1.1):
+    - FBSDKCoreKit (= 18.1.1)
+    - FBSDKCoreKit_Basics (= 18.1.1)
+    - FBSDKShareKit (= 18.1.1)
+  - FBSDKLoginKit (18.1.1):
+    - FBSDKCoreKit (= 18.1.1)
+  - FBSDKShareKit (18.1.1):
+    - FBSDKCoreKit (= 18.1.1)
   - Google-Mobile-Ads-SDK (13.5.0):
     - GoogleUserMessagingPlatform (>= 1.1)
   - GoogleUserMessagingPlatform (3.1.0)
@@ -1640,6 +1660,21 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - react-native-fbsdk-next (13.4.3):
+    - React-Core
+    - react-native-fbsdk-next/Core (= 13.4.3)
+    - react-native-fbsdk-next/Login (= 13.4.3)
+    - react-native-fbsdk-next/Share (= 13.4.3)
+  - react-native-fbsdk-next/Core (13.4.3):
+    - FBSDKCoreKit (~> 18.0)
+    - React-Core
+  - react-native-fbsdk-next/Login (13.4.3):
+    - FBSDKLoginKit (~> 18.0)
+    - React-Core
+  - react-native-fbsdk-next/Share (13.4.3):
+    - FBSDKGamingServicesKit (~> 18.0)
+    - FBSDKShareKit (~> 18.0)
+    - React-Core
   - react-native-safe-area-context (5.6.2):
     - hermes-engine
     - RCTRequired
@@ -2284,6 +2319,7 @@ DEPENDENCIES:
   - expo-dev-launcher (from `../node_modules/expo-dev-launcher`)
   - expo-dev-menu (from `../node_modules/expo-dev-menu`)
   - expo-dev-menu-interface (from `../node_modules/expo-dev-menu-interface/ios`)
+  - ExpoAdapterFBSDKNext (from `../node_modules/react-native-fbsdk-next/ios`)
   - ExpoAsset (from `../node_modules/expo-asset/ios`)
   - ExpoBlur (from `../node_modules/expo-blur/ios`)
   - ExpoClipboard (from `../node_modules/expo-clipboard/ios`)
@@ -2297,6 +2333,7 @@ DEPENDENCIES:
   - ExpoModulesCore (from `../node_modules/expo-modules-core`)
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
+  - ExpoTrackingTransparency (from `../node_modules/expo-tracking-transparency/ios`)
   - EXStructuredHeaders (from `../node_modules/expo-structured-headers/ios`)
   - EXUpdates (from `../node_modules/expo-updates/ios`)
   - EXUpdatesInterface (from `../node_modules/expo-updates-interface/ios`)
@@ -2337,6 +2374,7 @@ DEPENDENCIES:
   - React-Mapbuffer (from `../node_modules/react-native/ReactCommon`)
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
   - react-native-crisp-chat-sdk (from `../node_modules/react-native-crisp-chat-sdk`)
+  - react-native-fbsdk-next (from `../node_modules/react-native-fbsdk-next`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-webview (from `../node_modules/react-native-webview`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
@@ -2378,6 +2416,12 @@ DEPENDENCIES:
 SPEC REPOS:
   trunk:
     - Crisp
+    - FBAEMKit
+    - FBSDKCoreKit
+    - FBSDKCoreKit_Basics
+    - FBSDKGamingServicesKit
+    - FBSDKLoginKit
+    - FBSDKShareKit
     - Google-Mobile-Ads-SDK
     - GoogleUserMessagingPlatform
     - libavif
@@ -2421,6 +2465,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-dev-menu"
   expo-dev-menu-interface:
     :path: "../node_modules/expo-dev-menu-interface/ios"
+  ExpoAdapterFBSDKNext:
+    :path: "../node_modules/react-native-fbsdk-next/ios"
   ExpoAsset:
     :path: "../node_modules/expo-asset/ios"
   ExpoBlur:
@@ -2447,6 +2493,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-secure-store/ios"
   ExpoSplashScreen:
     :path: "../node_modules/expo-splash-screen/ios"
+  ExpoTrackingTransparency:
+    :path: "../node_modules/expo-tracking-transparency/ios"
   EXStructuredHeaders:
     :path: "../node_modules/expo-structured-headers/ios"
   EXUpdates:
@@ -2526,6 +2574,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/react/nativemodule/microtasks"
   react-native-crisp-chat-sdk:
     :path: "../node_modules/react-native-crisp-chat-sdk"
+  react-native-fbsdk-next:
+    :path: "../node_modules/react-native-fbsdk-next"
   react-native-safe-area-context:
     :path: "../node_modules/react-native-safe-area-context"
   react-native-webview:
@@ -2614,6 +2664,7 @@ SPEC CHECKSUMS:
   expo-dev-launcher: 62424c01202c528a0421e5736c7cba2aa95312b6
   expo-dev-menu: ffb77acaa6a91d260780ab72a7d236ece882c787
   expo-dev-menu-interface: 600df12ea01efecdd822daaf13cc0ac091775533
+  ExpoAdapterFBSDKNext: 49ecf2414e4787250b0ed1faae99d1295dee674e
   ExpoAsset: f867e55ceb428aab99e1e8c082b5aee7c159ea18
   ExpoBlur: b90747a3f22a8b6ceffd9cb0dc41a4184efdc656
   ExpoClipboard: b36b287d8356887844bb08ed5c84b5979bb4dd1e
@@ -2627,10 +2678,17 @@ SPEC CHECKSUMS:
   ExpoModulesCore: f3da4f1ab5a8375d0beafab763739dbee8446583
   ExpoSecureStore: d32f751874a2ceb5aaeebeb3578e165c1ba2b24a
   ExpoSplashScreen: bc3cffefca2716e5f22350ca109badd7e50ec14d
+  ExpoTrackingTransparency: 4f823a38ff7c0efea4cac722ecbc0589278ff548
   EXStructuredHeaders: c951e77f2d936f88637421e9588c976da5827368
   EXUpdates: 3be674499e30f26d080a01b2e45f9598a0cfb00d
   EXUpdatesInterface: 5adf50cb41e079c861da6d9b4b954c3db9a50734
+  FBAEMKit: fbb0a50e13109400d0615e7630a0db26ec6b8206
   FBLazyVector: e95a291ad2dadb88e42b06e0c5fb8262de53ec12
+  FBSDKCoreKit: 0063014b3b1f7e975e70b60232b0cf8003839746
+  FBSDKCoreKit_Basics: f4a1e0f38769eb71abaf6395b85e015318fcda49
+  FBSDKGamingServicesKit: b53cdd0293c559ba9a72add38ccd6b541df379e9
+  FBSDKLoginKit: 0e6d0df30ae0a5b33f33d9050ca10ca21e0da234
+  FBSDKShareKit: b588264311416ed8d7eabe1333c552fc4b86aa48
   Google-Mobile-Ads-SDK: 2171620c6497804b57dc88b95644cc82e7dfb5b0
   GoogleUserMessagingPlatform: befe603da6501006420c206222acd449bba45a9c
   hermes-engine: 9f4dfe93326146a1c99eb535b1cb0b857a3cd172
@@ -2672,6 +2730,7 @@ SPEC CHECKSUMS:
   React-Mapbuffer: 9050ee10c19f4f7fca8963d0211b2854d624973e
   React-microtasksnativemodule: f775db9e991c6f3b8ccbc02bfcde22770f96e23b
   react-native-crisp-chat-sdk: c93ae25a993de27d24fbd2c41e39cfa2598b8e3d
+  react-native-fbsdk-next: 325e4973a478f098bb9406fb2a13fa2e1f5dffeb
   react-native-safe-area-context: 37e680fc4cace3c0030ee46e8987d24f5d3bdab2
   react-native-webview: b29007f4723bca10872028067b07abacfa1cb35a
   React-NativeModulesApple: 8969913947d5b576de4ed371a939455a8daf28aa

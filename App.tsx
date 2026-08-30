@@ -50,6 +50,8 @@ import * as CrispChatSDK from 'react-native-crisp-chat-sdk';
 import mobileAds from 'react-native-google-mobile-ads';
 import { readHomeCache, writeHomeCache } from './src/services/homeCache';
 import { markHomeReady } from './src/services/bootGate';
+import { requestTrackingPermissionsAsync } from 'expo-tracking-transparency';
+import { Settings as FBSettings } from 'react-native-fbsdk-next';
 import { fetchCartPriceUpdates } from './src/services/cartPriceService';
 import InboxScreen from './src/screens/InboxScreen';
 import SupportScreen from './src/screens/SupportScreen';
@@ -2929,6 +2931,21 @@ export default function App() {
     } else {
       console.warn('[Crisp] EXPO_PUBLIC_CRISP_WEBSITE_ID not set — chat disabled');
     }
+  }, []);
+
+  // App Tracking Transparency — asked once, 3s after launch so it never blocks
+  // first paint. Denied → the Meta SDK stays in SKAdNetwork/aggregated mode
+  // (advertiserTracking=false) and the app works exactly the same; granted →
+  // the SDK may use IDFA for attribution. Meta init itself is automatic
+  // (isAutoInitEnabled in app.json) and independent of this answer.
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const { status } = await requestTrackingPermissionsAsync();
+        FBSettings.setAdvertiserTrackingEnabled(status === 'granted');
+      } catch { /* ATT unavailable (old iOS/simulator) — SDK stays in limited mode */ }
+    }, 3000);
+    return () => clearTimeout(timer);
   }, []);
 
   // Initialise the Google Mobile Ads SDK once at app start. Phase N1 disabled the

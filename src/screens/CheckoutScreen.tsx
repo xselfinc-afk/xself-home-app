@@ -18,7 +18,7 @@ import { DELIVERY_TIMING_COPY, deliveryTimingCopy, serverDeliveryCopyOf } from '
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
-import { incrementProductCounter } from '../services/analyticsService';
+import { incrementProductCounter, logMetaInitiateCheckout, logMetaPurchase } from '../services/analyticsService';
 import { DEBUG_FLAGS } from '../config/debugFlags';
 import { debugEnabled } from '../utils/debug';
 
@@ -188,6 +188,17 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // This keeps the Pickup option visible while Delivery is selected, whenever pickup is
   // eligible. Eligibility itself is unchanged (server-side radius + supports_pickup).
   const planHasPickup = fulfillmentPlan?.pickupAvailable ?? false;
+
+  // Meta InitiateCheckout (client twin) — once per checkout session, when the plan
+  // first resolves. event_id ic:{checkoutSessionId} matches the server event.
+  const metaIcLogged = useRef(false);
+  useEffect(() => {
+    if (fulfillmentPlan && !metaIcLogged.current) {
+      metaIcLogged.current = true;
+      logMetaInitiateCheckout(checkoutSessionId.current, total, orderItems.map(i => i.sku));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fulfillmentPlan]);
 
   // Active plan: reflects the user's chosen fulfillment method.
   // When user picks delivery on a pickup plan, all pickup groups become shipping groups.
@@ -721,6 +732,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
         // Pay-After-Pickup gate: this build can drive the SetupIntent ($0-today, save-card) flow.
         // ONLY sent for pickup; delivery never enters Pay-After-Pickup on the server.
         clientSupportsPayAfterPickup: (fulfillmentChoice ?? 'delivery') === 'pickup',
+        // Meta InitiateCheckout dedup key only — additive, never business logic.
+        checkoutSessionId: checkoutSessionId.current,
         ...(customerName ? { customerName } : {}),
         // Optional: present only when SupportScreen forwarded a special-offer
         // quote on Buy Now, OR when a cart line carries a quoteToken.
@@ -1522,6 +1535,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 if (item.productId) incrementProductCounter(item.productId, 'order_count');
               });
               if (!isBuyNow) clearCart();
+              // Meta Purchase (client twin) — existing success-confirmation point only.
+              logMetaPurchase(orderId.current, total, orderItems.map(i => i.sku));
               navigation.navigate('OrderSuccess', {
                 total,
                 orderId: orderId.current,

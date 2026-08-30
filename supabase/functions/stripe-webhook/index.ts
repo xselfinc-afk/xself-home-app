@@ -18,6 +18,7 @@
  *   - admin Payment Link sync updates the same row by Stripe payment_link id
  */
 
+import { sendMetaEvents, hashedUserData } from '../_shared/metaCapi.ts';
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createTaxTransaction } from '../_shared/stripeTax.ts';
@@ -38,6 +39,37 @@ const STRIPE_WEBHOOK_SECRET = (Deno.env.get('STRIPE_WEBHOOK_SECRET') ?? '')
 
 const SUPABASE_URL             = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+// ── Meta App Events: Purchase from the AUTHORITATIVE paid transitions only ────
+// event_id = purchase:{order_id} — stable, shared verbatim with the iOS SDK so
+// Meta dedupes client+server into one purchase. Failures never affect the order
+// (sendMetaEvents is contained: 4s timeout, never throws, unconfigured → skip).
+// deno-lint-ignore no-explicit-any
+async function emitMetaPurchase(supabase: any, orderId: string, source: string): Promise<void> {
+  try {
+    const { data: rows } = await supabase.from('orders')
+      .select('order_id, order_number, total_cents, customer_email, customer_phone, items_json')
+      .eq('order_id', orderId).limit(1);
+    const o = rows?.[0] as Record<string, unknown> | undefined;
+    if (!o) return;
+    const items = Array.isArray(o.items_json) ? o.items_json as Array<Record<string, unknown>> : [];
+    await sendMetaEvents([{
+      event_name: 'Purchase',
+      event_id: `purchase:${orderId}`,
+      user_data: await hashedUserData({ email: o.customer_email as string | null, phone: o.customer_phone as string | null }),
+      custom_data: {
+        currency: 'USD',
+        value: Number(o.total_cents ?? 0) / 100,
+        order_id: String(o.order_number ?? orderId),
+        content_type: 'product',
+        content_ids: items.map((i) => String(i.sku ?? '')).filter(Boolean),
+        contents: items.map((i) => ({ id: String(i.sku ?? ''), quantity: Number(i.qty ?? 1), item_price: Number(i.price ?? 0) })),
+      },
+    }], source);
+  } catch (e) {
+    console.error('[metaCapi] emitMetaPurchase contained failure:', e instanceof Error ? e.message : String(e));
+  }
+}
 
 function stripeId(value: unknown): string | null {
   if (typeof value === 'string' && value.trim()) return value;
@@ -309,6 +341,8 @@ serve(async (req: Request) => {
         const taxTxn = await createTaxTransaction(STRIPE_SECRET_KEY, capMeta.tax_calculation_id, orderRef);
         if (!taxTxn.ok) console.error('[Webhook] pickup capture tax filing failed (order stays paid):', orderRef, taxTxn.error);
       }
+      // Meta Purchase — authoritative pickup paid transition (fresh rows only).
+      if (capRows && capRows.length > 0) await emitMetaPurchase(supabase, orderRef, 'pickup-capture');
       console.log('[Webhook] pickup CAPTURED → paid for order', orderRef);
       return new Response(JSON.stringify({ received: true, action: 'captured', orderId: orderRef }), { status: 200 });
     }
@@ -413,6 +447,10 @@ serve(async (req: Request) => {
       // Return 500 so Stripe retries — do not return 200 on DB failure
       return new Response(JSON.stringify({ error: orderErr.message }), { status: 500 });
     }
+
+    // Meta Purchase — authoritative paid transition (the already-paid no-op above
+    // guarantees single fire per order).
+    await emitMetaPurchase(supabase, orderId, 'payment-succeeded');
 
     // Mark reservations fulfilled — idempotent (WHERE status='reserved' is a no-op if already fulfilled)
     const { error: reservErr } = await supabase
