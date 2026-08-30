@@ -64,6 +64,8 @@
 	<string>ca-app-pub-3519409408954811~6941537191</string>
 	<key>GADDelayAppMeasurementInit</key>
 	<false/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>fbapi</string>

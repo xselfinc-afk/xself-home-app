@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.xself.home",
-      "buildNumber": "53",
+      "buildNumber": "54",
       "infoPlist": {
         "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support.",
         "SKAdNetworkItems": [
@@ -28,7 +28,8 @@
           {
             "SKAdNetworkIdentifier": "n38lu8286q.skadnetwork"
           }
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       },
       "associatedDomains": [
         "applinks:xselfhome.com"
