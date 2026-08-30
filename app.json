@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.xself.home",
-      "buildNumber": "52",
+      "buildNumber": "53",
       "infoPlist": {
         "NSCameraUsageDescription": "Use your camera to search for furniture and upload photos for customer support.",
         "SKAdNetworkItems": [
@@ -90,7 +90,7 @@
         "react-native-fbsdk-next",
         {
           "appID": "1328313489508243",
-          "clientToken": "REPLACE_WITH_META_CLIENT_TOKEN",
+          "clientToken": "267de5fa7f8d3e910b9f7852a45c543d",
           "displayName": "Xself",
           "scheme": "fb1328313489508243",
           "autoLogAppEventsEnabled": true,

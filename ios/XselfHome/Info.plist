@@ -57,7 +57,7 @@
 	<key>FacebookAutoLogAppEventsEnabled</key>
 	<true/>
 	<key>FacebookClientToken</key>
-	<string>REPLACE_WITH_META_CLIENT_TOKEN</string>
+	<string>267de5fa7f8d3e910b9f7852a45c543d</string>
 	<key>FacebookDisplayName</key>
 	<string>Xself</string>
 	<key>GADApplicationIdentifier</key>

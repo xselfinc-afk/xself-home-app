@@ -404,7 +404,7 @@
 				CODE_SIGN_ENTITLEMENTS = XselfHome/XselfHome.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				DEVELOPMENT_TEAM = TNRSNH849T;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -425,11 +425,11 @@
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				PRODUCT_BUNDLE_IDENTIFIER = com.xself.home;
-				PRODUCT_NAME = Xself;
+				PRODUCT_NAME = "Xself";
 				SWIFT_OBJC_BRIDGING_HEADER = "XselfHome/XselfHome-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -443,7 +443,7 @@
 				CODE_SIGN_ENTITLEMENTS = XselfHome/XselfHome.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 52;
+				CURRENT_PROJECT_VERSION = 53;
 				DEVELOPMENT_TEAM = TNRSNH849T;
 				INFOPLIST_FILE = XselfHome/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -459,10 +459,10 @@
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				PRODUCT_BUNDLE_IDENTIFIER = com.xself.home;
-				PRODUCT_NAME = Xself;
+				PRODUCT_NAME = "Xself";
 				SWIFT_OBJC_BRIDGING_HEADER = "XselfHome/XselfHome-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
