@@ -21,6 +21,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { LEGACY_DELIVERY_FEE_DOLLARS } from '../_shared/deliveryFee.ts';
 import { evaluateCheckoutCart } from '../_shared/checkoutInventoryRevalidation.ts';
+import { evaluateCheckoutLine, CHECKOUT_REFUSAL_LABELS } from '../_shared/temporarySaleRelease.ts';
 import { calculateTax, extractUsZip, findOrCreatePerformanceLocation, type TaxAddress } from '../_shared/stripeTax.ts';
 import { buildSetupIntentParams, shouldUsePayAfterPickup } from '../_shared/pickup/pickupDomain.ts';
 
@@ -134,6 +135,25 @@ interface Address {
 
 interface RequestBody {
   items: CartItem[];
+  /**
+   * Storefront this checkout came from: 'app' | 'web' | 'meta'.
+   *
+   * 🔒 Reporting only. Nothing downstream of `normalizeOrderSource` reads it —
+   * not pricing, not inventory, not tax, not Stripe, not the webhook, not the
+   * order status machine. It exists so the ops console can tell three
+   * storefronts apart on one shared `orders` table.
+   *
+   * Absent, misspelled or hostile values are normalized to 'unknown'. An order
+   * is NEVER rejected over this field: every already-installed app build sends
+   * no `source` at all and must keep checking out exactly as before.
+   */
+  source?: string;
+  /**
+   * Meta hands the storefront `?cart_origin=meta`. The storefront validates it
+   * and forwards it here; this function treats it as a second opinion only,
+   * subordinate to `source`.
+   */
+  cartOrigin?: string;
   customer: CustomerInfo;
   address: Address;
   /** Default: 'delivery' */
@@ -185,6 +205,37 @@ interface RequestBody {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Which storefront this order came from. **Reporting only.**
+ *
+ * ── Why the client is not trusted verbatim ──────────────────────────────────
+ * `source` arrives in a JSON body that anyone can craft. It is normalized
+ * against a closed whitelist here, on the server, so the ops console can never
+ * be shown a storefront that does not exist. A value outside the whitelist is
+ * not an error — it becomes 'unknown', which is the honest answer.
+ *
+ * ── Why this never fails the order ──────────────────────────────────────────
+ * Every app build already in customers' hands sends no `source` at all. If a
+ * missing or bad value could reject a checkout, this attribution feature would
+ * take down live sales. Fail-open to 'unknown' is the only safe default; the
+ * console renders that as UNKNOWN rather than pretending to know.
+ *
+ * `cart_origin=meta` is honoured only as a fallback: the storefront already
+ * validates it before forwarding, and a caller that declares `source` outright
+ * has said something more specific.
+ */
+const ORDER_SOURCES = ['app', 'web', 'meta'] as const;
+
+function normalizeOrderSource(declared?: unknown, cartOrigin?: unknown): string {
+  const pick = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const clean = value.trim().toLowerCase();
+    return (ORDER_SOURCES as readonly string[]).includes(clean) ? clean : null;
+  };
+  return pick(declared) ?? pick(cartOrigin) ?? 'unknown';
+}
+
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -220,6 +271,9 @@ serve(async (req: Request) => {
       clientSupportsTax = false,
       clientSupportsPayAfterPickup = false,
     } = body;
+
+    // Reporting-only attribution. Computed once, written once, read by nothing else.
+    const orderSource = normalizeOrderSource(body.source, body.cartOrigin);
 
     // ── Input validation ──────────────────────────────────────────────────────
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -539,6 +593,62 @@ serve(async (req: Request) => {
       return jsonResponse({ error: 'One or more items are unavailable', failures: inventoryFailures }, 422);
     }
 
+    // ── 临时放行（Temporary Sale Override）再校验 ─────────────────────────────
+    //
+    // 只针对「当前不在 sellable_products、靠临时放行才进得来」的行。正常可售的商品
+    // 一条逻辑都不走，既有结账行为完全不变。
+    //
+    // 放行是**销售许可**，不是库存事实，所以这里必须拿真实库存再验一次：
+    //   1. 放行仍然 active（运营可能在顾客结账前点了「结束放行并下架」）
+    //   2. 非 CA 仓仍有足够库存（stockMap 之上再按仓库拆一次，CA 仓不计入）
+    //   3. 不得走 CA 自提 —— CA 本来就没货，自提点拿不到货
+    // 上面的 stockMap 求的是全仓合计；放行商品必须只认非 CA 仓，否则一旦 CA 仓回补
+    // 就会出现「靠 CA 库存过了闸、却按邮寄发货」的错配。
+    const [sellableRes, overrideRes] = await Promise.all([
+      supabase.from('sellable_products').select('supplier_product_id').in('supplier_product_id', productIds),
+      supabase.from('temporary_sale_overrides')
+        .select('supplier_product_id').eq('status', 'active').in('supplier_product_id', productIds),
+    ]);
+    if (sellableRes.error || overrideRes.error) {
+      console.error('[create-checkout-order] release check failed:',
+        sellableRes.error?.message ?? overrideRes.error?.message);
+      return jsonResponse({ error: 'Availability check failed' }, 500);
+    }
+    const normallySellable = new Set((sellableRes.data ?? []).map(r => r.supplier_product_id as string));
+    const activeOverride = new Set((overrideRes.data ?? []).map(r => r.supplier_product_id as string));
+
+    // 非 CA 仓库存：只有 CA 仓支持自提（warehouse_code 以 CA 开头），其余都是邮寄仓。
+    const outOfStateQtyByProduct = new Map<string, number>();
+    for (const row of freshRows ?? []) {
+      const code = String(row.warehouse_code ?? '');
+      if (/^CA/i.test(code)) continue;
+      const pid = row.product_id as string;
+      outOfStateQtyByProduct.set(pid,
+        (outOfStateQtyByProduct.get(pid) ?? 0) + Math.max(0, Number(row.quantity ?? 0)));
+    }
+
+    const releaseFailures: { productId: string; sku: string; reason: string; message: string }[] = [];
+    for (const item of items) {
+      const verdict = evaluateCheckoutLine({
+        supplierProductId: item.productId,
+        normallySellable: normallySellable.has(item.productId),
+        hasActiveOverride: activeOverride.has(item.productId),
+        outOfStateQty: outOfStateQtyByProduct.get(item.productId) ?? null,
+        qty: item.qty,
+        fulfillmentMethod: fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery',
+      });
+      if (!verdict.ok) {
+        const first = verdict.refusals[0];
+        releaseFailures.push({
+          productId: item.productId, sku: item.sku, reason: first,
+          message: CHECKOUT_REFUSAL_LABELS[first],
+        });
+      }
+    }
+    if (releaseFailures.length > 0) {
+      return jsonResponse({ error: 'One or more items are unavailable', failures: releaseFailures }, 422);
+    }
+
     // ── Fulfillment planning ──────────────────────────────────────────────────
     const planItems = items.map(i => ({ sku: i.sku, productId: i.productId, qty: i.qty }));
     const planAddress = {
@@ -616,6 +726,7 @@ serve(async (req: Request) => {
         shipping_total:     0,
         tax:                0,
         date:               puOrderDate,
+        source:             orderSource,
         address_json:       address,
         items_json:         items.map(i => ({ sku: i.sku, name: i.title, img: imgByProductId.get(i.productId) ?? '', price: i.unitPriceCents / 100, qty: i.qty })),
         fulfillment_groups_json: [],
@@ -816,6 +927,7 @@ serve(async (req: Request) => {
         shipping_total:        shippingCents / 100,
         tax:                   taxCents / 100,
         date:                  orderDate,
+        source:                orderSource,
         address_json:          address,
         items_json:            items.map(i => ({
           sku:   i.sku,

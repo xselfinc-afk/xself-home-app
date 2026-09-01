@@ -718,6 +718,10 @@ export default function CheckoutScreen({ route, navigation }: any) {
     const { data, error } = await supabase.functions.invoke('create-checkout-order', {
       body: {
         items,
+        // Storefront attribution. Reporting only — the server whitelists this and
+        // ignores anything it does not recognise; it never affects price, tax,
+        // inventory or payment. Builds that omit it check out exactly as before.
+        source: 'app',
         customer: { email: user?.email ?? '' },
         address,
         fulfillmentMethod: fulfillmentChoice ?? 'delivery',
