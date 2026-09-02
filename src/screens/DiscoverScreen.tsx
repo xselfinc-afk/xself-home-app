@@ -4,7 +4,7 @@
  * Do NOT add UI-side cleaning or formatting logic.
  */
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   FlatList,
+  ActivityIndicator,
   ScrollView,
   Modal,
   Dimensions,
@@ -19,6 +20,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PRODUCT_CATEGORIES, normalizeForSkuMatch, matchesSearch } from '../data/categories';
+import { searchProducts, clearSearchCache } from '../services/searchService';
 import { supabase } from '../lib/supabase';
 import { fetchCaAvailableProductIds } from '../services/inventoryCacheService';
 import { CategoryPillRow } from '../components/CategoryPillRow';
@@ -55,6 +57,42 @@ export default function DiscoverScreen({ navigation, route }: any) {
     const t = setTimeout(() => setSearch(searchInput), 150);
     return () => clearTimeout(t);
   }, [searchInput]);
+
+  // Server search (shared search_products RPC via searchService — same engine as
+  // Home Search and image search). Browse state (no query) is untouched.
+  // Guards: AbortController + request sequence — a late old response never
+  // overwrites a newer query's results. Failure renders error + Retry.
+  const [searchResults, setSearchResults] = useState<Product[]>([]);
+  const [searchState, setSearchState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [searchRetryKey, setSearchRetryKey] = useState(0);
+  const searchSeqRef = useRef(0);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) {
+      searchAbortRef.current?.abort();
+      setSearchResults([]);
+      setSearchState('idle');
+      return;
+    }
+    const seq = ++searchSeqRef.current;
+    setSearchState('loading');
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    searchProducts(q, { limit: 60, signal: controller.signal })
+      .then((res) => {
+        if (searchSeqRef.current !== seq) return;
+        setSearchResults(res.items);
+        setSearchState('success');
+      })
+      .catch(() => {
+        if (searchSeqRef.current !== seq) return;
+        if (controller.signal.aborted) return;
+        setSearchState('error');
+      });
+  }, [search, searchRetryKey]);
+  useEffect(() => () => { searchAbortRef.current?.abort(); clearSearchCache(); }, []);
   const [selectedLevel1, setSelectedLevel1] = useState('All');
 
   // Apply category filter when navigated from Home category circles
@@ -263,10 +301,12 @@ export default function DiscoverScreen({ navigation, route }: any) {
 
   const filtered = useMemo(() => {
     // Independent-SKU mode: every matching SKU is its own result — no family collapse. Searching
-    // any SKU returns that exact product. (familyRep retained for backend grouping only.)
+    // any SKU returns that exact product. (familyRep retained for backend grouping only;
+    // searchAllItems superseded by the server search but still loaded by browse state.)
     void familyRep;
+    void searchAllItems;
     let f: Product[] = search
-      ? searchAllItems.filter(p => matchesSearch(p, search))
+      ? searchResults
       : products;
 
     if (selectedLevel1 !== 'All') {
@@ -330,6 +370,7 @@ export default function DiscoverScreen({ navigation, route }: any) {
   }, [
     products,
     searchAllItems,
+    searchResults,
     familyRep,
     search,
     selectedLevel1,
@@ -385,6 +426,22 @@ export default function DiscoverScreen({ navigation, route }: any) {
         />
       </View>
 
+      {search.trim() !== '' && searchState === 'error' && (
+        <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+          <Text style={{ fontSize: 14, fontWeight: '600', color: '#1C1917' }}>Search didn't load</Text>
+          <TouchableOpacity
+            onPress={() => setSearchRetryKey(k => k + 1)}
+            style={{ marginTop: 10, backgroundColor: '#EAB320', borderRadius: 18, paddingVertical: 8, paddingHorizontal: 24 }}
+          >
+            <Text style={{ fontWeight: '700', color: '#1C1917' }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {search.trim() !== '' && searchState === 'loading' && (
+        <View style={{ alignItems: 'center', paddingVertical: 16 }}>
+          <ActivityIndicator size="small" color="#EAB320" />
+        </View>
+      )}
       <FlatList
         data={feedRows}
         keyExtractor={(row) => row.key}

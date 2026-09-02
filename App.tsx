@@ -29,6 +29,7 @@ import { loadProductDetail, loadProductFamily } from './src/services/productFami
 import { isPilotFamily } from './src/config/productFamilyPilot';
 import { collapsePilotFamilies } from './src/services/productFamilyCollapse';
 import { LIST_SELECT } from './src/services/detailProductAdapter';
+import { searchProducts, clearSearchCache } from './src/services/searchService';
 import { resolveSkuDisplay } from './src/services/productResolvers';
 import { matchesCategory, normalizeForSkuMatch, matchesSearch } from './src/data/categories';
 import { HeroBanner } from './src/components/HeroBanner';
@@ -132,8 +133,11 @@ async function pickSearchImage(source: 'camera' | 'library') {
 
   const result =
     source === 'camera'
-      ? await ImagePicker.launchCameraAsync({ quality: 0.8 })
-      : await ImagePicker.launchImageLibraryAsync({ quality: 0.8 });
+      // quality 0.5 + exif stripped: cuts the vision upload to a fraction of the
+      // original size (biggest latency item in the image-search path). A proper
+      // resize (expo-image-manipulator) is scheduled for the next native build.
+      ? await ImagePicker.launchCameraAsync({ quality: 0.5, exif: false })
+      : await ImagePicker.launchImageLibraryAsync({ quality: 0.5, exif: false });
 
   if (result.canceled) return null;
   return result.assets?.[0]?.uri ?? null;
@@ -1738,10 +1742,16 @@ function SearchScreen({ navigation, route }) {
   const initialImageUri = route?.params?.imageUri ?? null;
   const [query, setQuery] = useState(String(initialQuery));
   const [imageUri, setImageUri] = useState<string | null>(initialImageUri);
-  const [searchPool, setSearchPool] = useState<Product[]>([]);
-  const [familyRep, setFamilyRep] = useState<Record<string, string>>({});
   const [generatedQuery, setGeneratedQuery] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  // Server search state machine — idle | loading | success | error. Results come
+  // from the search_products RPC via searchService (no more full-catalogue pool).
+  const [results, setResults] = useState<Product[]>([]);
+  const [availability, setAvailability] = useState<Record<string, boolean>>({});
+  const [searchState, setSearchState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [retryKey, setRetryKey] = useState(0);
+  const searchSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Search Native ad config — remote-gated, OFF by default; any error keeps OFF.
   const [searchAdCfg, setSearchAdCfg] = useState<{ enabled: boolean; interval: number; max: number; testMode: boolean }>({
@@ -1762,50 +1772,46 @@ function SearchScreen({ navigation, route }) {
     return () => { active = false; };
   }, []);
 
+  // Debounced server search. Consistency guards: AbortController cancels the
+  // in-flight RPC, and a monotonically increasing sequence drops any late
+  // response for an older query — an old response can never overwrite a newer
+  // one. Failures land in 'error' (rendered with a Retry button), never as a
+  // silently-empty result list.
+  const activeQuery = imageUri ? generatedQuery : query;
   useEffect(() => {
-    let active = true;
-    async function loadPool() {
-      const { data, error } = await supabase
-        .from('sellable_products')
-        .select(
-          'id, supplier_product_id, product_title, product_title_display, optimized_title, short_description, ' +
-          'key_features_json, specifications_json, sku_custom, sku_search, ' +
-          'category_code, scene_code, color, color_options_json, ' +
-          'has_multiple_colors, show_color_selector, material, dimensions, weight, ' +
-          'primary_image, gallery_images_json, product_family_key, price, selling_price, original_price, normalization_status, created_at, category_label, category_priority, is_new_arrival, new_arrival_source, total_available_qty',
-        )
-        .order('created_at', { ascending: false });
-
-      if (error || !data || !active) return;
-
-      const mapped: Product[] = (data as any[]).flatMap((r: any) => {
-        try { return [adaptStandardizedRow(r)]; }
-        catch { return []; }
-      });
-
-      // Family dedup — same rule as Home/Discover
-      const familySeen = new Map<string, { id: string; hasImage: boolean }>();
-      (data as any[]).forEach((r: any) => {
-        const key: string = r.product_family_key || r.supplier_product_id;
-        const hasImage = !!r.primary_image;
-        const existing = familySeen.get(key);
-        if (!existing || (!existing.hasImage && hasImage)) {
-          familySeen.set(key, { id: r.supplier_product_id, hasImage });
-        }
-      });
-      // Keep the per-family representative id, but DO NOT drop siblings from the pool — every
-      // sibling must remain matchable so searching any sibling SKU finds the family. Results are
-      // collapsed to one representative card per family at match time (see below).
-      const repByFamily: Record<string, string> = {};
-      for (const [key, v] of familySeen) repByFamily[key] = v.id;
-      if (active) {
-        setSearchPool(mapped.filter(p => p.images.length > 0));
-        setFamilyRep(repByFamily);
-      }
+    const q = activeQuery.trim();
+    if (isAnalyzing) return; // image path: wait for keywords
+    if (!q) {
+      abortRef.current?.abort();
+      setResults([]);
+      setAvailability({});
+      setSearchState('idle');
+      return;
     }
-    loadPool();
-    return () => { active = false; };
-  }, []);
+    const seq = ++searchSeqRef.current;
+    setSearchState('loading');
+    const timer = setTimeout(() => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      searchProducts(q, { limit: 60, signal: controller.signal })
+        .then((res) => {
+          if (searchSeqRef.current !== seq) return; // stale response — drop
+          setResults(res.items);
+          setAvailability(res.availability);
+          setSearchState('success');
+        })
+        .catch(() => {
+          if (searchSeqRef.current !== seq) return;
+          if (controller.signal.aborted) return;    // cancelled, not failed
+          setSearchState('error');
+        });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [activeQuery, isAnalyzing, retryKey]);
+
+  // Session cache dies with the search UI — next visit starts fresh.
+  useEffect(() => () => { abortRef.current?.abort(); clearSearchCache(); }, []);
 
   // Image analysis: when imageUri is set, extract furniture keywords via Claude vision
   useEffect(() => {
@@ -1819,19 +1825,14 @@ function SearchScreen({ navigation, route }) {
       if (cancelled) return;
       setGeneratedQuery(keywords);
       setIsAnalyzing(false);
-      if (__DEV__) {
-        console.log('[ImageSearch] generated query:', JSON.stringify(keywords));
-        console.log('[ImageSearch] result count:', searchPool.filter(p => matchesSearch(p, keywords)).length);
-      }
+      if (__DEV__) console.log('[ImageSearch] generated query:', JSON.stringify(keywords));
     });
     return () => { cancelled = true; };
   }, [imageUri]);
 
-  const activeQuery = imageUri ? generatedQuery : query;
-  // Independent-SKU mode: every matching SKU is its own result — no family collapse. Searching
-  // any SKU returns that exact product. (familyRep retained but unused — backend grouping only.)
-  void familyRep;
-  const results: Product[] = isAnalyzing ? [] : searchPool.filter(p => matchesSearch(p, activeQuery));
+  // Image path with no usable keywords = recognition failure. Rendered as its
+  // own state — NEVER falls through to an unfiltered "all products" list.
+  const imageRecognitionFailed = !!imageUri && !isAnalyzing && !generatedQuery.trim();
 
   // Search feed rows: 2-up product rows + at most one full-width Native ad after
   // result 24 (no ad in empty/loading state — results is [] then, so no ad).
@@ -1918,6 +1919,30 @@ function SearchScreen({ navigation, route }) {
         </View>
       ) : null}
 
+      {imageRecognitionFailed ? (
+        <View style={{ alignItems: 'center', paddingTop: 64, paddingHorizontal: 32 }}>
+          <Ionicons name="image-outline" size={36} color="#9CA3AF" />
+          <Text style={{ fontSize: 15, fontWeight: '600', color: '#1C1917', marginTop: 12 }}>Couldn't identify the item</Text>
+          <Text style={{ fontSize: 13, color: '#6B7280', marginTop: 6, textAlign: 'center' }}>
+            Try a clearer photo of a single furniture piece, or search by name instead.
+          </Text>
+        </View>
+      ) : searchState === 'error' ? (
+        <View style={{ alignItems: 'center', paddingTop: 64, paddingHorizontal: 32 }}>
+          <Ionicons name="cloud-offline-outline" size={36} color="#9CA3AF" />
+          <Text style={{ fontSize: 15, fontWeight: '600', color: '#1C1917', marginTop: 12 }}>Search didn't load</Text>
+          <TouchableOpacity
+            onPress={() => setRetryKey(k => k + 1)}
+            style={{ marginTop: 14, backgroundColor: '#EAB320', borderRadius: 20, paddingVertical: 10, paddingHorizontal: 28 }}
+          >
+            <Text style={{ fontWeight: '700', color: '#1C1917' }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : searchState === 'loading' ? (
+        <View style={{ alignItems: 'center', paddingTop: 64 }}>
+          <ActivityIndicator size="small" color="#EAB320" />
+        </View>
+      ) : (
       <FlatList
         data={searchRows}
         keyExtractor={(row) => row.key}
@@ -1942,6 +1967,9 @@ function SearchScreen({ navigation, route }) {
                       <Text style={styles.productPrice}>${item.price}</Text>
                       {item.originalPrice && <Text style={styles.originalPrice}>${item.originalPrice}</Text>}
                     </View>
+                    {availability[item.id] === false && (
+                      <Text style={{ fontSize: 11, color: '#B45309', marginTop: 2 }}>Temporarily unavailable</Text>
+                    )}
                   </View>
                 </TouchableOpacity>
               ))}
@@ -1950,6 +1978,7 @@ function SearchScreen({ navigation, route }) {
           );
         }}
       />
+      )}
     </SafeAreaView>
   );
 }
