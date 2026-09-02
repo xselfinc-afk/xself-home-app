@@ -185,14 +185,75 @@ serve(async (req: Request) => {
     }, {});
   }
 
+  /*
+   * ── 商品图兜底：durable mirror ──────────────────────────────────────────────
+   * 只读审计的结论（历史 31 个 product_id）：
+   *   · standardized_products 找回 30/31 = 96.8%
+   *   · 其中 primary_image_mirror_path 非空 30/30 = 100%
+   *   · 25 笔 Delivery 涉及的 11 个 product_id，恢复率 100%
+   *   · 唯一找不到的是 QA 合成 id（XONE-UI-TEST），不是真实商品
+   *
+   * 三条必须守住的纪律：
+   * 1. **按 supplier_product_id 关联，不按 SKU。** order_items.product_id 就是
+   *    supplier_product_id；SKU 有 supplier_sku / sku_custom 两套且刚做过
+   *    身份迁移，按 SKU 关联会在历史订单上错配。
+   * 2. **查 standardized_products，不查 sellable_products。** 下架是软标记
+   *    （published=false + delist_reason），行还在，只是 anon 的 RLS 看不到。
+   *    sellable view 按定义排除下架品 —— 那正是历史订单最需要的那一批。
+   * 3. **只能在这里做。** 只有 service role 看得见下架品的行，而 service role
+   *    永远不进 XOne 的 bundle / WebView / localStorage。
+   *
+   * 用 mirror_path 拼出的 Supabase public URL 是长期地址且带 CORS；
+   * primary_image 是 GIGA 签名 URL，会过期且不带 CORS 头，`fetch()` 拿不到
+   * 字节 —— 所以它只作最后兜底，供界面显示，不作为 PDF 的主要来源。
+   */
+  const imageByProductId = new Map<string, string>();
+  const productIds = [
+    ...new Set(
+      Object.values(itemsByOrder)
+        .flat()
+        .map((item) => (item as { product_id?: string }).product_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (productIds.length > 0) {
+    const { data: products, error: productError } = await db
+      .from('standardized_products')
+      .select('supplier_product_id, primary_image_mirror_path, primary_image')
+      .in('supplier_product_id', productIds);
+    if (productError) {
+      // 兜底失败不该让整份订单读不出来 —— 没有图的单子仍然要能排车。
+      console.error('[ops-orders-list] product image fallback failed:', productError.message);
+    }
+    for (const row of products ?? []) {
+      const product = row as {
+        supplier_product_id: string;
+        primary_image_mirror_path: string | null;
+        primary_image: string | null;
+      };
+      const durable = product.primary_image_mirror_path
+        ? `${SUPABASE_URL}/storage/v1/object/public/product-images/${product.primary_image_mirror_path}`
+        : null;
+      const chosen = durable ?? product.primary_image ?? null;
+      if (chosen) imageByProductId.set(product.supplier_product_id, chosen);
+    }
+  }
+
   const projected = (orders ?? []).map((row) => {
     const order = row as Record<string, unknown> & { order_id: string };
+    const lines = (itemsByOrder[order.order_id] ?? []) as Array<Record<string, unknown>>;
     return {
       ...order,
       // Absent column and absent value mean the same thing to the console:
       // origin unknown, do not guess.
       source: attributionAvailable ? (order.source ?? null) : null,
-      items: itemsByOrder[order.order_id] ?? [],
+      // 每条明细带上它自己的图。查不到就是 null —— 不拿别的商品的图顶替，
+      // 界面按 SKU 标注「Image unavailable」。
+      items: lines.map((item) => ({
+        ...item,
+        image_url:
+          imageByProductId.get(String(item.product_id ?? '')) ?? null,
+      })),
     };
   });
 
