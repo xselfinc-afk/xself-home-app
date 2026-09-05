@@ -451,6 +451,118 @@ export function buildFavoriteCleanupPlan(inputs: {
   return resolved;
 }
 
+// ── 冻结确认清单（execution manifest / removal allowlist）────────────────────
+//
+// 2026-09-05 首次生产同步事故的修复核心：确认页展示 11 个动作，执行器实际发送了 25 个。
+// 机制是 preview 只用已存储映射、execute 又允许现场解析，把 preview 里 unresolved 的
+// 条目在执行时解析成功后追加进了执行集合 —— preview 成了下界而不是上界。
+//
+// 从此确立的不变量：**EXECUTE_SET ⊆ CONFIRMED_ALLOWLIST**。
+//   · 执行时可以变少（published 变化 / 保护变化 / 身份漂移 / 已不在收藏 → SKIP）；
+//   · 绝不能变多（UNCONFIRMED → EXECUTED 在结构上不可达）。
+//
+// 这是第二道独立防线：即使编排层（XOne adapter）出 bug 传来更大的计划，
+// 过滤发生在真实发送之前，任何不在 allowlist 的动作都发不出 XHR。
+
+export interface RemovalAllowlistEntry {
+  account: SyncAccount;
+  supplier_product_id: string;
+  /** 确认那一刻已解析的网站身份。执行时身份不一致 → 该条 SKIP，绝不按新身份发送。 */
+  product_id: number;
+}
+
+export interface RemovalAllowlist {
+  schema_version: '1.0';
+  /** 编排层对 manifest 的摘要，随文件带下来仅作审计；过滤只认逐条内容。 */
+  plan_digest?: string;
+  actions: RemovalAllowlistEntry[];
+}
+
+/** allowlist 文件的最小结构校验。任何一条不合法 → 整份拒绝，绝不部分放行。 */
+export function parseRemovalAllowlist(raw: unknown): RemovalAllowlist {
+  if (!raw || typeof raw !== 'object') throw new Error('allowlist 不是对象');
+  const a = raw as { schema_version?: unknown; plan_digest?: unknown; actions?: unknown };
+  if (a.schema_version !== '1.0') throw new Error('allowlist 协议版本不受支持');
+  if (!Array.isArray(a.actions)) throw new Error('allowlist 缺少 actions');
+  const actions = a.actions.map((entry, index): RemovalAllowlistEntry => {
+    const e = entry as { account?: unknown; supplier_product_id?: unknown; product_id?: unknown };
+    const account: SyncAccount | null = e.account === 'pickup' ? 'pickup' : e.account === 'dropship' ? 'dropship' : null;
+    if (account === null) throw new Error(`allowlist 第 ${index + 1} 条账号非法`);
+    const sku = String(e.supplier_product_id ?? '').trim();
+    if (!sku) throw new Error(`allowlist 第 ${index + 1} 条缺少 SKU`);
+    if (typeof e.product_id !== 'number' || !Number.isInteger(e.product_id) || e.product_id <= 0) {
+      throw new Error(`allowlist 第 ${index + 1} 条 product_id 非法`);
+    }
+    return { account, supplier_product_id: sku, product_id: e.product_id };
+  });
+  return {
+    schema_version: '1.0',
+    plan_digest: typeof a.plan_digest === 'string' ? a.plan_digest : undefined,
+    actions,
+  };
+}
+
+export interface AllowlistGateResult {
+  /** removals 已收窄到 allowlist ∩ 当前计划（且 product_id 一致）的同一份计划。 */
+  plan: ResolvedCleanupPlan;
+  /** 当前计划里有、但不在确认清单里的removal —— 一律丢弃，绝不发送。 */
+  off_manifest_dropped: Array<{ account: SyncAccount; supplier_product_id: string }>;
+  /** 确认清单里有、但执行时已不再符合条件的动作（published/保护/身份/不在收藏）→ SKIP。 */
+  manifest_not_eligible: Array<{ account: SyncAccount; supplier_product_id: string }>;
+  /** 身份漂移：SKU 双方都有，但 product_id 已不一致 → SKIP，绝不按新身份发送。 */
+  identity_drifted: Array<{ account: SyncAccount; supplier_product_id: string }>;
+}
+
+/**
+ * 用确认清单收窄执行计划。纯函数。
+ *
+ * 结果计划满足：removals ⊆ allowlist（逐条含 product_id 一致）。
+ * exceptions / manual 计数保持原样 —— 它们本就永不发送，无需重述。
+ */
+export function applyRemovalAllowlist(
+  plan: ResolvedCleanupPlan,
+  allowlist: RemovalAllowlist,
+): AllowlistGateResult {
+  const allowed = new Map<string, number>();
+  for (const entry of allowlist.actions) {
+    allowed.set(`${entry.account}|${entry.supplier_product_id}`, entry.product_id);
+  }
+  const removals: Record<SyncAccount, FavoriteSyncItem[]> = { pickup: [], dropship: [] };
+  const off_manifest_dropped: AllowlistGateResult['off_manifest_dropped'] = [];
+  const identity_drifted: AllowlistGateResult['identity_drifted'] = [];
+  const matched = new Set<string>();
+  for (const account of ['pickup', 'dropship'] as const) {
+    for (const item of plan.removals[account]) {
+      const key = `${account}|${item.supplier_product_id}`;
+      const confirmedId = allowed.get(key);
+      if (confirmedId === undefined) {
+        off_manifest_dropped.push({ account, supplier_product_id: item.supplier_product_id });
+        continue;
+      }
+      if (confirmedId !== item.product_id) {
+        identity_drifted.push({ account, supplier_product_id: item.supplier_product_id });
+        matched.add(key);
+        continue;
+      }
+      matched.add(key);
+      removals[account].push(item);
+    }
+  }
+  const manifest_not_eligible = allowlist.actions
+    .filter((entry) => !matched.has(`${entry.account}|${entry.supplier_product_id}`))
+    .map((entry) => ({ account: entry.account, supplier_product_id: entry.supplier_product_id }));
+
+  // 硬不变量自检：收窄后的每一条 removal 必须能在 allowlist 中逐条找到且身份一致。
+  for (const account of ['pickup', 'dropship'] as const) {
+    for (const item of removals[account]) {
+      if (allowed.get(`${account}|${item.supplier_product_id}`) !== item.product_id) {
+        throw new Error(`allowlist 过滤自检失败：${account}/${item.supplier_product_id} 不在确认清单内`);
+      }
+    }
+  }
+  return { plan: { ...plan, removals }, off_manifest_dropped, manifest_not_eligible, identity_drifted };
+}
+
 // ── 续跑判定 ─────────────────────────────────────────────────────────────────
 
 /**

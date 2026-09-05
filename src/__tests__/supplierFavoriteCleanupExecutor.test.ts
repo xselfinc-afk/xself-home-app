@@ -16,6 +16,10 @@ import {
   extraSkuSet,
   planFavoriteCleanup,
   resolveExtraMappings,
+  applyRemovalAllowlist,
+  parseRemovalAllowlist,
+  buildFavoriteCleanupPlan,
+  type RemovalAllowlist,
   type CleanupCheckpoint,
   type CleanupPlan,
   type ExecuteDeps,
@@ -305,6 +309,148 @@ async function main(): Promise<void> {
     const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
     const writeTargets = [...cli.matchAll(/\.from\('([a-z_]+)'\)[\s\S]{0,160}?\.(upsert|insert|update|delete)\(/g)].map((m) => m[1]);
     assert.deepEqual([...new Set(writeTargets)], ['supplier_portal_product_mappings'], 'CLI 只能写映射表');
+  });
+
+
+  // ═══ 冻结确认清单（2026-09-05 事故回归）══════════════════════════════════════
+  // 事故：preview 11 个可执行动作，execute 现场解析把 14 个 unresolved 变成可执行，
+  // 实际发送 25。以下测试把「EXECUTE_SET ⊆ CONFIRMED_ALLOWLIST」定为硬不变量。
+
+  const mk = (account: 'pickup' | 'dropship', sku: string, id: number) => ({ account, supplier_product_id: sku, product_id: id });
+  const wrap = (actions: RemovalAllowlist['actions']): RemovalAllowlist => ({ schema_version: '1.0', actions });
+
+  /** 事故同型 fixture：TARGET 2 件；确认清单 11 个动作；执行时 resolver 突然能解析全部 25 个 extra。 */
+  function incidentFixture() {
+    const target = ['PUB-A', 'PUB-B'];
+    const pickupExtra = Array.from({ length: 9 }, (_, i) => `PX-${i}`);      // 确认了 3 个
+    const dropshipExtra = Array.from({ length: 16 }, (_, i) => `DX-${i}`);   // 确认了 8 个
+    const favorites = { pickup: [...target, ...pickupExtra], dropship: [...target, ...dropshipExtra] };
+    let id = 5000;
+    const ids = new Map<string, number>();
+    for (const sku of [...pickupExtra, ...dropshipExtra]) ids.set(sku, ++id);
+    // Execute 阶段的 resolver：所有 25 个 extra 全部解析成功（事故根因所在的行为）。
+    const resolveAll = (sku: string) => ids.has(sku)
+      ? { product_id: ids.get(sku)!, verified_sku: sku, status: 'unique' as const }
+      : { product_id: null, verified_sku: null, status: 'not_mapped' as const };
+    const confirmed = wrap([
+      ...pickupExtra.slice(0, 3).map((sku) => mk('pickup', sku, ids.get(sku)!)),
+      ...dropshipExtra.slice(0, 8).map((sku) => mk('dropship', sku, ids.get(sku)!)),
+    ]);
+    const plan = buildFavoriteCleanupPlan({ target, favorites, resolutions: [], mappingFor: resolveAll });
+    return { target, favorites, ids, resolveAll, confirmed, plan };
+  }
+
+  it('20. 事故回归：resolver 能解析 25 个，确认清单 11 → 收窄后恰为 11，计划外 14 个全部丢弃', () => {
+    const { plan, confirmed } = incidentFixture();
+    assert.equal(plan.removals.pickup.length + plan.removals.dropship.length, 25, '前置：execute 计划确实膨胀到 25');
+    const gated = applyRemovalAllowlist(plan, confirmed);
+    const total = gated.plan.removals.pickup.length + gated.plan.removals.dropship.length;
+    assert.equal(total, 11, '收窄后必须恰好等于确认数');
+    assert.equal(gated.off_manifest_dropped.length, 14, '计划外 14 个必须全部丢弃');
+    assert.equal(gated.manifest_not_eligible.length, 0);
+    const allowKeys = new Set(confirmed.actions.map((a) => `${a.account}|${a.supplier_product_id}`));
+    for (const account of ['pickup', 'dropship'] as const) {
+      for (const item of gated.plan.removals[account]) {
+        assert.ok(allowKeys.has(`${account}|${item.supplier_product_id}`), 'every attempted ∈ confirmed');
+      }
+    }
+  });
+
+  await itAsync('21. 事故回归（执行层）：真实 executeCleanup 的发送数 ≤ 确认数，且每一发都在清单内', async () => {
+    const f2 = incidentFixture();
+    const { plan, confirmed } = f2;
+    const gated = applyRemovalAllowlist(plan, confirmed);
+    const sent: string[] = [];
+    const deps = baseDeps({
+      fetcherFor: (account) => async (_url, init) => {
+        sent.push(`${account}|${String((init.body ?? ''))}`);
+        return { status: 200, json: async () => ({ code: 200, data: { totalNum: 1 } }) };
+      },
+    });
+    const usable = new Map([...f2.ids.entries()].map(([sku, id]) => [sku, { product_id: id, verified_sku: sku, status: 'unique' as const }]));
+    const result = await executeCleanup(gated.plan, usable, deps,
+      { execute: true, batchSize: 2000, maxConsecutiveFailures: 5, runId: 'incident-regression', perItemTimeoutMs: 5000, verifyTimeoutMs: 5000 },
+      { run_id: 'incident-regression', items: {} });
+    assert.ok(result.xhr_sends <= confirmed.actions.length, `xhr_sends ${result.xhr_sends} 必须 ≤ 确认数 ${confirmed.actions.length}`);
+    assert.equal(result.xhr_sends, 11);
+    assert.equal(sent.length, 11);
+  });
+
+  it('22. 执行时 2 个变 published → execute 9 / skip 2', () => {
+    const f = incidentFixture();
+    const confirmedSkus = f.confirmed.actions.map((a) => a.supplier_product_id);
+    // 确认的 11 个中，头两个在执行时已上线（进入 TARGET）。
+    const nowPublished = [confirmedSkus[0], confirmedSkus[3]];
+    const plan = buildFavoriteCleanupPlan({
+      target: [...f.target, ...nowPublished],
+      favorites: f.favorites, resolutions: [], mappingFor: f.resolveAll,
+    });
+    const gated = applyRemovalAllowlist(plan, f.confirmed);
+    assert.equal(gated.plan.removals.pickup.length + gated.plan.removals.dropship.length, 9);
+    assert.equal(gated.manifest_not_eligible.length, 2, '已上线的 2 个 → SKIP（不发送）');
+  });
+
+  it('23. 执行时 1 个获得 keep_favorite 保护 → execute 10 / skip 1', () => {
+    const f = incidentFixture();
+    const protectedSku = f.confirmed.actions[5];
+    const plan = buildFavoriteCleanupPlan({
+      target: f.target, favorites: f.favorites,
+      resolutions: [{ supplier_account: protectedSku.account, supplier_product_id: protectedSku.supplier_product_id, resolution: 'keep_favorite' }],
+      mappingFor: f.resolveAll,
+    });
+    const gated = applyRemovalAllowlist(plan, f.confirmed);
+    assert.equal(gated.plan.removals.pickup.length + gated.plan.removals.dropship.length, 10);
+    assert.equal(gated.manifest_not_eligible.length, 1);
+  });
+
+  it('24. preview unresolved、execute 才解析成功的条目：不在清单 → 永不进入执行集合', () => {
+    const { plan, confirmed } = incidentFixture();
+    const gated = applyRemovalAllowlist(plan, confirmed);
+    const executed = new Set([...gated.plan.removals.pickup, ...gated.plan.removals.dropship].map((i) => i.supplier_product_id));
+    for (const sku of ['PX-3', 'PX-8', 'DX-8', 'DX-15']) {
+      assert.equal(executed.has(sku), false, `${sku} 在确认时 unresolved，执行时解析成功也不得执行`);
+    }
+  });
+
+  it('25. 身份漂移：确认后 product_id 变化 → SKIP，绝不按新身份发送', () => {
+    const f = incidentFixture();
+    const drifted = f.confirmed.actions[0];
+    const resolveDrift = (sku: string) => sku === drifted.supplier_product_id
+      ? { product_id: drifted.product_id + 999, verified_sku: sku, status: 'unique' as const }
+      : f.resolveAll(sku);
+    const plan = buildFavoriteCleanupPlan({ target: f.target, favorites: f.favorites, resolutions: [], mappingFor: resolveDrift });
+    const gated = applyRemovalAllowlist(plan, f.confirmed);
+    assert.equal(gated.identity_drifted.length, 1);
+    const executed = new Set([...gated.plan.removals.pickup, ...gated.plan.removals.dropship]
+      .filter((i) => i.supplier_product_id === drifted.supplier_product_id));
+    assert.equal(executed.size, 0);
+    assert.equal(gated.plan.removals.pickup.length + gated.plan.removals.dropship.length, 10);
+  });
+
+  it('26. 清单外注入（伪造 SKU 不在计划里）不会让任何东西多发送', () => {
+    const { plan, confirmed } = incidentFixture();
+    const forged = wrap([...confirmed.actions, mk('pickup', 'FORGED-SKU', 123456)]);
+    const gated = applyRemovalAllowlist(plan, forged);
+    // 伪造项不在执行计划里 → 只会落到 not_eligible，永不发送。
+    assert.equal(gated.plan.removals.pickup.length + gated.plan.removals.dropship.length, 11);
+    assert.ok(gated.manifest_not_eligible.some((e) => e.supplier_product_id === 'FORGED-SKU'));
+  });
+
+  it('27. allowlist 结构校验：坏账号 / 坏 product_id / 错版本 → 整份拒绝', () => {
+    assert.throws(() => parseRemovalAllowlist({ schema_version: '2.0', actions: [] }));
+    assert.throws(() => parseRemovalAllowlist({ schema_version: '1.0', actions: [{ account: 'amazon', supplier_product_id: 'A', product_id: 1 }] }));
+    assert.throws(() => parseRemovalAllowlist({ schema_version: '1.0', actions: [{ account: 'pickup', supplier_product_id: 'A', product_id: 'A' }] }));
+    assert.throws(() => parseRemovalAllowlist({ schema_version: '1.0', actions: [{ account: 'pickup', supplier_product_id: '', product_id: 1 }] }));
+    const ok = parseRemovalAllowlist({ schema_version: '1.0', actions: [{ account: 'pickup', supplier_product_id: 'A', product_id: 1 }] });
+    assert.equal(ok.actions.length, 1);
+  });
+
+  it('28. 脚本硬规则：批量 remove 的 --execute 必须携带 --allowlist；解析范围收窄到清单内', () => {
+    const cli = fs.readFileSync('scripts/syncSupplierFavoritesToPublished.ts', 'utf8');
+    assert.ok(cli.includes("--execute 必须携带 --allowlist"), '无清单的批量真实执行必须被拒绝');
+    assert.ok(cli.includes('applyRemovalAllowlist('), '执行计划必须经过 allowlist 收窄');
+    assert.ok(cli.includes('const resolveScope = allowSkuSet'), '身份解析范围必须收窄到清单内');
+    assert.ok(cli.includes('allowlist_enforced'), '结果信封必须报告清单执行状态');
   });
 
   console.log(`\n${passed} passed`);

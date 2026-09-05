@@ -621,6 +621,12 @@ export async function executeFavoriteBridge(
 
     return envelope('sync-plan', {
       target_count: plan.target_count,
+      // 冻结确认清单（execution manifest）：确认页据此展示、编排层据此生成 allowlist。
+      // 执行集合从此只能 ⊆ 这份清单 —— preview 是执行上界（2026-09-05 事故修复）。
+      manifest: {
+        pickup: plan.removals.pickup.map((i) => ({ supplier_product_id: i.supplier_product_id, product_id: i.product_id })),
+        dropship: plan.removals.dropship.map((i) => ({ supplier_product_id: i.supplier_product_id, product_id: i.product_id })),
+      },
       // 本节点只做「清理未上线收藏」，不再计算新增方向。
       direction: 'remove_only',
       pickup: plan.accounts.pickup,

@@ -32,6 +32,9 @@ import {
   countResumable,
   buildFavoriteCleanupPlan,
   planFavoriteAdditions,
+  applyRemovalAllowlist,
+  parseRemovalAllowlist,
+  type RemovalAllowlist,
   type ManualResolutionRecord,
   withDeadline,
   type CleanupProgressEvent,
@@ -50,6 +53,11 @@ const has = (n: string) => argv.some((a) => a === `--${n}` || a.startsWith(`--${
 const val = (n: string) => argv.find((a) => a.startsWith(`--${n}=`))?.split('=').slice(1).join('=');
 
 const EXECUTE = has('execute');
+// 硬规则先于一切读库与解析：没有确认清单的批量真实取消直接拒绝启动。
+if (EXECUTE && !has('add') && !(val('sku') ?? '').trim() && !(val('allowlist') ?? '').trim()) {
+  console.error('[favCleanup] --execute 必须携带 --allowlist=<确认清单>；preview 是执行上界，不接受无清单的批量真实执行。');
+  process.exit(1);
+}
 const RESUME = has('resume');
 // Machine-readable mode: emit exactly one `SYNC_RESULT {json}` line for the Tauri caller to parse.
 const JSON_OUT = has('json');
@@ -77,6 +85,25 @@ if (ONLY_SKU && !ONLY_ACCOUNT) { console.error('[favCleanup] --sku 必须配合 
  * 新增只服务一个场景 —— 「本次刚上架的这几件，补进 Dropship 收藏，好让 price/v1 能返回运费」。
  * 所以名单由调用方给，脚本不替它推断，给不出就拒绝运行。
  */
+/**
+ * 冻结确认清单（2026-09-05 事故修复）。
+ *
+ * 批量取消收藏的 --execute 从此**必须**携带 --allowlist=<确认清单文件>：
+ * preview 是执行上界，执行集合只能是 allowlist ∩ 执行时仍然成立的计划。
+ * 没有清单的批量真实执行被结构性拒绝 —— 旧的「执行时现场解析扩集」路径不可达。
+ * （--sku 单件模式与 --add 显式名单模式本身就是逐条明示的清单，维持原语义。）
+ */
+const ALLOWLIST_PATH = (val('allowlist') ?? '').trim() || null;
+let ALLOWLIST: RemovalAllowlist | null = null;
+if (ALLOWLIST_PATH) {
+  try {
+    ALLOWLIST = parseRemovalAllowlist(JSON.parse(fs.readFileSync(ALLOWLIST_PATH, 'utf8')));
+  } catch (error) {
+    console.error(`[favCleanup] 确认清单不可用：${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  }
+}
+
 const ADD_MODE = has('add');
 const ADD_SKUS = (val('skus') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 if (ADD_MODE) {
@@ -357,7 +384,11 @@ async function main(): Promise<void> {
     }
   };
 
-  const resolved = await resolveExtraMappings(extraSkus, {
+  // allowlist 模式：身份解析范围收窄到确认清单内的 SKU。计划外条目不打门户、不落映射 ——
+  // 它们无论解析成功与否都不会被执行，解析只会造成额外外呼与簿记写入。
+  const allowSkuSet = ALLOWLIST ? new Set(ALLOWLIST.actions.map((a) => a.supplier_product_id)) : null;
+  const resolveScope = allowSkuSet ? extraSkus.filter((sku) => allowSkuSet.has(sku)) : extraSkus;
+  const resolved = await resolveExtraMappings(resolveScope, {
     storedMappings,
     portalResolve,
     now: now(),
@@ -377,6 +408,18 @@ async function main(): Promise<void> {
       resolutions: manualResolutions,
       mappingFor: mappingLookup,
     });
+
+  // ── 冻结清单过滤：EXECUTE_SET ⊆ CONFIRMED_ALLOWLIST（允许变少，绝不变多）──────
+  let allowlistGate: ReturnType<typeof applyRemovalAllowlist> | null = null;
+  if (ALLOWLIST && !ADD_MODE) {
+    allowlistGate = applyRemovalAllowlist(plan, ALLOWLIST);
+    plan.removals = allowlistGate.plan.removals;
+    log(`  ── 确认清单 ──`);
+    log(`  allowlist actions   : ${ALLOWLIST.actions.length}`);
+    log(`  off-manifest dropped: ${allowlistGate.off_manifest_dropped.length}（计划外，绝不发送）`);
+    log(`  no longer eligible  : ${allowlistGate.manifest_not_eligible.length}（执行时已不成立 → SKIP）`);
+    log(`  identity drifted    : ${allowlistGate.identity_drifted.length}（身份漂移 → SKIP）`);
+  }
 
   const totalRemovals = plan.removals.pickup.length + plan.removals.dropship.length;
   const unmapped = extraSkus.length - resolved.usable.size;
@@ -544,6 +587,11 @@ async function main(): Promise<void> {
     resumable_count: resumableAfterRun,
     production_write_attempted: !result.dry_run && result.xhr_sends > 0,
     manual: plan.manual,
+    allowlist_enforced: ALLOWLIST !== null,
+    allowlist_total: ALLOWLIST ? ALLOWLIST.actions.length : null,
+    off_manifest_dropped: allowlistGate ? allowlistGate.off_manifest_dropped.length : null,
+    manifest_not_eligible: allowlistGate ? allowlistGate.manifest_not_eligible.length : null,
+    identity_drifted: allowlistGate ? allowlistGate.identity_drifted.length : null,
     exceptions,
     exceptions_total: exceptionRecords.length,
     exceptions_truncated: exceptionRecords.length > exceptions.length,
