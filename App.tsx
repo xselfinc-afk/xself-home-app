@@ -16,6 +16,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 import ProductCard from './src/components/ProductCard';
 import { NavigationContainer, useNavigationState, createNavigationContainerRef } from '@react-navigation/native';
 import MetaCheckoutLinkHandler from './src/components/MetaCheckoutLinkHandler';
+import ProductLinkHandler from './src/components/ProductLinkHandler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1170,9 +1171,18 @@ function ProductDetailScreen({ route, navigation }) {
     navigation.navigate('Checkout', { mode: 'buy_now', product, qty, selectedVariant: selectedVariant ?? null });
   };
 
+  // Share the CURRENT selection: selectedSibling is re-derived every render, so
+  // this closure always carries the variant the customer is looking at. The
+  // canonical public URL is the storefront PDP — the same link Universal Links
+  // hand back to the app, so there is exactly one shareable product URL.
   const handleShare = async () => {
+    const shareSku = selectedSibling.skuCustom ?? product.skuCustom;
+    const title = selectedSibling.displayTitle ?? selectedSibling.name;
     try {
-      await Share.share({ message: `Check out ${product.name} - $${displayPrice} on Xself!` });
+      await Share.share({
+        message: `${title} — $${displayPrice} on XSELF`,
+        ...(shareSku ? { url: `https://xselfhome.com/products/${encodeURIComponent(shareSku)}` } : {}),
+      });
     } catch (e) {}
   };
 
@@ -1341,9 +1351,6 @@ function ProductDetailScreen({ route, navigation }) {
         <View style={styles.detailContent}>
           <View style={styles.detailNameRow}>
             <Text style={[styles.detailName, { flex: 1 }]} numberOfLines={3} selectable>{selectedSibling.displayTitle ?? selectedSibling.name}</Text>
-            <TouchableOpacity onPress={handleShare} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="share-outline" size={18} color="#9CA3AF" />
-            </TouchableOpacity>
           </View>
           <View style={styles.detailPriceRow}>
             <Text style={styles.detailPrice}>${displayPrice}</Text>
@@ -1660,6 +1667,20 @@ function ProductDetailScreen({ route, navigation }) {
         accessibilityLabel="Back"
       >
         <Ionicons name="chevron-back" size={20} color="#1C1917" />
+      </TouchableOpacity>
+
+      {/* Share — mirrors the back pill on the right edge. Same surface tokens,
+          same overlay layer, so the two read as one top-navigation level and the
+          product title below keeps its full width. Shares the CURRENT variant's
+          canonical storefront URL (see handleShare). */}
+      <TouchableOpacity
+        style={[styles.detailShareBtn, { top: insets.top + 8 }]}
+        onPress={handleShare}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        accessibilityRole="button"
+        accessibilityLabel="Share this product"
+      >
+        <Ionicons name="share-outline" size={20} color="#1C1917" />
       </TouchableOpacity>
 
       {/* Floating CTA — fades in after 30% scroll */}
@@ -3023,6 +3044,7 @@ export default function App() {
       {/* Meta Shop 的 checkout Universal Link 消费端。必须在 CartProvider 内（要用 useCart）。
           它只认 /checkout 路径；magic link 仍由 AuthContext 处理，两者判定互斥。 */}
       <MetaCheckoutLinkHandler navigator={navigationRef} />
+      <ProductLinkHandler navigator={navigationRef} />
       <ConciergeBannerHost />
       </ConciergeProvider>
       </ConversationProvider>
@@ -3284,6 +3306,16 @@ const styles = StyleSheet.create({
   // used by Share here and by CollectionScreen's back button.
   detailBackBtn: {
     position: 'absolute', left: 16,
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.82)',
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 18,
+    elevation: 4,
+  },
+  // Right-edge twin of detailBackBtn — identical pill, mirrored anchor.
+  detailShareBtn: {
+    position: 'absolute', right: 16,
     width: 40, height: 40, borderRadius: 20,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.82)',
