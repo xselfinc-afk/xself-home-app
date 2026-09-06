@@ -713,6 +713,9 @@ const HOLD_REASON_LABELS: Record<string, string> = {
   missing_price: '缺少成本价',
   low_price: '成本价过低，需要人工确认',
   duplicate_color: '同系列出现重复颜色，需要人工确认',
+  // 2026-09-06：同色名但供应商 MPN 色码不同（如 -10BLU / -11BLU）是两种真实颜色变体，
+  // 不是重复商品；只是对外色名撞车，需要人工给出不同的色名。
+  color_name_ambiguous: '同色系但供应商型号色码不同，是不同颜色变体，需人工确认对外色名',
   // 与 duplicate_color 分开：原来「颜色为空」和「颜色撞车」共用一个判定，
   // 缺颜色的商品被说成「重复颜色」，运营按重复去查永远查不到。
   missing_color: '缺少颜色信息，需要人工确认',

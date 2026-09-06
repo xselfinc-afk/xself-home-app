@@ -158,6 +158,60 @@ function assignNewArrival(raw: Record<string, unknown>): { isNewArrival: boolean
 
 type NormalizableRow = SupplierRow & { supplier_product_id?: string | null };
 
+// ── Variant color: the title's own color phrase beats the supplier's coarse mainColor ──
+//
+// GIGA `mainColor` is a color FAMILY ("Grey", "Blue"). Real variants inside one family
+// differ by shade — "Light Grey" vs "Grey", or two different blues — and the family label
+// alone makes those shades collide twice: in the variant-duplicate gate (two "Blue" →
+// "duplicate colour") and in the storefront color selector (two identical swatches).
+// The trailing comma segment of the supplier title is the supplier's per-variant colour
+// name, so it wins whenever it is unambiguously a colour phrase; anything else falls
+// back to mainColor unchanged. Conservative on purpose: a segment is accepted only when
+// EVERY word is a known colour word or modifier — "Stainless Steel Cup Holders" is not.
+
+const COLOR_WORDS = new Set([
+  'black', 'white', 'grey', 'gray', 'blue', 'navy', 'green', 'red', 'pink', 'purple', 'yellow',
+  'orange', 'beige', 'brown', 'ivory', 'cream', 'charcoal', 'teal', 'tan', 'walnut', 'oak',
+  'espresso', 'cherry', 'mahogany', 'maple', 'silver', 'gold', 'bronze', 'brass', 'copper',
+  'khaki', 'camel', 'taupe', 'sand', 'mocha', 'coffee', 'chocolate', 'burgundy', 'wine',
+  'olive', 'sage', 'mint', 'turquoise', 'aqua', 'cyan', 'indigo', 'violet', 'lavender',
+  'lilac', 'magenta', 'coral', 'peach', 'rust', 'mustard', 'emerald', 'ruby', 'champagne',
+  'pearl', 'smoke', 'slate', 'graphite', 'stone', 'ash', 'linen', 'oatmeal', 'wheat', 'honey',
+  'caramel', 'cognac', 'chestnut', 'hazel', 'pecan', 'hickory', 'teak', 'birch', 'pine',
+  'cedar', 'acacia', 'rosewood', 'ebony', 'greige', 'nude', 'blush', 'multicolor',
+  'multicolour', 'multi', 'clear', 'transparent', 'natural',
+]);
+const COLOR_MODIFIERS = new Set([
+  'light', 'dark', 'deep', 'pale', 'soft', 'warm', 'cool', 'bright', 'matte', 'glossy',
+  'antique', 'vintage', 'rustic', 'washed', 'distressed', 'off', 'medium', 'classic', 'rich',
+]);
+
+const titleCaseColor = (s: string) =>
+  s.toLowerCase().replace(/(^|[\s/-])([a-z])/g, (_m, sep: string, ch: string) => `${sep}${ch.toUpperCase()}`);
+
+/**
+ * Resolve the per-variant colour name.
+ *   1. trailing comma segment of the raw title, if it is purely a colour phrase (1–3 words,
+ *      each a colour word or modifier, at least one colour word) → Title Case of that phrase;
+ *   2. otherwise the supplier's `mainColor`, unchanged.
+ * Pure; exported for tests.
+ */
+export function resolveVariantColor(rawTitle: string, mainColor: string): string {
+  const fallback = String(mainColor ?? '').trim();
+  const title = String(rawTitle ?? '').trim();
+  const comma = title.lastIndexOf(',');
+  if (comma < 0) return fallback;
+  const segment = title.slice(comma + 1).replace(/\s+/g, ' ').trim();
+  if (!segment) return fallback;
+  const words = segment.split(/[\s/-]+/).filter(Boolean);
+  if (words.length === 0 || words.length > 3) return fallback;
+  const lower = words.map(w => w.toLowerCase());
+  const allKnown = lower.every(w => COLOR_WORDS.has(w) || COLOR_MODIFIERS.has(w));
+  const hasColor = lower.some(w => COLOR_WORDS.has(w));
+  if (!allKnown || !hasColor) return fallback;
+  return titleCaseColor(segment);
+}
+
 export function normalizeProduct(row: NormalizableRow): StandardizedProductInsert {
   const id = String(row.id);
   const supplierProductId = row.supplier_product_id
@@ -232,7 +286,10 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
   // ── Core fields ──────────────────────────────────────────────────────────────
   const category = String(raw.category ?? raw.categoryName ?? raw.productCategory ?? '');
   const material = raw.mainMaterial ? String(raw.mainMaterial) : '';
-  const color = raw.mainColor ? String(raw.mainColor) : '';
+  // Per-variant colour name (see resolveVariantColor): title suffix first, mainColor fallback.
+  // Feeds `color`, specifications.Color and color_options_json alike, so the duplicate gate
+  // and the storefront selector see the same name.
+  const color = resolveVariantColor(rawTitle, raw.mainColor ? String(raw.mainColor) : '');
 
   // ── Category label & priority ────────────────────────────────────────────────
   const categoryLabel = assignCategoryLabel(category, productTitle);

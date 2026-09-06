@@ -185,6 +185,10 @@ type Cand = {
   normCost: number; origPrice: number | null; img: boolean; imgCount: number;
   dim: string; drawers: number | null; doors: number | null;
   isVg: boolean; hasLiveSibling: boolean; liveSiblingUncertain: boolean; liveSiblingIds: string[]; uncertainSiblingIds: string[]; dupGroupIds?: string[]; overrideApplied?: string; cfgMissing: boolean; widthMissing: boolean; commerceCanonical: boolean; bucket: string; reasons: string[];
+  /** 供应商型号（raw.mpn）。同族同色名时用它的色码后缀区分真实变体与重复。 */
+  mpn: string | null;
+  /** 同色名、MPN 色码不同的那组成员 id（含自己）。是命名问题，不是重复。 */
+  colorNameGroupIds?: string[];
   /** 成品尺寸缺失时的备用规格轴（Seats + 件数）；取不到就是 null，此时不猜。 */
   fallbackSpec: string | null;
 };
@@ -364,16 +368,45 @@ export function costSubgroups<T extends { normCost: number }>(members: T[]): T[]
  * 原来的判定是整族一刀切：`members.forEach(... 'duplicate_color')`，两件撞色会把同族另外
  * 五个颜色唯一的商品一起扣下。这里只返回真正冲突的 id，其余照常评估。
  */
-export function duplicateColorIds<T extends { id: string; color: string }>(members: T[]): Set<string> {
-  const seen = new Map<string, number>();
+export function duplicateColorIds<T extends { id: string; color: string; mpn?: string | null }>(members: T[]): Set<string> {
+  return new Set(sameColorSets(members).filter(set => !isDistinctByMpn(set)).flat().map(m => m.id));
+}
+
+/**
+ * 同色名、但供应商型号色码不同的那几件 —— 它们是**不同的颜色变体**，不是重复商品。
+ *
+ * 2026-09-06 W1803 事故：同一把电动升降椅，供应商 mainColor 把两种蓝都标成 "Blue"，
+ * MPN 却是 LC55172YD445-10BLU 与 -11BLU，主图一个灰蓝一个藏青。按色名判撞色就把两件
+ * 真实变体扣成「重复颜色」。这里以 MPN 为准：同一型号前缀、色码互不相同 → 不是重复，
+ * 但对外色名仍然撞车，需要人工命名，所以另记 color_name_ambiguous。
+ * 没有 MPN、或 MPN 前缀不一致（那就不是色码），一律按原来的撞色处理 —— 不猜。
+ */
+export function colorNameAmbiguousIds<T extends { id: string; color: string; mpn?: string | null }>(members: T[]): Set<string> {
+  return new Set(sameColorSets(members).filter(set => isDistinctByMpn(set)).flat().map(m => m.id));
+}
+
+function sameColorSets<T extends { id: string; color: string }>(members: T[]): T[][] {
+  const byColor = new Map<string, T[]>();
   for (const m of members) {
     const c = m.color.trim().toLowerCase();
-    if (c) seen.set(c, (seen.get(c) ?? 0) + 1);
+    if (!c) continue;
+    byColor.set(c, [...(byColor.get(c) ?? []), m]);
   }
-  return new Set(members.filter(m => {
-    const c = m.color.trim().toLowerCase();
-    return c !== '' && (seen.get(c) ?? 0) > 1;
-  }).map(m => m.id));
+  return [...byColor.values()].filter(set => set.length > 1);
+}
+
+/** `LC55172YD445-10BLU` → { base: 'LC55172YD445', code: '10BLU' }；没有 `-` 后缀就不是色码。 */
+export function splitMpnColorCode(mpn: string | null | undefined): { base: string; code: string } | null {
+  const m = String(mpn ?? '').trim().toUpperCase().match(/^(.+)-([A-Z0-9]+)$/);
+  return m ? { base: m[1], code: m[2] } : null;
+}
+
+function isDistinctByMpn<T extends { mpn?: string | null }>(set: T[]): boolean {
+  const parsed = set.map(m => splitMpnColorCode(m.mpn));
+  if (parsed.some(p => p === null)) return false;
+  const bases = new Set(parsed.map(p => p!.base));
+  const codes = new Set(parsed.map(p => p!.code));
+  return bases.size === 1 && codes.size === set.length;
 }
 
 export async function main() {
@@ -465,6 +498,7 @@ export async function main() {
     const commerce = classifyCommerce({ name: String(n.product_title ?? r.title ?? ''), category: String((n.specifications_json ?? {})['Category'] ?? raw.category ?? ''), categoryLabel: String(n.category_label ?? '') });
     return {
       id, title: String(r.title ?? ''), normTitle: String(n.product_title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
+      mpn: typeof raw.mpn === 'string' && raw.mpn.trim() ? raw.mpn.trim() : null,
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
       img: !!n.primary_image, imgCount: Array.isArray(raw.imageUrls) ? raw.imageUrls.length : 0,
       dim: dimArr.length === 3 ? dimArr.join('x') : '', drawers: drawers(r.title), doors: doors(r.title),
@@ -609,6 +643,8 @@ export async function main() {
 
       // ── 只拦真正冲突的 SKU，不再整族连坐 ──────────────────────────────────
       const dupIds = duplicateColorIds(group);
+      // 同色名但 MPN 色码不同：不同变体、色名撞车 —— 记 color_name_ambiguous，不记 duplicate_color。
+      const ambiguousIds = colorNameAmbiguousIds(group);
       const noColor = group.filter(m => !m.color.trim());
       noColor.forEach(m => { m.bucket = 'HOLD_PHASE2'; m.reasons.push('missing_color'); });
       group.filter(m => dupIds.has(m.id))
@@ -617,8 +653,15 @@ export async function main() {
           m.bucket = 'HOLD_PHASE2'; m.reasons.push('duplicate_color');
           m.dupGroupIds = group.filter(g => dupIds.has(g.id)).map(g => g.id);
         });
+      group.filter(m => ambiguousIds.has(m.id))
+        .forEach(m => {
+          m.bucket = 'HOLD_PHASE2'; m.reasons.push('color_name_ambiguous');
+          m.colorNameGroupIds = group
+            .filter(g => ambiguousIds.has(g.id) && g.color.trim().toLowerCase() === m.color.trim().toLowerCase())
+            .map(g => g.id);
+        });
 
-      const rest = group.filter(m => !dupIds.has(m.id) && m.color.trim());
+      const rest = group.filter(m => !dupIds.has(m.id) && !ambiguousIds.has(m.id) && m.color.trim());
       if (rest.length === 0) continue;
       if (rest.length === 1) { single(rest[0]); continue; }
 
@@ -750,7 +793,7 @@ export async function main() {
     stock_probe: stockProbeNote || (gigaReady() ? 'probed' : 'skipped'),
     proposed_batch: { skus: batch, sku_count: batch.length, card_count: cards, families: proposedFamilies },
     safe_variant_families: safeVariantFamilies,
-    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title, liveSiblingIds: c.liveSiblingIds, uncertainSiblingIds: c.uncertainSiblingIds, dupGroupIds: c.dupGroupIds ?? null, overrideApplied: c.overrideApplied ?? null })),
+    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title, liveSiblingIds: c.liveSiblingIds, uncertainSiblingIds: c.uncertainSiblingIds, dupGroupIds: c.dupGroupIds ?? null, overrideApplied: c.overrideApplied ?? null, mpn: c.mpn, colorNameGroupIds: c.colorNameGroupIds ?? null })),
   };
   fs.writeFileSync(REPORT_JSON, JSON.stringify(fullJson, null, 2));
 
