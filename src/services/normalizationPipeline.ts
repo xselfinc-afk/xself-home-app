@@ -156,7 +156,24 @@ function assignNewArrival(raw: Record<string, unknown>): { isNewArrival: boolean
 
 // ── Main normalization function ───────────────────────────────────────────────
 
-type NormalizableRow = SupplierRow & { supplier_product_id?: string | null };
+type NormalizableRow = SupplierRow & {
+  supplier_product_id?: string | null;
+  /**
+   * 人工指定的对外颜色名（product_variant_color_names 表，revoked_at IS NULL 的行）。
+   * 调用方负责查表并挂到行上；这里保持纯函数。有它就压过标题色名与 mainColor。
+   */
+  variant_color_name?: string | null;
+};
+
+/**
+ * 人工色名的净化：去首尾空白、折叠空格，≤ 40 字符，只允许字母 / 数字 / 空格 / 连字符 / &。
+ * 不合规返回空串（= 没有人工色名），绝不把半截脏字符串写进 color。纯函数，桥接与这里共用一套规则。
+ */
+export function sanitizeVariantColorName(raw: unknown): string {
+  const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length > 40) return '';
+  return /^[A-Za-z0-9 &-]+$/.test(s) ? s : '';
+}
 
 // ── Variant color: the title's own color phrase beats the supplier's coarse mainColor ──
 //
@@ -286,10 +303,11 @@ export function normalizeProduct(row: NormalizableRow): StandardizedProductInser
   // ── Core fields ──────────────────────────────────────────────────────────────
   const category = String(raw.category ?? raw.categoryName ?? raw.productCategory ?? '');
   const material = raw.mainMaterial ? String(raw.mainMaterial) : '';
-  // Per-variant colour name (see resolveVariantColor): title suffix first, mainColor fallback.
-  // Feeds `color`, specifications.Color and color_options_json alike, so the duplicate gate
-  // and the storefront selector see the same name.
-  const color = resolveVariantColor(rawTitle, raw.mainColor ? String(raw.mainColor) : '');
+  // Per-variant colour name: manual name (product_variant_color_names) → title suffix
+  // (resolveVariantColor) → mainColor. Feeds `color`, specifications.Color and
+  // color_options_json alike, so the duplicate gate and the storefront selector see the same name.
+  const manualColor = sanitizeVariantColorName(row.variant_color_name);
+  const color = manualColor || resolveVariantColor(rawTitle, raw.mainColor ? String(raw.mainColor) : '');
 
   // ── Category label & priority ────────────────────────────────────────────────
   const categoryLabel = assignCategoryLabel(category, productTitle);

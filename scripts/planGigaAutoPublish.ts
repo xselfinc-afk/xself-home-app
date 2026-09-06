@@ -189,6 +189,8 @@ type Cand = {
   mpn: string | null;
   /** 同色名、MPN 色码不同的那组成员 id（含自己）。是命名问题，不是重复。 */
   colorNameGroupIds?: string[];
+  /** 运营指定的对外色名（product_variant_color_names）；有它时 color 就是它。审计用。 */
+  manualColorName: string | null;
   /** 成品尺寸缺失时的备用规格轴（Seats + 件数）；取不到就是 null，此时不猜。 */
   fallbackSpec: string | null;
 };
@@ -450,12 +452,24 @@ export async function main() {
   }
 
   // ── Per-SKU derivation via the real pipeline (pure, in-memory) ────────────
+  // 人工对外色名（product_variant_color_names，revoked_at IS NULL）。同色系不同变体由运营命名后，
+  // 候选的 color 用人工名，同色名撞车自然消失。表不存在 / 读失败 → 当作没有，只打日志。
+  const variantColorNames = new Map<string, string>();
+  {
+    const { data: nameRows, error: nameErr } = await sb
+      .from('product_variant_color_names').select('supplier_product_id, color_name').is('revoked_at', null);
+    if (nameErr) console.warn(`[plan] variant color names unavailable (${nameErr.message}) — proceeding without manual colour names`);
+    for (const r of (nameRows ?? []) as Array<{ supplier_product_id: string; color_name: string }>) {
+      if (r.supplier_product_id && r.color_name) variantColorNames.set(String(r.supplier_product_id), String(r.color_name));
+    }
+  }
   const log = console.log; console.log = () => {};
   const cands: Cand[] = candidates.map(r => {
     const id = r.supplier_product_id;
     const raw = (r.raw_payload ?? {}) as any;
     let n: any = {};
-    try { n = normalizeProduct({ ...r, id }); } catch { n = { product_family_key: '(err)', category_label: 'Other', color: '', price: 0, primary_image: '', original_price: null }; }
+    const manualColorName = variantColorNames.get(id) ?? null;
+    try { n = normalizeProduct({ ...r, id, variant_color_name: manualColorName }); } catch { n = { product_family_key: '(err)', category_label: 'Other', color: '', price: 0, primary_image: '', original_price: null }; }
     const dimArr = [raw.assembledLength, raw.assembledWidth, raw.assembledHeight]
       .map((v: any) => v === '' ? null : v).filter((v: any) => v != null).map((v: any) => Number(v).toFixed(2));
     const key = String(n.product_family_key ?? '');
@@ -499,6 +513,7 @@ export async function main() {
     return {
       id, title: String(r.title ?? ''), normTitle: String(n.product_title ?? ''), key, cat: n.category_label ?? 'Other', color: (n.color ?? '').trim(),
       mpn: typeof raw.mpn === 'string' && raw.mpn.trim() ? raw.mpn.trim() : null,
+      manualColorName,
       normCost: Number(n.price ?? 0), origPrice: n.original_price ?? null,
       img: !!n.primary_image, imgCount: Array.isArray(raw.imageUrls) ? raw.imageUrls.length : 0,
       dim: dimArr.length === 3 ? dimArr.join('x') : '', drawers: drawers(r.title), doors: doors(r.title),
@@ -793,7 +808,7 @@ export async function main() {
     stock_probe: stockProbeNote || (gigaReady() ? 'probed' : 'skipped'),
     proposed_batch: { skus: batch, sku_count: batch.length, card_count: cards, families: proposedFamilies },
     safe_variant_families: safeVariantFamilies,
-    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title, liveSiblingIds: c.liveSiblingIds, uncertainSiblingIds: c.uncertainSiblingIds, dupGroupIds: c.dupGroupIds ?? null, overrideApplied: c.overrideApplied ?? null, mpn: c.mpn, colorNameGroupIds: c.colorNameGroupIds ?? null })),
+    candidates: cands.map(c => ({ id: c.id, bucket: c.bucket, key: c.key, cat: c.cat, color: c.color, normCost: c.normCost, dim: c.dim, drawers: c.drawers, doors: c.doors, img: c.img, reasons: c.reasons, title: c.title, liveSiblingIds: c.liveSiblingIds, uncertainSiblingIds: c.uncertainSiblingIds, dupGroupIds: c.dupGroupIds ?? null, overrideApplied: c.overrideApplied ?? null, mpn: c.mpn, colorNameGroupIds: c.colorNameGroupIds ?? null, manualColorName: c.manualColorName })),
   };
   fs.writeFileSync(REPORT_JSON, JSON.stringify(fullJson, null, 2));
 

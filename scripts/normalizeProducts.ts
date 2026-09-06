@@ -94,6 +94,20 @@ async function run() {
 
   console.log(`[normalizeProducts] Selected ${data.length} published product(s)${ONLY_SKUS.length ? ' (scoped to ONLY_SKUS)' : ''}; batches of ${BATCH_SIZE}`);
 
+  // ── 人工对外色名（product_variant_color_names）────────────────────────────────
+  // 同一型号里供应商粗色名相同、实际是不同颜色的变体，由运营起不同的名字。这里读到的名字
+  // 通过 row.variant_color_name 交给 normalizeProduct，最终落进 standardized_products.color /
+  // specifications.Color / color_options_json。表不存在或读失败 → 当作没有人工色名，只打日志。
+  const variantColorNames = new Map<string, string>();
+  {
+    let q = supabase.from('product_variant_color_names').select('supplier_product_id, color_name').is('revoked_at', null);
+    if (ONLY_SKUS.length) q = q.in('supplier_product_id', ONLY_SKUS);
+    const { data: nameRows, error: nameErr } = await q;
+    if (nameErr) console.warn(`[normalizeProducts] variant color names unavailable (${nameErr.message}) — proceeding without manual colour names`);
+    for (const r of nameRows ?? []) if (r.supplier_product_id && r.color_name) variantColorNames.set(String(r.supplier_product_id), String(r.color_name));
+    if (variantColorNames.size) console.log(`[normalizeProducts] manual variant colour names: ${variantColorNames.size}`);
+  }
+
   let upserted = 0;
   let failed = 0;
   let previewed = 0;
@@ -138,7 +152,7 @@ async function run() {
 
     const normalized = batch.flatMap(row => {
       try {
-        return [normalizeProduct(row as any)];
+        return [normalizeProduct({ ...(row as any), variant_color_name: variantColorNames.get(String(row.supplier_product_id)) ?? null })];
       } catch (err) {
         console.warn(
           `[normalizeProducts] Skipping row ${row.id}: ${err instanceof Error ? err.message : err}`,

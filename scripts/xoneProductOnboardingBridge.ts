@@ -42,6 +42,7 @@ import {
   STAGE_LABELS,
   type OnboardingProgressFacts,
 } from '../src/services/onboardingRecovery';
+import { sanitizeVariantColorName } from '../src/services/normalizationPipeline';
 
 loadEnv({ path: path.join(__dirname, '..', '.env.local') });
 
@@ -114,8 +115,13 @@ export interface OnboardingRequest {
   account?: string;
   /** manual-merge-* 用：合并目标（已在售兄弟）的完整 supplier_product_id。 */
   live_sku?: string;
-  /** manual-override 用：standalone（独立上架）| dup_keep（保留此件）| skip（跳过此件）| unskip（撤销跳过）。 */
+  /**
+   * manual-override 用：standalone（独立上架）| dup_keep（保留此件）| skip（跳过此件）| unskip（撤销跳过）
+   * | rename_color（指定对外色名）| clear_color_name（撤销人工色名）。
+   */
   action?: string;
+  /** manual-override rename_color 用：对外色名。净化规则见 sanitizeVariantColorName。 */
+  color_name?: string;
   /** manual-override 用：人工备注，与批准人一起进 override 登记。 */
   note?: string;
 }
@@ -155,7 +161,8 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
     account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
     live_sku: String(r.live_sku ?? '').trim().slice(0, 64) || undefined,
-    action: r.action === 'standalone' || r.action === 'dup_keep' || r.action === 'skip' || r.action === 'unskip' ? r.action : undefined,
+    action: ['standalone', 'dup_keep', 'skip', 'unskip', 'rename_color', 'clear_color_name'].includes(String(r.action)) ? String(r.action) : undefined,
+    color_name: sanitizeVariantColorName(r.color_name) || undefined,
     note: String(r.note ?? '').trim().slice(0, 200) || undefined,
     skus: Array.isArray(r.skus)
       ? r.skus.map((x) => String(x).trim()).filter((x) => x.length > 0 && x.length <= 64).slice(0, PAGE_MAX)
@@ -673,6 +680,12 @@ interface PreviewRow {
     dup_group_ids: string[];
     override_applied: string | null;
     live_siblings: Array<{ id: string; title: string; sku_custom: string; primary_image: string | null }>;
+    /** 同色名但 MPN 色码不同的那组（含自己）。命名问题，不是重复。 */
+    color_name_group_ids: string[];
+    /** 供应商 MPN 的色码后缀（如 10BLU），运营辨认变体用。 */
+    mpn_color_code: string | null;
+    /** 运营已指定的对外色名；null = 未命名。 */
+    manual_color_name: string | null;
   } | null;
   review_count: number;
   review_avg: number;
@@ -794,6 +807,8 @@ export function buildPreviewRows(input: {
   standardizedIds?: ReadonlySet<string>;
   /** 已在售的 SKU（sellable ⊂ standardized）。 */
   sellableIds?: ReadonlySet<string>;
+  /** 人工对外色名（product_variant_color_names）。挂到行上交给 normalizeProduct，预览显示的就是它。 */
+  variantColorNames?: ReadonlyMap<string, string>;
 }): PreviewRow[] {
   const proposed = new Set<string>(((input.plan?.proposed_batch?.skus ?? []) as unknown[]).map((s) => String(s)));
   const byId = new Map<string, Record<string, any>>();
@@ -807,7 +822,9 @@ export function buildPreviewRows(input: {
     const id = String(supplierRow.supplier_product_id ?? '');
     if (!id) continue;
     let normalized: Record<string, any> = {};
-    try { normalized = input.normalize({ ...supplierRow, id: supplierRow.id ?? id }); } catch { normalized = {}; }
+    try {
+      normalized = input.normalize({ ...supplierRow, id: supplierRow.id ?? id, variant_color_name: input.variantColorNames?.get(id) ?? null });
+    } catch { normalized = {}; }
 
     const candidate = byId.get(id) ?? null;
     const bucket = String(candidate?.bucket ?? (proposed.has(id) ? 'SAFE_SINGLETON' : 'UNKNOWN'));
@@ -871,6 +888,12 @@ export function buildPreviewRows(input: {
         dup_group_ids: Array.isArray(candidate.dupGroupIds) ? candidate.dupGroupIds.map(String) : [],
         override_applied: candidate.overrideApplied ? String(candidate.overrideApplied) : null,
         live_siblings: [],
+        color_name_group_ids: Array.isArray(candidate.colorNameGroupIds) ? candidate.colorNameGroupIds.map(String) : [],
+        mpn_color_code: (() => {
+          const m = String(candidate.mpn ?? '').trim().toUpperCase().match(/-([A-Z0-9]+)$/);
+          return m ? m[1] : null;
+        })(),
+        manual_color_name: input.variantColorNames?.get(id) ?? null,
       } : null,
       review_count: review.count,
       review_avg: review.avg,
@@ -894,7 +917,7 @@ export function buildPreviewRows(input: {
  */
 export interface DecisionGroup {
   id: string;
-  kind: 'duplicate_color' | 'merge_live' | 'hold';
+  kind: 'color_name' | 'duplicate_color' | 'merge_live' | 'hold';
   reason: string;
   sku_ids: string[];
   members: Array<{
@@ -908,8 +931,12 @@ export interface DecisionGroup {
     override_applied: string | null;
     uncertain_sibling_ids: string[];
     live_siblings: Array<{ id: string; title: string; sku_custom: string; primary_image: string | null }>;
+    /** 供应商 MPN 色码（如 10BLU）；color_name 组里运营靠它和主图辨认是哪一件。 */
+    mpn_color_code: string | null;
+    /** 运营已指定的对外色名；null = 还没命名。 */
+    manual_color_name: string | null;
   }>;
-  actions: Array<'dup_keep' | 'skip' | 'merge' | 'standalone'>;
+  actions: Array<'dup_keep' | 'skip' | 'merge' | 'standalone' | 'rename_color' | 'clear_color_name'>;
 }
 
 export function buildDecisionGroups(rows: PreviewRow[]): DecisionGroup[] {
@@ -929,10 +956,31 @@ export function buildDecisionGroups(rows: PreviewRow[]): DecisionGroup[] {
     override_applied: r.manual_facts?.override_applied ?? null,
     uncertain_sibling_ids: r.manual_facts?.uncertain_sibling_ids ?? [],
     live_siblings: r.manual_facts?.live_siblings ?? [],
+    mpn_color_code: r.manual_facts?.mpn_color_code ?? null,
+    manual_color_name: r.manual_facts?.manual_color_name ?? null,
   });
 
   const groups: DecisionGroup[] = [];
   const placed = new Set<string>();
+
+  // 0. 色名待命名组：同色名、MPN 色码不同 —— 不同变体，只是对外名字撞车。一组一次命名。
+  for (const r of blocked) {
+    if (placed.has(r.supplier_product_id)) continue;
+    const groupIds = r.manual_facts?.color_name_group_ids ?? [];
+    if (groupIds.length < 2) continue;
+    const members = [...new Set([...groupIds, r.supplier_product_id])].sort()
+      .map((id) => byId.get(id)).filter((x): x is PreviewRow => Boolean(x));
+    if (members.length < 2) continue;
+    members.forEach((m) => placed.add(m.supplier_product_id));
+    groups.push({
+      id: `color:${members.map((m) => m.supplier_product_id).join('+')}`,
+      kind: 'color_name',
+      reason: '同色系但供应商型号色码不同，是不同颜色变体：请给每件填一个不同的对外色名',
+      sku_ids: members.map((m) => m.supplier_product_id),
+      members: members.map(member),
+      actions: ['rename_color', 'clear_color_name', 'skip'],
+    });
+  }
 
   // 1. 撞色组：dup_group_ids 的并集成组，一个成员只进一组。
   for (const r of blocked) {
@@ -1031,6 +1079,27 @@ async function readLifecycleSets(client: SupabaseClient, skus: string[]): Promis
     for (const r of (sell.data ?? []) as Array<Record<string, any>>) sellableIds.add(String(r.supplier_product_id));
   }
   return { standardizedIds, sellableIds };
+}
+
+/**
+ * 人工对外色名（product_variant_color_names，revoked_at IS NULL）。
+ * 表不存在 / 读失败 → 空 map 并打日志：迁移未落地时整条预览链照常工作，只是没有人工色名。
+ */
+async function readVariantColorNames(client: SupabaseClient, skus: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!skus.length) return map;
+  for (let i = 0; i < skus.length; i += 200) {
+    const { data, error } = await client
+      .from('product_variant_color_names')
+      .select('supplier_product_id, color_name')
+      .is('revoked_at', null)
+      .in('supplier_product_id', skus.slice(i, i + 200));
+    if (error) { console.error(`[xone-product-onboarding] variant color names unavailable: ${error.message}`); return map; }
+    for (const r of (data ?? []) as Array<{ supplier_product_id: string; color_name: string }>) {
+      if (r.supplier_product_id && r.color_name) map.set(String(r.supplier_product_id), String(r.color_name));
+    }
+  }
+  return map;
 }
 
 /** 库存事实取自既有 inventory_cache，不另做探测。 */
@@ -1154,11 +1223,13 @@ async function runOnboardingPreview(
   progress('preview', '正在生成上架预览');
   const supplierRows = await readSupplierRows(client, candidateSkus);
   const lifecycleSets = await readLifecycleSets(client, candidateSkus);
+  const variantColorNames = await readVariantColorNames(client, candidateSkus);
   const rows = buildPreviewRows({
     plan: planJson,
     supplierRows,
     standardizedIds: lifecycleSets.standardizedIds,
     sellableIds: lifecycleSets.sellableIds,
+    variantColorNames,
     normalize: (row) => normalizeProduct(row as never) as unknown as Record<string, any>,
     reviewCount: (product) => {
       const set = generateReviewSet(product as never);
@@ -2014,7 +2085,7 @@ export async function executeOnboardingBridge(
 ): Promise<Record<string, unknown>> {
   if (request.operation === 'manual-merge-preview') return runManualMerge(request, client, false);
   if (request.operation === 'manual-merge-apply') return runManualMerge(request, client, true);
-  if (request.operation === 'manual-override') return runManualOverride(request);
+  if (request.operation === 'manual-override') return runManualOverride(request, client);
   if (request.operation === 'check-new-saved') return runCheckNewSaved(request, client);
   if (request.operation === 'supplier-login') return runSupplierLogin(request, client);
   if (request.operation === 'onboarding-recovery-list') return runRecoveryList(client);
@@ -2270,12 +2341,38 @@ async function runManualMerge(request: OnboardingRequest, client: SupabaseClient
     : failure('MERGE_APPLY_FAILED', `合并执行未完成（退出码 ${run.status ?? 'null'}），请查看 reports 后重试`);
 }
 
-function runManualOverride(request: OnboardingRequest): Record<string, unknown> {
+async function runManualOverride(request: OnboardingRequest, client: SupabaseClient): Promise<Record<string, unknown>> {
   const sku = String(request.sku ?? '');
   const action = request.action;
   const approver = String(request.approved_by ?? '').trim();
-  if (!action) return failure('INVALID_REQUEST', 'override 动作必须是 standalone / dup_keep / skip / unskip');
+  if (!action) return failure('INVALID_REQUEST', 'override 动作必须是 standalone / dup_keep / skip / unskip / rename_color / clear_color_name');
   if (!approver) return failure('INVALID_REQUEST', 'override 必须记录批准人');
+
+  // ── 人工对外色名：写 product_variant_color_names，不碰 supplier_products，不进本地 ledger ──
+  // 同一型号里供应商粗色名相同、实际不同颜色的变体，由运营起不同的名字；Stage 2 与 planner
+  // 都读这张表。撤销 = 置 revoked_at（软删，保留审计）。
+  if (action === 'rename_color' || action === 'clear_color_name') {
+    if (action === 'rename_color' && !request.color_name) {
+      return failure('INVALID_REQUEST', '对外色名不能为空，且只允许字母 / 数字 / 空格 / 连字符 / &，不超过 40 字符');
+    }
+    const now = new Date().toISOString();
+    const write = action === 'rename_color'
+      ? await client.from('product_variant_color_names').upsert({
+          supplier_product_id: sku, color_name: request.color_name, approved_by: approver,
+          note: request.note ?? null, updated_at: now, revoked_at: null,
+        }, { onConflict: 'supplier_product_id' })
+      : await client.from('product_variant_color_names')
+          .update({ revoked_at: now, updated_at: now, approved_by: approver, note: request.note ?? null })
+          .eq('supplier_product_id', sku).is('revoked_at', null);
+    if (write.error) return failure('COLOR_NAME_WRITE_FAILED', `对外色名写入失败：${write.error.message}`);
+    appendManualAction({ kind: 'override', sku, action, color_name: request.color_name ?? null, note: request.note ?? null, approved_by: approver });
+    invalidatePreviewCache();
+    return envelope('manual-override', {
+      // 写的是 override 表，不是商品 / 库存 / 收藏；如实声明这是一次生产库写入。
+      production_write_attempted: true, sku, action, color_name: request.color_name ?? null, preview_invalidated: true,
+    });
+  }
+
   let ledger: Record<string, unknown> = {};
   try { ledger = JSON.parse(fs.readFileSync(MANUAL_OVERRIDES_FILE, 'utf8')); } catch { ledger = {}; }
   // 撤销跳过 = 删除登记条目（planner 注释里写明的语义：un-skipping is just deleting the override entry）。
