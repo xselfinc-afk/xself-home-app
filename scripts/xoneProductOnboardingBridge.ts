@@ -114,7 +114,7 @@ export interface OnboardingRequest {
   account?: string;
   /** manual-merge-* 用：合并目标（已在售兄弟）的完整 supplier_product_id。 */
   live_sku?: string;
-  /** manual-override 用：standalone（独立上架）| dup_keep（保留此件）| skip（跳过此件）。 */
+  /** manual-override 用：standalone（独立上架）| dup_keep（保留此件）| skip（跳过此件）| unskip（撤销跳过）。 */
   action?: string;
   /** manual-override 用：人工备注，与批准人一起进 override 登记。 */
   note?: string;
@@ -155,7 +155,7 @@ export function parseOnboardingRequest(raw: string): OnboardingRequest {
     expected_ready: Number.isFinite(Number(r.expected_ready)) ? Math.max(0, Math.floor(Number(r.expected_ready))) : undefined,
     account: r.account === 'pickup' || r.account === 'dropship' ? r.account : undefined,
     live_sku: String(r.live_sku ?? '').trim().slice(0, 64) || undefined,
-    action: r.action === 'standalone' || r.action === 'dup_keep' || r.action === 'skip' ? r.action : undefined,
+    action: r.action === 'standalone' || r.action === 'dup_keep' || r.action === 'skip' || r.action === 'unskip' ? r.action : undefined,
     note: String(r.note ?? '').trim().slice(0, 200) || undefined,
     skus: Array.isArray(r.skus)
       ? r.skus.map((x) => String(x).trim()).filter((x) => x.length > 0 && x.length <= 64).slice(0, PAGE_MAX)
@@ -649,7 +649,7 @@ interface PreviewRow {
    * 行出候选），原来一律落到「上架计划未评估这件商品」这句兜底话上，在界面上显示成
    * 「⚠ 无法上架」—— 它们既没有被任何规则拦住，也不该出现在上架阻塞列表里。
    */
-  lifecycle: 'candidate' | 'already_imported' | 'already_published';
+  lifecycle: 'candidate' | 'already_imported' | 'already_published' | 'skipped';
   bucket: string;
   blocked_reason: string | null;
   title: string;
@@ -811,8 +811,10 @@ export function buildPreviewRows(input: {
     const ready = proposed.has(id);
     // planner 只对「未导入」的行出候选。没有候选行又已经导入，说明它早就走完了上架这一步，
     // 现在处在别的阶段（待定价 / 在售 / 已下架），不是被上架规则拦住。
+    // 人工跳过的候选（planner 记为 SKIPPED_MANUAL）单独成一个生命周期：它既不是被规则拦下，
+    // 也不该一直赖在「需要处理」里 —— 界面把它放进「暂不处理」并提供撤销。
     const lifecycle: PreviewRow['lifecycle'] = candidate || proposed.has(id)
-      ? 'candidate'
+      ? (bucket === 'SKIPPED_MANUAL' ? 'skipped' : 'candidate')
       : input.sellableIds?.has(id) ? 'already_published'
         : input.standardizedIds?.has(id) ? 'already_imported'
           : 'candidate';
@@ -842,8 +844,10 @@ export function buildPreviewRows(input: {
       bucket,
       blocked_reason: ready ? null
         : lifecycle === 'already_published' ? '已在售，不需要再次上架'
-          : lifecycle === 'already_imported' ? '已导入，等待定价或已下架'
-            : describeHold(bucket, reasons, String(supplierRow.title ?? '')),
+          // 实测这批全部已定价：它们是被库存生命周期下架/搁置的商品，不归上架流程管。
+          : lifecycle === 'already_imported' ? '已导入但未在售（缺货或已下架），由库存生命周期管理'
+            : lifecycle === 'skipped' ? HOLD_REASON_LABELS.manual_skip
+              : describeHold(bucket, reasons, String(supplierRow.title ?? '')),
       title: String(normalized.product_title_display ?? normalized.product_title ?? supplierRow.title ?? '未命名商品'),
       sku_custom: String(normalized.sku_custom ?? ''),
       category: String(normalized.category_label ?? normalized.category_code ?? ''),
@@ -870,6 +874,120 @@ export function buildPreviewRows(input: {
     });
   }
   return rows;
+}
+
+/**
+ * 「需要处理」的决策组。
+ *
+ * 界面的决策单位不是 SKU，而是「一组人要一起看的商品」：撞色组要在成员之间选保留谁，
+ * 需合并的候选要对着它命中的在售兄弟做决定。此前面板按 SKU 出卡，W1803 一组四件被渲染成
+ * 四张卡各列四个成员 —— 同一个决定重复四遍。这里由桥接把分组算好，界面只按组渲染。
+ *
+ *   duplicate_color  同系列撞色：一组 ≥2 个候选（dup_group_ids 的并集），每件可 dup_keep / skip
+ *   merge_live       同系列已有在售：单个候选 + 它命中的在售/疑似兄弟，可 预览合并 / standalone / skip
+ *   hold             其它拦下但没有人工动作的（成本过低、品类外、资料缺失…），只能 skip（不再提醒）
+ *
+ * 只收 lifecycle=candidate 且 ready=false 的行；跳过的、已进入其他阶段的不在这里。纯计算。
+ */
+export interface DecisionGroup {
+  id: string;
+  kind: 'duplicate_color' | 'merge_live' | 'hold';
+  reason: string;
+  sku_ids: string[];
+  members: Array<{
+    supplier_product_id: string;
+    title: string;
+    sku_custom: string;
+    primary_image: string | null;
+    color: string | null;
+    cost: number | null;
+    blocked_reason: string | null;
+    override_applied: string | null;
+    uncertain_sibling_ids: string[];
+    live_siblings: Array<{ id: string; title: string; sku_custom: string; primary_image: string | null }>;
+  }>;
+  actions: Array<'dup_keep' | 'skip' | 'merge' | 'standalone'>;
+}
+
+export function buildDecisionGroups(rows: PreviewRow[]): DecisionGroup[] {
+  const blocked = rows.filter((r) => !r.ready && r.lifecycle === 'candidate');
+  const byId = new Map(blocked.map((r) => [r.supplier_product_id, r]));
+  const member = (r: PreviewRow): DecisionGroup['members'][number] => ({
+    supplier_product_id: r.supplier_product_id,
+    title: r.title,
+    sku_custom: r.sku_custom,
+    primary_image: r.primary_image,
+    color: (() => {
+      const hit = r.spec_summary.find((s) => /^Color:\s*/i.test(s));
+      return hit ? hit.replace(/^Color:\s*/i, '').trim() || null : null;
+    })(),
+    cost: r.cost,
+    blocked_reason: r.blocked_reason,
+    override_applied: r.manual_facts?.override_applied ?? null,
+    uncertain_sibling_ids: r.manual_facts?.uncertain_sibling_ids ?? [],
+    live_siblings: r.manual_facts?.live_siblings ?? [],
+  });
+
+  const groups: DecisionGroup[] = [];
+  const placed = new Set<string>();
+
+  // 1. 撞色组：dup_group_ids 的并集成组，一个成员只进一组。
+  for (const r of blocked) {
+    if (placed.has(r.supplier_product_id)) continue;
+    const dupIds = r.manual_facts?.dup_group_ids ?? [];
+    if (dupIds.length < 2) continue;
+    const ids = new Set<string>();
+    const queue = [...dupIds, r.supplier_product_id];
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (ids.has(id)) continue;
+      ids.add(id);
+      for (const next of byId.get(id)?.manual_facts?.dup_group_ids ?? []) if (!ids.has(next)) queue.push(next);
+    }
+    const members = [...ids].sort().map((id) => byId.get(id)).filter((x): x is PreviewRow => Boolean(x));
+    if (members.length < 2) continue;
+    members.forEach((m) => placed.add(m.supplier_product_id));
+    groups.push({
+      id: `dup:${members.map((m) => m.supplier_product_id).join('+')}`,
+      kind: 'duplicate_color',
+      reason: '同系列出现重复颜色：请选择保留哪一件，其余跳过',
+      sku_ids: members.map((m) => m.supplier_product_id),
+      members: members.map(member),
+      actions: ['dup_keep', 'skip'],
+    });
+  }
+
+  // 2. 需合并：命中了在售 / 疑似兄弟的候选，各自一组。
+  for (const r of blocked) {
+    if (placed.has(r.supplier_product_id)) continue;
+    const live = r.manual_facts?.live_sibling_ids ?? [];
+    const uncertain = r.manual_facts?.uncertain_sibling_ids ?? [];
+    if (live.length + uncertain.length === 0) continue;
+    placed.add(r.supplier_product_id);
+    groups.push({
+      id: `merge:${r.supplier_product_id}`,
+      kind: 'merge_live',
+      reason: r.blocked_reason ?? '同系列已有商品在售，需要合并后再上架',
+      sku_ids: [r.supplier_product_id],
+      members: [member(r)],
+      actions: ['merge', 'standalone', 'skip'],
+    });
+  }
+
+  // 3. 其余 hold：没有人工闭环动作，唯一出口是「不再提醒」。
+  for (const r of blocked) {
+    if (placed.has(r.supplier_product_id)) continue;
+    placed.add(r.supplier_product_id);
+    groups.push({
+      id: `hold:${r.supplier_product_id}`,
+      kind: 'hold',
+      reason: r.blocked_reason ?? '暂时无法上架',
+      sku_ids: [r.supplier_product_id],
+      members: [member(r)],
+      actions: ['skip'],
+    });
+  }
+  return groups;
 }
 
 /** 读一批 supplier_products 原始行 —— normalizeProduct 的输入。 */
@@ -1081,9 +1199,11 @@ async function runOnboardingPreview(
   }
 
   const readyRows = rows.filter((r) => r.ready);
-  // 「需处理」只数真正的上架候选。已导入/在售的走自己的分组，不再混进阻塞列表。
+  // 「需处理」只数真正的上架候选。已导入/在售的走自己的分组，人工跳过的进「暂不处理」，都不混进阻塞列表。
   const blockedRows = rows.filter((r) => !r.ready && r.lifecycle === 'candidate');
-  const otherLifecycleRows = rows.filter((r) => !r.ready && r.lifecycle !== 'candidate');
+  const skippedRows = rows.filter((r) => r.lifecycle === 'skipped');
+  const otherLifecycleRows = rows.filter((r) => !r.ready && r.lifecycle !== 'candidate' && r.lifecycle !== 'skipped');
+  const decisionGroups = buildDecisionGroups(rows);
   const payload = envelope('onboarding-preview', {
     // 草稿导入是唯一会写库的一步，且只写 supplier_products（published=false）。
     production_write_attempted: importedDrafts,
@@ -1095,8 +1215,11 @@ async function runOnboardingPreview(
     ready_count: readyRows.length,
     blocked_count: blockedRows.length,
     other_lifecycle_count: otherLifecycleRows.length,
+    skipped_count: skippedRows.length,
+    skipped_skus: skippedRows.map((r) => r.supplier_product_id),
     ready_skus: readyRows.map((r) => r.supplier_product_id),
     rows,
+    decision_groups: decisionGroups,
     protection_applied: protectionApplied,
   });
   try { fs.writeFileSync(XONE_PREVIEW_FILE, JSON.stringify(payload, null, 2)); } catch { /* 缓存写失败不影响本次返回 */ }
@@ -2148,11 +2271,19 @@ function runManualOverride(request: OnboardingRequest): Record<string, unknown> 
   const sku = String(request.sku ?? '');
   const action = request.action;
   const approver = String(request.approved_by ?? '').trim();
-  if (!action) return failure('INVALID_REQUEST', 'override 动作必须是 standalone / dup_keep / skip');
+  if (!action) return failure('INVALID_REQUEST', 'override 动作必须是 standalone / dup_keep / skip / unskip');
   if (!approver) return failure('INVALID_REQUEST', 'override 必须记录批准人');
   let ledger: Record<string, unknown> = {};
   try { ledger = JSON.parse(fs.readFileSync(MANUAL_OVERRIDES_FILE, 'utf8')); } catch { ledger = {}; }
-  ledger[sku] = { action, approved_by: approver, note: request.note ?? null, at: new Date().toISOString() };
+  // 撤销跳过 = 删除登记条目（planner 注释里写明的语义：un-skipping is just deleting the override entry）。
+  // 只撤 skip：standalone / dup_keep 是放行决定，撤销它们要走各自的流程，这里不顺手。
+  if (action === 'unskip') {
+    const current = ledger[sku] as { action?: string } | undefined;
+    if (!current || current.action !== 'skip') return failure('NOT_SKIPPED', '这件商品当前没有被跳过，无需撤销');
+    delete ledger[sku];
+  } else {
+    ledger[sku] = { action, approved_by: approver, note: request.note ?? null, at: new Date().toISOString() };
+  }
   try { fs.writeFileSync(MANUAL_OVERRIDES_FILE, JSON.stringify(ledger, null, 2)); }
   catch (e) { return failure('OVERRIDE_WRITE_FAILED', `override 登记写入失败：${e instanceof Error ? e.message : e}`); }
   appendManualAction({ kind: 'override', sku, action, note: request.note ?? null, approved_by: approver });

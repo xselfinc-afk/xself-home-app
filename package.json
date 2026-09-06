@@ -141,6 +141,7 @@
     "test:inventory-operations": "tsx src/__tests__/inventoryOperationsConsistency.test.ts",
     "test:golden-path-freeze": "tsx src/__tests__/goldenPathFreeze.test.ts",
     "test:onboarding-recovery": "tsx src/__tests__/onboardingRecovery.test.ts",
+    "test:onboarding-decision-groups": "tsx src/__tests__/onboardingDecisionGroups.test.ts",
     "verify:xone-bridge-schema": "tsx scripts/verifyXoneBridgeSchema.ts",
     "reviews:reconcile": "tsx scripts/reconcileReviewCoverage.ts",
     "reviews:schedule:install": "bash scripts/reviewScheduleInstall.sh install",
