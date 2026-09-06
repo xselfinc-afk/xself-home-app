@@ -1180,13 +1180,13 @@ function ProductDetailScreen({ route, navigation }) {
     const title = selectedSibling.displayTitle ?? selectedSibling.name;
     const shareUrl = shareSku ? `https://xselfhome.com/products/${encodeURIComponent(shareSku)}` : null;
     try {
-      // URL rides in BOTH fields: some share targets (Messages included) drop
-      // the separate `url` activity item and send only the message text, so the
-      // link must live in the body too. Targets that render rich link previews
-      // still get the dedicated `url` item.
+      // Single source of truth: the URL lives ONLY in the message body. Sending
+      // it additionally as the separate `url` activity item made Messages emit
+      // two identical links and suppressed the rich link preview; message-only
+      // was device-verified to deliver exactly one link WITH the product-image
+      // preview card.
       await Share.share({
         message: `${title} — $${displayPrice} on XSELF${shareUrl ? `\n${shareUrl}` : ''}`,
-        ...(shareUrl ? { url: shareUrl } : {}),
       });
     } catch (e) {}
   };
