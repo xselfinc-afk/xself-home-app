@@ -1178,10 +1178,15 @@ function ProductDetailScreen({ route, navigation }) {
   const handleShare = async () => {
     const shareSku = selectedSibling.skuCustom ?? product.skuCustom;
     const title = selectedSibling.displayTitle ?? selectedSibling.name;
+    const shareUrl = shareSku ? `https://xselfhome.com/products/${encodeURIComponent(shareSku)}` : null;
     try {
+      // URL rides in BOTH fields: some share targets (Messages included) drop
+      // the separate `url` activity item and send only the message text, so the
+      // link must live in the body too. Targets that render rich link previews
+      // still get the dedicated `url` item.
       await Share.share({
-        message: `${title} — $${displayPrice} on XSELF`,
-        ...(shareSku ? { url: `https://xselfhome.com/products/${encodeURIComponent(shareSku)}` } : {}),
+        message: `${title} — $${displayPrice} on XSELF${shareUrl ? `\n${shareUrl}` : ''}`,
+        ...(shareUrl ? { url: shareUrl } : {}),
       });
     } catch (e) {}
   };
