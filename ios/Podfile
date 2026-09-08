@@ -18,6 +18,16 @@ ENV['RCT_USE_RN_DEP'] ||= '1' if podfile_properties['ios.buildReactNativeFromSou
 ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNativeFromSource'] != 'true' && podfile_properties['newArchEnabled'] != 'false'
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 
+# Firebase Analytics (GA4). The Firebase iOS SDK is Swift and needs frameworks;
+# Podfile.properties.json sets ios.useFrameworks=static, and these two pods must
+# then be built as static frameworks too (their podspecs read these globals).
+# RNFirebase >= 26 resolves Firebase through Swift Package Manager by default,
+# which duplicates Firebase symbols under static linkage. Take Firebase from
+# CocoaPods instead so the static-framework setup above stays valid.
+$RNFirebaseDisableSPM = true
+$RNFirebaseAsStaticFramework = true
+$RNGoogleMobileAdsAsStaticFramework = true
+
 prepare_react_native_project!
 
 target 'XselfHome' do

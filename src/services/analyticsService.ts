@@ -1,5 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { AppEventsLogger } from 'react-native-fbsdk-next';
+import { ga4AddToCart, ga4BeginCheckout, ga4Purchase, ga4ViewItem, type Ga4PurchaseArgs } from './ga4Analytics';
+import type { Ga4ItemFacts } from './ga4Events';
 
 type AnalyticsCounter = 'view_count' | 'click_count' | 'add_to_cart_count' | 'order_count';
 
@@ -20,6 +22,9 @@ type AnalyticsCounter = 'view_count' | 'click_count' | 'add_to_cart_count' | 'or
 export function incrementProductCounter(
   supplierProductId: string,
   counter: AnalyticsCounter,
+  /** Optional product facts so GA4 can carry name/price; the counter and Meta
+   *  paths ignore it. Never required — the id alone is a complete GA4 item. */
+  item?: Omit<Ga4ItemFacts, 'productId'>,
 ): void {
   if (!supplierProductId) return;
   Promise.resolve(
@@ -38,6 +43,11 @@ export function incrementProductCounter(
 
   if (counter === 'view_count') emitMetaProductEvent('ViewContent', supplierProductId);
   else if (counter === 'add_to_cart_count') emitMetaProductEvent('AddToCart', supplierProductId);
+
+  // GA4 (Firebase Analytics) — same trigger points, third contained side channel.
+  // Meta event ids, names and payloads above are untouched by this.
+  if (counter === 'view_count') ga4ViewItem({ productId: supplierProductId, ...item });
+  else if (counter === 'add_to_cart_count') ga4AddToCart({ productId: supplierProductId, ...item, qty: item?.qty ?? 1 });
 }
 
 // ── Meta App Events (A+B, deduped) ───────────────────────────────────────────
@@ -90,4 +100,20 @@ export function logMetaPurchase(orderId: string, totalDollars: number, skus: str
       _eventId: `purchase:${orderId}`,
     });
   } catch { /* contained */ }
+}
+
+// ── GA4 checkout events (Firebase Analytics) ─────────────────────────────────
+// Called next to the Meta twins at the same existing points in Checkout. GA4 has
+// no event_id; purchase dedup is a once-per-order-id ledger inside ga4Analytics.
+
+/** GA4 begin_checkout — call where logMetaInitiateCheckout is called. */
+export function logGa4BeginCheckout(lines: Ga4ItemFacts[], valueDollars: number): void {
+  ga4BeginCheckout(lines, valueDollars);
+}
+
+/** GA4 purchase — call only at the existing success-confirmation points, with the
+ *  backend's totals. Sent at most once per order id; skipped when there is no
+ *  server total (pay-after-pickup places the order without a charge). */
+export function logGa4Purchase(args: Ga4PurchaseArgs): void {
+  ga4Purchase(args);
 }

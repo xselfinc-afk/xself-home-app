@@ -83,7 +83,7 @@ export default function DiscoverCard({ product, isOverlayOpen, onCardPress }: Pr
     }
 
     trackAddToCart(product.id);
-    incrementProductCounter(product.id, 'add_to_cart_count');
+    incrementProductCounter(product.id, 'add_to_cart_count', { name: product.name, price: product.price, qty: 1 });
 
     addItem({
       sku: `product-${product.id}`,

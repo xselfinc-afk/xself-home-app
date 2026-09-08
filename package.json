@@ -51,6 +51,7 @@
     "fees:refresh:portal": "tsx scripts/refreshGigaDeliveryFees.ts",
     "fees:refresh:portal:all": "tsx scripts/refreshGigaDeliveryFees.ts --all",
     "test:cart-price-refresh": "tsx src/__tests__/cartPriceRefresh.test.ts",
+    "test:ga4-events": "tsx src/__tests__/ga4Events.test.ts",
     "test:manual-product-upload": "tsx src/__tests__/manualProductUpload.test.ts",
     "test:manual-product-command": "tsx src/__tests__/manualProductCommand.test.ts",
     "test:delivery-fee-refresh": "tsx src/__tests__/deliveryFeeRefresh.test.ts",
@@ -151,6 +152,8 @@
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.0.2",
+    "@react-native-firebase/analytics": "^26.4.0",
+    "@react-native-firebase/app": "^26.4.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/native": "^7.1.33",
     "@react-navigation/native-stack": "^7.14.4",

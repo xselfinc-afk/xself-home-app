@@ -1,4 +1,5 @@
 import Expo
+import FirebaseCore
 // @generated begin react-native-crisp-chat-sdk-swift - expo prebuild (DO NOT MODIFY) sync-cf002978639482214f88d4756d2925f629b1443b
 import Crisp
 // @generated end react-native-crisp-chat-sdk-swift
@@ -16,6 +17,11 @@ public class AppDelegate: ExpoAppDelegate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
+    // Firebase Analytics (GA4). Reads GoogleService-Info.plist from the bundle;
+    // if the file is missing Firebase logs and continues — nothing here can
+    // stop the app from launching.
+    FirebaseApp.configure()
+
     let delegate = ReactNativeDelegate()
     let factory = ExpoReactNativeFactory(delegate: delegate)
 // @generated begin react-native-crisp-chat-sdk-swift-call - expo prebuild (DO NOT MODIFY) sync-0c6058457bc6723cfc1dc2d49a3dde45794ed71e

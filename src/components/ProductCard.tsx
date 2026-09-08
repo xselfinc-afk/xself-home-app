@@ -67,7 +67,7 @@ export default function ProductCard({
   useEffect(() => {
     if (viewTracked.current || !product.id) return;
     viewTracked.current = true;
-    incrementProductCounter(product.id, 'view_count');
+    incrementProductCounter(product.id, 'view_count', { name: product.name, price: product.price });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -116,7 +116,7 @@ export default function ProductCard({
     }
 
     trackAddToCart(product.id);
-    incrementProductCounter(product.id, 'add_to_cart_count');
+    incrementProductCounter(product.id, 'add_to_cart_count', { name: product.name, price: product.price, qty: 1 });
     const firstVariant = product.variants?.find((v) => v.enabled && v.stock > 0);
     addItem(
       firstVariant

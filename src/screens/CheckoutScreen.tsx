@@ -18,7 +18,8 @@ import { DELIVERY_TIMING_COPY, deliveryTimingCopy, serverDeliveryCopyOf } from '
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
-import { incrementProductCounter, logMetaInitiateCheckout, logMetaPurchase } from '../services/analyticsService';
+import { incrementProductCounter, logMetaInitiateCheckout, logMetaPurchase, logGa4BeginCheckout, logGa4Purchase } from '../services/analyticsService';
+import { serverTotalsFrom, type Ga4OrderTotals } from '../services/ga4Events';
 import { DEBUG_FLAGS } from '../config/debugFlags';
 import { debugEnabled } from '../utils/debug';
 
@@ -196,6 +197,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     if (fulfillmentPlan && !metaIcLogged.current) {
       metaIcLogged.current = true;
       logMetaInitiateCheckout(checkoutSessionId.current, total, orderItems.map(i => i.sku));
+      logGa4BeginCheckout(ga4Lines(), total);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fulfillmentPlan]);
@@ -244,6 +246,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const orderId = useRef(`ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   // Display orderNumber: shown in UI — human-readable, separate from internal ID
   const orderNumber = useRef(`XS-${Math.floor(10000 + Math.random() * 90000)}`);
+  // GA4 purchase value comes only from here: the totals create-checkout-order returned.
+  const serverTotalsRef = useRef<Ga4OrderTotals | null>(null);
+  const ga4Lines = () => orderItems.map(i => ({ productId: i.productId, name: i.name, price: i.price, qty: i.qty }));
 
   // Set by callCreateCheckoutOrder when the server rejects with price_changed
   // (catalog price rose above the cart snapshot). Callers surface it instead of
@@ -771,6 +776,7 @@ export default function CheckoutScreen({ route, navigation }: any) {
     }
     orderId.current = data.orderId;
     orderNumber.current = data.orderNumber;
+    serverTotalsRef.current = serverTotalsFrom(data);
     return {
       orderId: data.orderId,
       orderNumber: data.orderNumber,
@@ -879,6 +885,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
       if (item.productId) incrementProductCounter(item.productId, 'order_count');
     });
     if (!isBuyNow) clearCart();
+    // GA4 purchase — same success point, backend totals, once per order id.
+    logGa4Purchase({ orderId: orderId.current, orderNumber: orderNumber.current, totals: serverTotalsRef.current, items: ga4Lines(), fulfillmentMethod: fulfillmentChoice ?? 'delivery' });
     navigation.navigate('OrderSuccess', {
       total,
       orderId: orderId.current,
@@ -1448,6 +1456,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   return;
                 }
                 // Card saved ($0 charged). The webhook marks the order card_saved (NOT paid).
+                // No GA4 purchase here: the server returned no order total for this mode and
+                // nothing was charged, so there is no transaction value to report truthfully.
                 if (!isBuyNow) clearCart();
                 navigation.navigate('OrderSuccess', {
                   total: 0,                         // $0 due today for pickup
@@ -1541,6 +1551,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
               if (!isBuyNow) clearCart();
               // Meta Purchase (client twin) — existing success-confirmation point only.
               logMetaPurchase(orderId.current, total, orderItems.map(i => i.sku));
+              // GA4 purchase — same success point, backend totals, once per order id.
+              logGa4Purchase({ orderId: orderId.current, orderNumber: orderNumber.current, totals: serverTotalsRef.current, items: ga4Lines(), fulfillmentMethod: fulfillmentChoice ?? 'delivery' });
               navigation.navigate('OrderSuccess', {
                 total,
                 orderId: orderId.current,
