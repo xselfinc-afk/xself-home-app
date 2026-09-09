@@ -1191,25 +1191,6 @@ function ProductDetailScreen({ route, navigation }) {
     } catch (e) {}
   };
 
-  // Marketplace quick action — for sellers replying to Facebook Marketplace
-  // buyers. Copies the same share text the Share sheet sends, then opens
-  // Messenger's home (bare scheme = default Chats screen; device-verified).
-  // From there: Marketplace folder → pick the buyer → paste. No Facebook app
-  // hop, no thread ids, no Meta API — navigation only.
-  const handleMarketplaceShare = async () => {
-    const shareSku = selectedSibling.skuCustom ?? product.skuCustom;
-    const title = selectedSibling.displayTitle ?? selectedSibling.name;
-    const shareUrl = shareSku ? `https://xselfhome.com/products/${encodeURIComponent(shareSku)}` : null;
-    try {
-      await Clipboard.setStringAsync(`${title} — $${displayPrice} on XSELF${shareUrl ? `\n${shareUrl}` : ''}`);
-      // openURL (unlike canOpenURL) needs no LSApplicationQueriesSchemes entry,
-      // which keeps this JS-only and OTA-shippable.
-      await Linking.openURL('fb-messenger://');
-    } catch (e) {
-      Alert.alert('Messenger not detected', 'Install Messenger to message your Marketplace buyers.');
-    }
-  };
-
   // ── Color thumbnails ──────────────────────────────────────────────────────
   const colorImageVariants: VariantImage[] = hasVariants
     ? allColors.map(color => {
@@ -1705,19 +1686,6 @@ function ProductDetailScreen({ route, navigation }) {
         accessibilityLabel="Share this product"
       >
         <Ionicons name="share-outline" size={20} color="#1C1917" />
-      </TouchableOpacity>
-
-      {/* Marketplace quick action — secondary pill under Share (same glass
-          spec, one slot down) so it reads as part of the same control cluster
-          without competing with Share as the primary action. */}
-      <TouchableOpacity
-        style={[styles.detailMarketBtn, { top: insets.top + 56 }]}
-        onPress={handleMarketplaceShare}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        accessibilityRole="button"
-        accessibilityLabel="Send to Marketplace buyers"
-      >
-        <Ionicons name="storefront-outline" size={19} color="#1C1917" />
       </TouchableOpacity>
 
       {/* Floating CTA — fades in after 30% scroll */}
@@ -3343,16 +3311,6 @@ const styles = StyleSheet.create({
   // used by Share here and by CollectionScreen's back button.
   detailBackBtn: {
     position: 'absolute', left: 16,
-    width: 40, height: 40, borderRadius: 20,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.82)',
-    borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 18,
-    elevation: 4,
-  },
-  // Marketplace quick action — same glass pill, stacked below Share.
-  detailMarketBtn: {
-    position: 'absolute', right: 16,
     width: 40, height: 40, borderRadius: 20,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.82)',
