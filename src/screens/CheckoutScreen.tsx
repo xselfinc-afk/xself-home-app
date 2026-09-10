@@ -14,7 +14,8 @@ import { useAuth } from '../context/AuthContext';
 import { useOrders } from '../context/OrdersContext';
 import { Address, fetchAddresses, insertAddress } from '../services/addressService';
 import { type FulfillmentPlan, type FulfillmentGroup } from '../types/fulfillment';
-import { DELIVERY_TIMING_COPY, deliveryTimingCopy, serverDeliveryCopyOf } from '../services/deliveryTimingCopy';
+import { DELIVERY_TIMING_COPY, deliveryTimingCopy, localDeliveryTimingCopy, serverDeliveryCopyOf } from '../services/deliveryTimingCopy';
+import type { FulfillmentMethod } from '../types/fulfillment';
 import { formatPickupDate, PICKUP_TIME_WINDOW } from '../services/pickupDateService';
 import { useStripe, isPlatformPaySupported, PlatformPay, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
@@ -61,10 +62,11 @@ function overrideGroupsToDelivery(plan: FulfillmentPlan): FulfillmentPlan {
   // from any delivery group in this same plan, and fall back to the constant only when it sent none.
   const serverDeliveryCopy = serverDeliveryCopyOf(plan.groups);
   const groups = plan.groups.map(g => {
-    if (!g.isPickup) return g;
+    if (!g.isPickup && !g.isLocalDelivery) return g;
     return {
       ...g,
       isPickup: false as const,
+      isLocalDelivery: false as const,
       shipping: feeDollars,
       estimatedDelivery: serverDeliveryCopy || DELIVERY_TIMING_COPY,
       pickupWindow: undefined,
@@ -167,17 +169,18 @@ export default function CheckoutScreen({ route, navigation }: any) {
   const [liveVerified, setLiveVerified] = useState(false);
   const verifyAttemptRef = useRef<string>('');
 
-  // 'pickup' | 'delivery' | null — null means user hasn't chosen yet (req 9)
-  const [fulfillmentChoice, setFulfillmentChoice] = useState<'pickup' | 'delivery' | null>(null);
+  // 'pickup' | 'local_delivery' | 'third_party_shipping' | null — null means user hasn't chosen yet (req 9)
+  const [fulfillmentChoice, setFulfillmentChoice] = useState<FulfillmentMethod | null>(null);
 
-  // When a plan first resolves, default to Delivery — but only if the user hasn't chosen
-  // yet. Choosing a method re-fetches the plan (to keep tax server-accurate), which re-runs
-  // this effect; using `prev ?? 'delivery'` preserves the user's pick instead of snapping
-  // back to Delivery every time. (The plan is never nulled mid-refetch, so `prev` survives;
-  // a real reset to null — address error/invalid plan — falls back to Delivery next time.)
+  // When a plan first resolves, default to Local Delivery when the server offers it, otherwise to
+  // Shipping (the pre-existing default) — but only if the user hasn't chosen yet. Choosing a
+  // method re-fetches the plan (to keep tax server-accurate), which re-runs this effect; using
+  // `prev ?? …` preserves the user's pick instead of snapping back every time. (The plan is never
+  // nulled mid-refetch, so `prev` survives; a real reset to null — address error/invalid plan —
+  // falls back to the default next time.)
   useEffect(() => {
     if (!fulfillmentPlan) { setFulfillmentChoice(null); return; }
-    setFulfillmentChoice(prev => prev ?? 'delivery');
+    setFulfillmentChoice(prev => prev ?? (fulfillmentPlan.localDeliveryAvailable ? 'local_delivery' : 'third_party_shipping'));
   }, [fulfillmentPlan]);
 
 
@@ -204,7 +207,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // When user picks delivery on a pickup plan, all pickup groups become shipping groups.
   const activePlan: FulfillmentPlan | null = (() => {
     if (!fulfillmentPlan) return null;
-    if (planHasPickup && fulfillmentChoice === 'delivery') return overrideGroupsToDelivery(fulfillmentPlan);
+    if (fulfillmentChoice === 'third_party_shipping' && fulfillmentPlan.groups.some(g => g.isPickup || g.isLocalDelivery)) {
+      return overrideGroupsToDelivery(fulfillmentPlan);
+    }
     return fulfillmentPlan;
   })();
 
@@ -214,11 +219,13 @@ export default function CheckoutScreen({ route, navigation }: any) {
   // No default fee while loading — show 0 until the plan resolves
   const shipping = activePlan?.totalShipping ?? 0;
   const isPickup = activePlan !== null && activePlan.groups.length > 0 && activePlan.groups.every(g => g.isPickup);
-  // Only non-pickup groups count as "shipments" for the label
-  const shippingGroupCount = activePlan ? activePlan.groups.filter(g => !g.isPickup).length : 0;
-  // Delivery selected but the server could not provide a GIGA fee → block checkout. There is
+  // XSELF Local Delivery planned for every group: free, charged in full today like Shipping.
+  const isLocalDelivery = activePlan !== null && activePlan.groups.length > 0 && activePlan.groups.every(g => g.isLocalDelivery === true);
+  // Only third-party shipping groups count as "shipments" for the label
+  const shippingGroupCount = activePlan ? activePlan.groups.filter(g => !g.isPickup && !g.isLocalDelivery).length : 0;
+  // Shipping selected but the server could not provide a GIGA fee → block checkout. There is
   // NO hardcoded fallback: payment is disabled and the fee shows "unavailable".
-  const deliveryUnavailable = fulfillmentChoice === 'delivery' && activePlan !== null && !isPickup && !activePlan.deliveryAvailable;
+  const deliveryUnavailable = fulfillmentChoice === 'third_party_shipping' && activePlan !== null && !isPickup && !isLocalDelivery && !activePlan.deliveryAvailable;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
   // DISPLAY ONLY — deliberately absent from `total` below. See utils/orderSavings.ts.
@@ -379,6 +386,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
             clientSupportsDynamicDelivery: true,
             // This build renders the server's taxCents, so it opts into real tax.
             clientSupportsTax: true,
+            // This build renders the Local Delivery option, so the planner may offer/plan it.
+            clientSupportsLocalDelivery: true,
             ...(fulfillmentChoice ? { preferredMethod: fulfillmentChoice } : {}),
           },
         });
@@ -425,18 +434,21 @@ export default function CheckoutScreen({ route, navigation }: any) {
         const deliveryFeeDollars = deliveryFeeCents != null ? deliveryFeeCents / 100 : 0;
         const deliveryUnavailableReason: string | null = deliveryAvailable ? null : (data.deliveryUnavailableReason ?? 'unavailable');
 
+        // Planned as XSELF Local Delivery (free). Server-authoritative; never inferred client-side.
+        const isLocalDeliveryPlan = data.fulfillmentMethod === 'local_delivery';
         const group: FulfillmentGroup = {
           warehouse: data.selectedWarehouse,
           distanceMiles: data.distanceMiles,
           isPickup: data.usePickup,
-          shipping: data.usePickup ? 0 : deliveryFeeDollars,
+          isLocalDelivery: isLocalDeliveryPlan,
+          shipping: data.usePickup || isLocalDeliveryPlan ? 0 : deliveryFeeDollars,
           items: orderItems.map(i => ({ sku: i.sku, name: i.name, qty: i.qty, price: i.price, img: i.img })),
           estimatedDelivery: data.estimatedDelivery,
           pickupWindow: data.pickupWindow ?? undefined,
         };
         const plan: FulfillmentPlan = {
           groups: [group],
-          totalShipping: data.usePickup ? 0 : deliveryFeeDollars,
+          totalShipping: data.usePickup || isLocalDeliveryPlan ? 0 : deliveryFeeDollars,
           deliveryFeeCents,
           taxCents: typeof data.taxCents === 'number' ? data.taxCents : null,
           deliveryAvailable,
@@ -444,6 +456,9 @@ export default function CheckoutScreen({ route, navigation }: any) {
           // preferredMethod. This must NOT be `data.usePickup` — usePickup goes false the
           // moment Delivery is chosen, which would wrongly hide an available Pickup option.
           pickupAvailable: data.pickupAvailable === true,
+          // Whether XSELF Local Delivery is OFFERED (server-authoritative), independent of the
+          // currently planned method — same reasoning as pickupAvailable above.
+          localDeliveryAvailable: data.localDeliveryAvailable === true,
           deliveryUnavailableReason,
           isSingleWarehouse: true,
           // Surface the existing "Live inventory unavailable" banner whenever
@@ -724,18 +739,21 @@ export default function CheckoutScreen({ route, navigation }: any) {
         source: 'app',
         customer: { email: user?.email ?? '' },
         address,
-        fulfillmentMethod: fulfillmentChoice ?? 'delivery',
+        fulfillmentMethod: fulfillmentChoice ?? 'third_party_shipping',
         userId: user?.id ?? null,
         paymentMethodSelected,
         // Version gate: this build charges the dynamic GIGA Delivery fee (no hardcoded fallback).
         // Old builds omit this flag and keep legacy checkout behavior.
         clientSupportsDynamicDelivery: true,
+        // Local Delivery gate: this build renders the option; the server refuses 'local_delivery'
+        // from any build that does not declare this.
+        clientSupportsLocalDelivery: true,
         // Tax gate: this build renders the server's taxCents, so the charge may include tax.
         // Builds that omit this are charged $0 tax — their Checkout cannot show a tax line.
         clientSupportsTax: true,
         // Pay-After-Pickup gate: this build can drive the SetupIntent ($0-today, save-card) flow.
         // ONLY sent for pickup; delivery never enters Pay-After-Pickup on the server.
-        clientSupportsPayAfterPickup: (fulfillmentChoice ?? 'delivery') === 'pickup',
+        clientSupportsPayAfterPickup: (fulfillmentChoice ?? 'third_party_shipping') === 'pickup',
         // Meta InitiateCheckout dedup key only — additive, never business logic.
         checkoutSessionId: checkoutSessionId.current,
         ...(customerName ? { customerName } : {}),
@@ -987,10 +1005,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
               Pickup" label, the pickup window/fee, or the planHasPickup gate /
               setFulfillmentChoice('pickup') call below while redesigning Delivery.
               Guarded by scripts/productionGuardrails.ts. See docs/fulfillment-rules.md. */}
-          {/* Pickup available — delivery pre-selected, user can switch to pickup */}
-          {!deliveryLoading && fulfillmentPlan && planHasPickup && (
+          {/* Pickup and/or Local Delivery available — the customer chooses between the offered
+              methods and Shipping. Each option renders strictly on the server's own flag. */}
+          {!deliveryLoading && fulfillmentPlan && (planHasPickup || fulfillmentPlan.localDeliveryAvailable) && (
             <>
-              {/* Pickup option */}
+              {/* Pickup option — only when the server offers pickup (planHasPickup) */}
+              {planHasPickup && (
               <TouchableOpacity
                 style={[styles.fulfillOptionCard, fulfillmentChoice === 'pickup' && styles.fulfillOptionSelected]}
                 onPress={() => setFulfillmentChoice('pickup')}
@@ -1025,34 +1045,55 @@ export default function CheckoutScreen({ route, navigation }: any) {
                   )}
                 </View>
               </TouchableOpacity>
+              )}
 
-              {/* Delivery option */}
+              {/* Local Delivery option — XSELF-operated, free. Rendered strictly on the server's
+                  localDeliveryAvailable; the internal eligibility radius is never shown here. */}
+              {fulfillmentPlan.localDeliveryAvailable && (
               <TouchableOpacity
-                style={[styles.fulfillOptionCard, { marginTop: 8 }, fulfillmentChoice === 'delivery' && styles.fulfillOptionSelected]}
-                onPress={() => setFulfillmentChoice('delivery')}
+                style={[styles.fulfillOptionCard, planHasPickup && { marginTop: 8 }, fulfillmentChoice === 'local_delivery' && styles.fulfillOptionSelected]}
+                onPress={() => setFulfillmentChoice('local_delivery')}
                 activeOpacity={0.8}
               >
-                <View style={[styles.radioOuter, fulfillmentChoice === 'delivery' && styles.radioOuterActive]}>
-                  {fulfillmentChoice === 'delivery' && <View style={styles.radioDot} />}
+                <View style={[styles.radioOuter, fulfillmentChoice === 'local_delivery' && styles.radioOuterActive]}>
+                  {fulfillmentChoice === 'local_delivery' && <View style={styles.radioDot} />}
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.fulfillOptionLabel}>Local Delivery — Free</Text>
+                  <Text style={styles.fulfillOptionSub}>
+                    {localDeliveryTimingCopy(fulfillmentPlan.groups.find(g => g.isLocalDelivery))}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              )}
+
+              {/* Shipping option (third-party, GIGA fee) */}
+              <TouchableOpacity
+                style={[styles.fulfillOptionCard, { marginTop: 8 }, fulfillmentChoice === 'third_party_shipping' && styles.fulfillOptionSelected]}
+                onPress={() => setFulfillmentChoice('third_party_shipping')}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.radioOuter, fulfillmentChoice === 'third_party_shipping' && styles.radioOuterActive]}>
+                  {fulfillmentChoice === 'third_party_shipping' && <View style={styles.radioDot} />}
                 </View>
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.fulfillOptionLabel}>
                     {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
-                      ? `Delivery — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
-                      : 'Delivery — Quote required'}
+                      ? `Shipping — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
+                      : 'Shipping — Quote required'}
                   </Text>
                   <Text style={styles.fulfillOptionSub}>
                     {!fulfillmentPlan.deliveryAvailable
                       ? `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`
-                      : deliveryTimingCopy(fulfillmentPlan.groups.find(g => !g.isPickup))}
+                      : deliveryTimingCopy(fulfillmentPlan.groups.find(g => !g.isPickup && !g.isLocalDelivery))}
                   </Text>
                 </View>
               </TouchableOpacity>
             </>
           )}
 
-          {/* Delivery only — auto-selected, no radio needed */}
-          {!deliveryLoading && fulfillmentPlan && !planHasPickup && (
+          {/* Shipping only — auto-selected, no radio needed */}
+          {!deliveryLoading && fulfillmentPlan && !planHasPickup && !fulfillmentPlan.localDeliveryAvailable && (
             <View style={styles.card}>
               {fulfillmentPlan.groups.map((group, idx) => (
                 <View key={group.warehouse.code} style={[idx > 0 && { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F2EE' }]}>
@@ -1061,8 +1102,8 @@ export default function CheckoutScreen({ route, navigation }: any) {
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={[styles.fulfillLabel, styles.fulfillLabelActive]}>
                         {fulfillmentPlan.deliveryAvailable && fulfillmentPlan.deliveryFeeCents != null
-                          ? `Delivery — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
-                          : 'Delivery — unavailable'}
+                          ? `Shipping — $${formatAmount(fulfillmentPlan.deliveryFeeCents / 100)}`
+                          : 'Shipping — unavailable'}
                       </Text>
                       <Text style={styles.fulfillWarehouse}>
                         {fulfillmentPlan.deliveryAvailable ? deliveryTimingCopy(group) : `${DELIVERY_QUOTE_UNAVAILABLE_COPY}${__DEV__ && fulfillmentPlan.deliveryUnavailableReason ? ` · ${fulfillmentPlan.deliveryUnavailableReason}` : ''}`}
@@ -1289,12 +1330,12 @@ export default function CheckoutScreen({ route, navigation }: any) {
                 <Text style={[styles.summaryValue, { color: '#CA8A04' }]}>-${formatAmount(savedTotal)}</Text>
               </View>
             )}
-            {/* Pickup is always free ($0) and already stated on the Pickup card, so the
-                redundant "Pickup — Free" summary line is omitted. Delivery keeps its fee row. */}
-            {!isPickup && (
+            {/* Pickup and Local Delivery are always free ($0) and already say so on their cards,
+                so their redundant "— Free" summary lines are omitted. Shipping keeps its fee row. */}
+            {!isPickup && !isLocalDelivery && (
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>
-                  {deliveryLoading ? 'Delivery' : shippingGroupCount > 1 ? `Delivery (${shippingGroupCount} warehouses)` : 'Delivery'}
+                  {deliveryLoading ? 'Shipping' : shippingGroupCount > 1 ? `Shipping (${shippingGroupCount} warehouses)` : 'Shipping'}
                 </Text>
                 {deliveryLoading
                   ? <Text style={styles.summaryCalculating}>Calculating…</Text>

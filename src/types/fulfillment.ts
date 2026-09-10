@@ -12,6 +12,11 @@ import type { PickupWindow } from '../services/pickupDateService';
 // See docs/fulfillment-rules.md.
 export const PICKUP_FEE = 0;
 
+/** Three fulfillment methods on the wire. 'third_party_shipping' is what the server used to call
+ *  'delivery' (GIGA drop-ship, priced per item); 'local_delivery' is XSELF's own free delivery,
+ *  offered strictly on the server's `localDeliveryAvailable`. Pickup rules are unchanged. */
+export type FulfillmentMethod = 'pickup' | 'local_delivery' | 'third_party_shipping';
+
 export type Warehouse = {
   code: string;
   label: string;
@@ -24,6 +29,8 @@ export type FulfillmentGroup = {
   warehouse: Warehouse;
   distanceMiles: number;
   isPickup: boolean;
+  /** Planned as XSELF Local Delivery (free). Mutually exclusive with isPickup. */
+  isLocalDelivery?: boolean;
   shipping: number;
   items: { sku: string; name: string; qty: number; price: number; img: string }[];
   estimatedDelivery: string;
@@ -45,6 +52,9 @@ export type FulfillmentPlan = {
    *  using pickup (usePickup). Drives the Pickup selector's visibility, so choosing Delivery
    *  never hides an available Pickup option. Mirrors plan-fulfillment's `pickupAvailable`. */
   pickupAvailable: boolean;
+  /** Server-authoritative: whether XSELF Local Delivery (free) is OFFERED for this order,
+   *  independent of the currently planned method. Mirrors plan-fulfillment's `localDeliveryAvailable`. */
+  localDeliveryAvailable: boolean;
   /** Diagnostic reason when Delivery is unavailable (credentials_missing / api_error / sku_unavailable / no_fee / …). */
   deliveryUnavailableReason?: string | null;
   isSingleWarehouse: boolean;

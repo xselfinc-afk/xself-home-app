@@ -647,14 +647,21 @@ check('Delivery account separation', () => {
 check('Delivery dynamic fee', () => {
   const failures: string[] = [];
 
-  // (a) Frontend: no hardcoded Delivery fee, no customer-facing "$99"/"Home Delivery"/"Shipping —".
+  // (a) Frontend: no hardcoded Delivery fee, no customer-facing "$99"/"Home Delivery".
+  // Three-method fulfillment (2026-09-10): the third-party GIGA option is labelled "Shipping — $X",
+  // XSELF's own option "Local Delivery — Free", pickup stays "Pickup — Free" (Check 13). The old
+  // "Delivery — $X" label must not come back, and the internal Local Delivery radius must never
+  // be shown (the "within 30 miles" probe in Check 8 covers that).
   const fulfill = read('src/types/fulfillment.ts') ?? '';
   if (/SHIPPING_FEE/.test(fulfill)) failures.push('src/types/fulfillment.ts: SHIPPING_FEE must be removed (Delivery fee is dynamic)');
   const checkout = read('src/screens/CheckoutScreen.tsx') ?? '';
   if (/SHIPPING_FEE/.test(checkout)) failures.push('CheckoutScreen.tsx: must not reference SHIPPING_FEE');
   if (/Home Delivery/.test(checkout)) failures.push('CheckoutScreen.tsx: customer-facing "Home Delivery" must be removed (use "Delivery")');
   if (/\$99(?![0-9])/.test(checkout)) failures.push('CheckoutScreen.tsx: must not display "$99"');
-  if (/Shipping — \$/.test(checkout)) failures.push('CheckoutScreen.tsx: customer-facing "Shipping — $" must be removed (use "Delivery")');
+  if (!/Shipping — \$/.test(checkout)) failures.push('CheckoutScreen.tsx: third-party shipping must be labelled "Shipping — $X"');
+  if (!/Local Delivery — Free/.test(checkout)) failures.push('CheckoutScreen.tsx: must render the "Local Delivery — Free" option');
+  if (/Delivery — \$/.test(checkout)) failures.push('CheckoutScreen.tsx: legacy "Delivery — $X" label must not return (use "Shipping — $X")');
+  if (!/clientSupportsLocalDelivery: true/.test(checkout)) failures.push('CheckoutScreen.tsx: must declare clientSupportsLocalDelivery: true (server refuses local_delivery otherwise)');
 
   // (b) plan-fulfillment: computes dynamic fee; no $99 constant; no order/dropship call.
   const plan = read('supabase/functions/plan-fulfillment/index.ts') ?? '';
