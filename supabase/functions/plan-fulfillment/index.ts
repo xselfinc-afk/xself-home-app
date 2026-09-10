@@ -10,7 +10,14 @@ import {
   type GigaPriceRow,
   type GigaCacheRow,
 } from '../_shared/deliveryFee.ts';
-import { pickupRadiusMiles, distanceMiles } from '../_shared/fulfillmentEligibility.ts';
+import {
+  pickupRadiusMiles,
+  distanceMiles,
+  localDeliveryEligible as resolveLocalDeliveryEligible,
+  normalizeFulfillmentMethod,
+  resolveFulfillmentMethod,
+  type FulfillmentMethod,
+} from '../_shared/fulfillmentEligibility.ts';
 import { geocodeAddress } from '../_shared/geocode.ts';
 
 // Built-in Supabase env vars — always present in Edge Functions
@@ -38,6 +45,10 @@ const DELIVERY_FEE_SOURCE: 'portal_cache' | 'openapi' =
 // ../_shared/fulfillmentEligibility.ts pickupRadiusMiles(state). Within the applicable radius a
 // customer may CHOOSE pickup or delivery; beyond it, pickup is hidden and only delivery is
 // offered (shipping is never blocked by distance). Pickup remains free ($0).
+// XSELF Local Delivery timing copy — an operational commitment like the shipping string below.
+// Keep identical to LOCAL_DELIVERY_TIMING_COPY in src/services/deliveryTimingCopy.ts. Never
+// mention the internal radius here: customers are only ever promised the advertised range.
+const LOCAL_DELIVERY_TIMING_COPY = 'Free local delivery by XSELF · Fastest delivery: 2 BUSINESS DAYS';
 const MAX_CART_ITEMS = 20;
 const MAX_QTY_PER_ITEM = 99;
 const MAX_FIELD_LENGTH = 200;
@@ -83,6 +94,8 @@ interface WarehouseRow {
   lng: number | null;
   supports_pickup: boolean;
   supports_shipping: boolean;
+  /** XSELF-operated Local Delivery may originate here (20260910_warehouses_supports_local_delivery.sql). */
+  supports_local_delivery: boolean;
 }
 
 type FulfillmentStatus =
@@ -112,6 +125,16 @@ interface PlanResponse {
   pickupAvailable?: boolean;
   deliveryEligible?: boolean;
   usePickup?: boolean;
+  // ── Three-method fields — sent ONLY to clients that declare clientSupportsLocalDelivery ──
+  /** Which of the three methods this plan is for. */
+  fulfillmentMethod?: FulfillmentMethod;
+  /** What the planner would pick with no stated preference (local_delivery → pickup → shipping). */
+  defaultMethod?: FulfillmentMethod;
+  /** XSELF Local Delivery offered: flagged warehouse, single warehouse covers the order, inside the
+   *  internal radius. Independent of pickupAvailable / deliveryAvailable. */
+  localDeliveryAvailable?: boolean;
+  /** Always 0 in phase 1. Present so the client never invents a Local Delivery fee. */
+  localDeliveryFeeCents?: number;
   shipping?: number | null;
   /** Stripe Tax preview (cents) for DISPLAY ONLY. null = not calculated; create-checkout-order is the charging authority. */
   taxCents?: number | null;
@@ -159,7 +182,8 @@ function getDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number
  *  addresses only; the orders table has no shipped/delivered timestamps). It is deliberately
  *  NOT a function of distance — the `_distanceMiles` argument stays unused for delivery.
  *  Keep it identical to DELIVERY_TIMING_COPY in src/screens/CheckoutScreen.tsx. */
-function estimatedDelivery(_distanceMiles: number, usePickup: boolean): string {
+function estimatedDelivery(_distanceMiles: number, usePickup: boolean, useLocalDelivery = false): string {
+  if (useLocalDelivery) return LOCAL_DELIVERY_TIMING_COPY;
   if (usePickup) return 'Pickup available in 2–5 days, 10:00 AM – 2:00 PM';
   return 'Local warehouse · Fastest delivery: 2 BUSINESS DAYS';
 }
@@ -201,7 +225,7 @@ serve(async (req: Request) => {
 
   try {
     // ── Parse + validate input ───────────────────────────────────────────────
-    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: 'pickup' | 'delivery' | null; clientSupportsDynamicDelivery?: boolean; clientSupportsTax?: boolean };
+    let body: { items?: CartItem[]; address?: AddressInput; preferredMethod?: string | null; clientSupportsDynamicDelivery?: boolean; clientSupportsLocalDelivery?: boolean; clientSupportsTax?: boolean };
     try {
       body = await req.json();
     } catch {
@@ -216,6 +240,12 @@ serve(async (req: Request) => {
     // 🔒 Tax capability gate — mirrors create-checkout-order. Absent → false → no tax line, so a
     // build that cannot render tax never previews one either.
     const clientSupportsTax = body.clientSupportsTax === true;
+    // 🔒 Local Delivery capability gate. Only a build whose Checkout renders the third option sends
+    // this. Absent → the planner can never choose local_delivery, so old builds keep the exact
+    // pickup/shipping plans (and $ figures) they shipped with.
+    const clientSupportsLocalDelivery = body.clientSupportsLocalDelivery === true;
+    // Wire form is three-valued ('delivery' still accepted and means third_party_shipping).
+    const preferred: FulfillmentMethod | null = normalizeFulfillmentMethod(preferredMethod);
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return jsonResponse({ valid: false, error: 'items array is required' }, 400);
@@ -310,7 +340,7 @@ serve(async (req: Request) => {
     // ── 2. Load warehouses from Supabase warehouses table ───────────────────
     const { data: warehouseRows, error: warehouseErr } = await supabase
       .from('warehouses')
-      .select('code, label, address, state, city, lat, lng, supports_pickup, supports_shipping')
+      .select('code, label, address, state, city, lat, lng, supports_pickup, supports_shipping, supports_local_delivery')
       .eq('active', true);
 
     if (warehouseErr || !warehouseRows?.length) {
@@ -555,10 +585,31 @@ serve(async (req: Request) => {
     const pickupEligible = selectedEntry.distanceMiles <= pickupRadiusMiles(selectedEntry.warehouse.state) && selectedEntry.warehouse.supports_pickup;
     const deliveryEligible = selectedEntry.warehouse.supports_shipping;
 
-    // Respect preferredMethod if provided
-    let usePickup = pickupEligible; // default: pickup when eligible
-    if (preferredMethod === 'delivery') usePickup = false;
-    if (preferredMethod === 'pickup') usePickup = pickupEligible; // can't force pickup if ineligible
+    // XSELF Local Delivery: flagged warehouse + ONE warehouse covers the whole order + inside the
+    // internal radius (LOCAL_DELIVERY_RADIUS_MILES, shared resolver). Split/best-effort plans never
+    // qualify. Computed for every client; only clients that declared support can be planned for it.
+    const localDeliveryEligible = resolveLocalDeliveryEligible({
+      distanceMiles: selectedEntry.distanceMiles,
+      supportsLocalDelivery: selectedEntry.warehouse.supports_local_delivery === true,
+      singleWarehouseCoversOrder: selectionPath === 'fresh-single' || selectionPath === 'stale-single',
+    });
+
+    // Respect preferredMethod if provided; otherwise local_delivery → pickup → shipping. The
+    // pickup → shipping part is the pre-existing default ("pickup when eligible").
+    const fulfillmentMethod = resolveFulfillmentMethod({
+      preferred,
+      pickupEligible,
+      localDeliveryEligible,
+      clientSupportsLocalDelivery,
+    });
+    const defaultMethod = resolveFulfillmentMethod({
+      preferred: null,
+      pickupEligible,
+      localDeliveryEligible,
+      clientSupportsLocalDelivery,
+    });
+    const usePickup = fulfillmentMethod === 'pickup';
+    const useLocalDelivery = fulfillmentMethod === 'local_delivery';
 
     const pickupWindow = pickupEligible
       ? {
@@ -653,7 +704,9 @@ serve(async (req: Request) => {
         // Customer address always — Stripe needs it even when a performance location overrides
         // where tax is assessed. Pickup expresses "tax at the warehouse" via performance_location,
         // matching create-checkout-order exactly so preview and charge agree.
-        const shippingCentsForTax = usePickup ? 0 : (deliveryFeeCents ?? 0);
+        // Local Delivery is free, so its taxable shipping is 0 exactly like pickup — but it is taxed
+        // at the customer's address (goods land there), so performanceLocation stays null.
+        const shippingCentsForTax = usePickup ? 0 : (useLocalDelivery ? 0 : (deliveryFeeCents ?? 0));
         const taxAddress: TaxAddress = {
           line1:      address.line1,
           line2:      (address as { line2?: string }).line2 ?? null,
@@ -708,9 +761,17 @@ serve(async (req: Request) => {
       // guard requires the `usePickup ? 0 :` ternary to remain.)
       shipping: usePickup
         ? 0
-        : (clientSupportsDynamicDelivery
-            ? (deliveryFeeCents != null ? deliveryFeeCents / 100 : null)
-            : LEGACY_DELIVERY_FEE_DOLLARS),
+        : useLocalDelivery
+          ? 0 // XSELF Local Delivery is free (phase 1); only reachable for clients that declared support
+          : (clientSupportsDynamicDelivery
+              ? (deliveryFeeCents != null ? deliveryFeeCents / 100 : null)
+              : LEGACY_DELIVERY_FEE_DOLLARS),
+      // Three-method fields go ONLY to clients that declared clientSupportsLocalDelivery; `undefined`
+      // is omitted from JSON so every older client keeps its exact response shape.
+      fulfillmentMethod: clientSupportsLocalDelivery ? fulfillmentMethod : undefined,
+      defaultMethod: clientSupportsLocalDelivery ? defaultMethod : undefined,
+      localDeliveryAvailable: clientSupportsLocalDelivery ? localDeliveryEligible : undefined,
+      localDeliveryFeeCents: clientSupportsLocalDelivery ? 0 : undefined,
       // Dynamic Delivery fields go to NEW clients ONLY; `undefined` is omitted from JSON, so the
       // legacy response shape is preserved exactly for old clients.
       deliveryFeeCents: clientSupportsDynamicDelivery ? deliveryFeeCents : undefined,
@@ -731,7 +792,7 @@ serve(async (req: Request) => {
       deliveryFeeFetchedAt: clientSupportsDynamicDelivery ? (deliveryFeeFetchedAt ?? new Date().toISOString()) : undefined,
       deliveryUnavailableSkus: clientSupportsDynamicDelivery ? (deliveryFee?.unavailableSkus ?? null) : undefined,
       deliveryUnavailableReason: clientSupportsDynamicDelivery ? deliveryUnavailableReason : undefined,
-      estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles, usePickup),
+      estimatedDelivery: estimatedDelivery(selectedEntry.distanceMiles, usePickup, useLocalDelivery),
       pickupWindow,
       availableQty: totalAvailableAtWarehouse(selectedEntry.warehouse.code),
       inventoryFreshness,

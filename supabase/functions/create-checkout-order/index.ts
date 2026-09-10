@@ -24,6 +24,12 @@ import { evaluateCheckoutCart } from '../_shared/checkoutInventoryRevalidation.t
 import { evaluateCheckoutLine, CHECKOUT_REFUSAL_LABELS } from '../_shared/temporarySaleRelease.ts';
 import { calculateTax, extractUsZip, findOrCreatePerformanceLocation, type TaxAddress } from '../_shared/stripeTax.ts';
 import { buildSetupIntentParams, shouldUsePayAfterPickup } from '../_shared/pickup/pickupDomain.ts';
+import {
+  normalizeFulfillmentMethod,
+  storageFulfillmentMethod,
+  deliveryKindOf,
+  type FulfillmentMethod,
+} from '../_shared/fulfillmentEligibility.ts';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
@@ -156,8 +162,18 @@ interface RequestBody {
   cartOrigin?: string;
   customer: CustomerInfo;
   address: Address;
-  /** Default: 'delivery' */
-  fulfillmentMethod?: 'delivery' | 'pickup';
+  /**
+   * Three-valued wire form: 'pickup' | 'local_delivery' | 'third_party_shipping'. The legacy
+   * 'delivery' is still accepted and means third_party_shipping. Default: 'delivery'.
+   * Storage stays two-valued (orders.fulfillment_method) + orders.delivery_kind.
+   */
+  fulfillmentMethod?: 'delivery' | 'pickup' | 'local_delivery' | 'third_party_shipping';
+  /**
+   * 🔒 Local Delivery capability gate. ONLY a build whose Checkout renders the Local Delivery
+   * option sends true. Absent/false → 'local_delivery' is refused and the planner can never
+   * choose it, so every already-installed build keeps its exact pickup/shipping behaviour.
+   */
+  clientSupportsLocalDelivery?: boolean;
   /** 🔒 Version gate: only NEW app builds send true. Absent/false → legacy-compatible behavior. */
   clientSupportsDynamicDelivery?: boolean;
   /**
@@ -261,7 +277,7 @@ serve(async (req: Request) => {
       items,
       customer = {},
       address,
-      fulfillmentMethod = 'delivery',
+      fulfillmentMethod: fulfillmentMethodRaw = 'delivery',
       userId,
       guestToken: providedGuestToken,
       paymentMethodSelected = '',
@@ -270,7 +286,18 @@ serve(async (req: Request) => {
       clientSupportsDynamicDelivery = false,
       clientSupportsTax = false,
       clientSupportsPayAfterPickup = false,
+      clientSupportsLocalDelivery = false,
     } = body;
+
+    // ── Fulfillment method: three-valued request, two-valued storage ─────────────────────
+    // requestedMethod is what the client asked for; fulfillmentMethod is the orders.fulfillment_method
+    // value every downstream consumer (XOne, emails, status machine, guardrails) still branches on.
+    const requestedMethod: FulfillmentMethod = normalizeFulfillmentMethod(fulfillmentMethodRaw) ?? 'third_party_shipping';
+    if (requestedMethod === 'local_delivery' && !clientSupportsLocalDelivery) {
+      return jsonResponse({ error: 'local_delivery_requires_capability' }, 400);
+    }
+    const fulfillmentMethod: 'pickup' | 'delivery' = storageFulfillmentMethod(requestedMethod);
+    const deliveryKind: 'local' | 'third_party' | null = deliveryKindOf(requestedMethod);
 
     // Reporting-only attribution. Computed once, written once, read by nothing else.
     const orderSource = normalizeOrderSource(body.source, body.cartOrigin);
@@ -664,7 +691,7 @@ serve(async (req: Request) => {
       // planner defaults to "pickup whenever eligible", so a customer in the radius who chose
       // Delivery got planned as Pickup ($0 shipping, warehouse-sourced tax) while the order still
       // said fulfillment_method='delivery'.
-      body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery, preferredMethod: fulfillmentMethod },
+      body: { items: planItems, address: planAddress, clientSupportsDynamicDelivery, preferredMethod: requestedMethod, clientSupportsLocalDelivery },
     });
 
     if (planError || !planData?.valid || !planData?.selectedWarehouse) {
@@ -677,6 +704,16 @@ serve(async (req: Request) => {
     }
 
     // ── Compute totals ────────────────────────────────────────────────────────
+    // Local Delivery is server-authoritative: the planner must have planned THIS order for it
+    // (flagged warehouse, single warehouse covers the order, inside the internal radius). A request
+    // for it that the planner did not grant is refused rather than silently downgraded to a paid
+    // shipping charge the customer never saw.
+    const isLocalDelivery = requestedMethod === 'local_delivery';
+    if (isLocalDelivery && planData.fulfillmentMethod !== 'local_delivery') {
+      console.error('[create-checkout-order] Local Delivery requested but planner did not grant it:', planData.fulfillmentMethod ?? 'n/a');
+      return jsonResponse({ error: 'local_delivery_unavailable' }, 422);
+    }
+
     const subtotalCents = items.reduce((sum, i) => sum + i.qty * i.unitPriceCents, 0);
 
     // ── Pay-After-Pickup branch ($0 today, save card, capture after pickup) ──────
@@ -802,6 +839,8 @@ serve(async (req: Request) => {
     let shippingCents: number;
     if (pickupShippingCents !== null) {
       shippingCents = pickupShippingCents;                       // Pickup → $0
+    } else if (isLocalDelivery) {
+      shippingCents = 0;                                         // XSELF Local Delivery → $0 (phase 1)
     } else if (clientSupportsDynamicDelivery) {
       // NEW client: require the verified dynamic GIGA fee. No $99 fallback — fail closed.
       if (typeof planData.deliveryFeeCents === 'number' && planData.deliveryAvailable) {
@@ -915,6 +954,7 @@ serve(async (req: Request) => {
         status:                'pending_payment',
         payment_status:        'pending',
         fulfillment_method:    fulfillmentMethod,
+        delivery_kind:         deliveryKind,               // 'local' | 'third_party' (NULL for pickup)
         fulfillment_plan:      planData,
         // Phase 8 cents columns
         subtotal_cents:        subtotalCents,
@@ -1053,6 +1093,7 @@ serve(async (req: Request) => {
 
     stripeParams.append('metadata[order_id]',          orderId);
     stripeParams.append('metadata[fulfillment_method]', fulfillmentMethod);
+    if (deliveryKind) stripeParams.append('metadata[delivery_kind]', deliveryKind);
     if (guestToken) stripeParams.append('metadata[guest_token]', guestToken);
     // Carries the tax quote to the webhook, which turns it into a filed Tax Transaction once the
     // payment succeeds. Metadata rather than a new orders column: the value is only ever needed
@@ -1144,6 +1185,8 @@ serve(async (req: Request) => {
       // handle on the calculation the webhook later files as a Tax Transaction.
       taxCalculationId,
       isPickup: planData.usePickup ?? false,
+      fulfillmentMethod: requestedMethod,
+      deliveryKind,
       fulfillmentPlan: planData,
     });
 

@@ -27,6 +27,80 @@ export function pickupRadiusMiles(state: string | null | undefined): number {
   return PICKUP_RADIUS_MILES_BY_STATE[s] ?? DEFAULT_PICKUP_RADIUS_MILES;
 }
 
+// ── Local Delivery (XSELF-operated, free) ────────────────────────────────────────────
+/** Miles radius for XSELF-operated Local Delivery. This is the INTERNAL fulfillment envelope —
+ *  deliberately wider than the advertised promise so ad copy never decides eligibility — and it
+ *  is never surfaced to customers. Independent of pickupRadiusMiles(): changing one must never
+ *  move the other (pickup stays CA 100 / OOS 50). */
+export const LOCAL_DELIVERY_RADIUS_MILES = 30;
+
+export interface LocalDeliveryInput {
+  /** Straight-line miles from the buyer to the warehouse plan-fulfillment selected. */
+  distanceMiles: number;
+  /** warehouses.supports_local_delivery for that warehouse. */
+  supportsLocalDelivery: boolean;
+  /** true only when ONE warehouse holds every line of the order (plan-fulfillment selectionPath
+   *  'fresh-single' | 'stale-single'). A split / best-effort plan never qualifies: XSELF cannot
+   *  collect one order from several warehouses. */
+  singleWarehouseCoversOrder: boolean;
+}
+
+/** Local Delivery is offered only from a flagged warehouse, only when that single warehouse covers
+ *  the whole order, and only inside LOCAL_DELIVERY_RADIUS_MILES. Fee is always $0 (phase 1). */
+export function localDeliveryEligible(input: LocalDeliveryInput): boolean {
+  if (input.supportsLocalDelivery !== true) return false;
+  if (input.singleWarehouseCoversOrder !== true) return false;
+  if (!Number.isFinite(input.distanceMiles)) return false;
+  return input.distanceMiles <= LOCAL_DELIVERY_RADIUS_MILES;
+}
+
+// ── Three fulfillment methods (API contract) over the two-value storage contract ───────────
+/** Wire form used by NEW clients and by create-checkout-order ⇄ plan-fulfillment. */
+export type FulfillmentMethod = 'pickup' | 'local_delivery' | 'third_party_shipping';
+
+/** Accepts the legacy two-value wire form: 'delivery' has always meant GIGA drop-ship. */
+export function normalizeFulfillmentMethod(raw: unknown): FulfillmentMethod | null {
+  switch (raw) {
+    case 'pickup': return 'pickup';
+    case 'local_delivery': return 'local_delivery';
+    case 'third_party_shipping':
+    case 'delivery': return 'third_party_shipping';
+    default: return null;
+  }
+}
+
+/** orders.fulfillment_method stays 'pickup' | 'delivery' in phase 1 (XOne / emails / status
+ *  machine / guardrails branch on it). The delivery sub-type travels in orders.delivery_kind. */
+export function storageFulfillmentMethod(m: FulfillmentMethod): 'pickup' | 'delivery' {
+  return m === 'pickup' ? 'pickup' : 'delivery';
+}
+export function deliveryKindOf(m: FulfillmentMethod): 'local' | 'third_party' | null {
+  if (m === 'local_delivery') return 'local';
+  if (m === 'third_party_shipping') return 'third_party';
+  return null;
+}
+
+export interface ResolveMethodInput {
+  preferred: FulfillmentMethod | null;
+  pickupEligible: boolean;
+  localDeliveryEligible: boolean;
+  /** Only a client that declared it can render / charge Local Delivery may ever be planned for it.
+   *  Old builds never send this, so they keep the exact pickup/shipping behaviour they shipped with. */
+  clientSupportsLocalDelivery: boolean;
+}
+
+/** Which method the plan is FOR. A stated preference wins while it is eligible; otherwise the
+ *  default order is local_delivery → pickup → third_party_shipping. The pickup → shipping part is
+ *  unchanged from before Local Delivery existed ("pickup whenever eligible"). */
+export function resolveFulfillmentMethod(input: ResolveMethodInput): FulfillmentMethod {
+  const localAllowed = input.localDeliveryEligible && input.clientSupportsLocalDelivery;
+  if (input.preferred === 'local_delivery' && localAllowed) return 'local_delivery';
+  if (input.preferred === 'pickup') return input.pickupEligible ? 'pickup' : 'third_party_shipping';
+  if (input.preferred === 'third_party_shipping') return 'third_party_shipping';
+  if (localAllowed) return 'local_delivery';
+  return input.pickupEligible ? 'pickup' : 'third_party_shipping';
+}
+
 /** Haversine great-circle distance in miles. Mirrors getDistanceMiles (plan-fulfillment) and
  *  haversineDistance (deliveryEligibility) — identical R = 3958.8. Phase 1 consolidates those
  *  onto this shared copy (same formula, no behavior change). */
