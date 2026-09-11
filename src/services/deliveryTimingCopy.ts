@@ -14,7 +14,7 @@ export const DELIVERY_TIMING_COPY = 'Local warehouse · Fastest delivery: 2 BUSI
 
 /** XSELF Local Delivery（免费自营配送）的时效文案。与 plan-fulfillment 的 LOCAL_DELIVERY_TIMING_COPY
  *  保持同一字符串；同样只是运营承诺，绝不提及后台的资格半径。 */
-export const LOCAL_DELIVERY_TIMING_COPY = 'Local delivery · Delivered within 2 business days';
+export const LOCAL_DELIVERY_TIMING_COPY = 'Local delivery · Delivered within 2 BUSINESS DAYS';
 
 /** 渲染用得到的最小分组形状。 */
 export interface DeliveryTimingGroup {
