@@ -48,7 +48,7 @@ const DELIVERY_FEE_SOURCE: 'portal_cache' | 'openapi' =
 // XSELF Local Delivery timing copy — an operational commitment like the shipping string below.
 // Keep identical to LOCAL_DELIVERY_TIMING_COPY in src/services/deliveryTimingCopy.ts. Never
 // mention the internal radius here: customers are only ever promised the advertised range.
-const LOCAL_DELIVERY_TIMING_COPY = 'Free local delivery by XSELF · Fastest delivery: 2 BUSINESS DAYS';
+const LOCAL_DELIVERY_TIMING_COPY = 'Free local delivery · Delivered within 2 business days';
 const MAX_CART_ITEMS = 20;
 const MAX_QTY_PER_ITEM = 99;
 const MAX_FIELD_LENGTH = 200;
